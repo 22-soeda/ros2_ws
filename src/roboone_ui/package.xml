@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>roboone_ui</name>
+  <version>0.0.0</version>
+  <description>OLED(SSD1331)/RGB LED/圧電サウンダーで機体状態を提示する UI ノード</description>
+  <maintainer email="soedayu.030622@gmail.com">auto</maintainer>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>roboone_interfaces</depend>
+
+  <!-- rosdep で解決できるもの -->
+  <depend>python3-pil</depend>
+  <depend>python3-lgpio</depend>
+  <!-- rosdep キーが無いので手動で入れる (README 参照):
+         sudo apt install python3-luma.oled python3-spidev
+       rosdep に無いキーをここに書くと rosdep install が落ちるので書かない。 -->
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

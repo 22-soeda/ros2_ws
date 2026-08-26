@@ -1,0 +1,54 @@
+// RP1 PWM0 を GPIO12/13/18/19 に出すための device tree overlay
+//
+// なぜ自前 overlay が要るか:
+//   Ubuntu 24.04 (kernel 6.8.0-1060-raspi) 付属の pwm.dtbo / pwm-2chan.dtbo は
+//   compatible = "brcm,bcm2835" のレガシー binding (brcm,pins / brcm,function) で
+//   書かれている。一方この機体の pinctrl ドライバは pinctrl-rp1 で、
+//   base device tree の実物 (rp1_pwm1_gpio45) は
+//       function = "pwm1"; pins = "gpio45";
+//   という pinctrl 汎用 (文字列) binding を使っている。形式が違うので stock overlay は使えない。
+//
+// 裏取り (2026-08-27 実機):
+//   /sys/kernel/debug/pinctrl/1f000d0000.gpio-pinctrl-rp1/pinmux-functions
+//     function 38: pwm0, groups = [ gpio0 ... gpio53 ]
+//     function 39: pwm1, groups = [ gpio0 ... gpio53 ]
+//   __symbols__/pwm0 -> /axi/pcie@120000/rp1/pwm@98000   (status="disabled")
+//   __symbols__/pwm1 -> /axi/pcie@120000/rp1/pwm@9c000   (cooling_fan が使う)
+//   pin 12/13/18/19 はいずれも (MUX UNCLAIMED)
+//
+// チャンネル対応 (RP1 の alt 割り当て。実機での確認は Gate 2 の --identify で行う):
+//   GPIO12 = PWM0 ch0  (LED Red)
+//   GPIO13 = PWM0 ch1  (LED Green)
+//   GPIO18 = PWM0 ch2  (LED Blue)
+//   GPIO19 = PWM0 ch3  (Buzzer)
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2712";
+
+	// RP1 の GPIO ノードに pinmux グループを足す
+	fragment@0 {
+		target = <&gpio>;
+		__overlay__ {
+			ui_pwm_pins: ui_pwm_pins {
+				function = "pwm0";
+				pins = "gpio12", "gpio13", "gpio18", "gpio19";
+				// 外付け 10k プルダウン (LED: R14/R15/R17, ブザー: R7) と同方向。
+				// PWM が駆動していない間の不定を避ける保険。
+				bias-pull-down;
+			};
+		};
+	};
+
+	// RP1 PWM0 を有効化してそのグループを割り当てる
+	fragment@1 {
+		target = <&pwm0>;
+		__overlay__ {
+			pinctrl-names = "default";
+			pinctrl-0 = <&ui_pwm_pins>;
+			status = "okay";
+		};
+	};
+};

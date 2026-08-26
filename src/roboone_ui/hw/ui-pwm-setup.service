@@ -1,0 +1,15 @@
+[Unit]
+Description=RP1 PWM0 setup for roboone ui (export channels, grant gpio group access)
+Documentation=file:///home/auto/scratch/hw/ui-pwm.dts
+After=sysinit.target
+ConditionPathExistsGlob=/sys/class/pwm/pwmchip*
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ui-pwm-setup.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
