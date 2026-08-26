@@ -1,0 +1,25 @@
+# --- ROS 2 colcon 生成物 ---
+build/
+install/
+log/
+
+# --- 上流クローン(別リポジトリなので追跡しない) ---
+# 再取得: git clone -b 4.58.2 https://github.com/IntelRealSense/realsense-ros.git src/realsense-ros
+src/realsense-ros/
+
+# --- 実行時の出力 ---
+captures/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# --- エディタ / OS ---
+.vscode/
+*.swp
+.DS_Store
+
+# --- Claude Code のローカル設定 ---
+.claude/settings.local.json

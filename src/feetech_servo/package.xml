@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>feetech_servo</name>
+  <version>0.1.0</version>
+  <description>
+    Feetech SMS/STS シリアルバスサーボの C++ 制御ヘルパ。公式 SCServo SDK を同梱し、
+    バスごとに「一括書き込み → 一括読み出し」の閉ループを提供する。2コントローラ
+    (2シリアルバス) 対応。ライブラリ + デモ node。
+  </description>
+  <maintainer email="soedayu.030622@gmail.com">auto</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 430" font-family="'Hiragino Sans','Yu Gothic UI','Noto Sans JP',sans-serif">
+  <rect width="940" height="430" fill="#ffffff"/>
+  <defs>
+    <marker id="arrG" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto-start-reverse">
+      <path d="M0,0 L9,4.5 L0,9 z" fill="#3a6b64"/>
+    </marker>
+  </defs>
+
+  <text x="24" y="32" font-size="17" font-weight="bold" fill="#2a2521">図1: ノードとトピック — ROS2の最小単位</text>
+  <text x="24" y="54" font-size="12" fill="#6b6b6b">ノード = 1つの役割を持って動き続けるプログラム（プロセス）。トピック = 名前付きの非同期データ便。</text>
+
+  <!-- publisher node -->
+  <rect x="40" y="140" width="210" height="92" rx="10" fill="#eef2f1" stroke="#2a2521" stroke-width="1.6"/>
+  <text x="145" y="170" font-size="14" font-weight="bold" fill="#2a2521" text-anchor="middle">opponent_detector</text>
+  <text x="145" y="190" font-size="11" fill="#555555" text-anchor="middle">相手検知ノード（自作）</text>
+  <text x="145" y="208" font-size="11" fill="#555555" text-anchor="middle">点群から相手の位置を計算</text>
+
+  <!-- publish arrow -->
+  <line x1="250" y1="186" x2="364" y2="186" stroke="#3a6b64" stroke-width="2" marker-end="url(#arrG)"/>
+  <text x="309" y="170" font-size="11" fill="#3a6b64" text-anchor="middle">publish（出す側）</text>
+  <text x="309" y="206" font-size="10" fill="#3a6b64" text-anchor="middle">誰が読むかは知らない</text>
+
+  <!-- topic box -->
+  <rect x="368" y="150" width="190" height="76" rx="6" fill="#e8f0ee" stroke="#3a6b64" stroke-width="1.6"/>
+  <text x="463" y="176" font-size="15" font-weight="bold" font-family="Consolas,monospace" fill="#2a2521" text-anchor="middle">/opponent</text>
+  <text x="463" y="196" font-size="11" fill="#2a2521" text-anchor="middle">型: PointStamped</text>
+  <text x="463" y="214" font-size="11" fill="#b23b3b" text-anchor="middle">約15Hzで流れる</text>
+  <text x="463" y="246" font-size="10.5" fill="#3a6b64" text-anchor="middle">トピック（データの掲示板）</text>
+
+  <!-- subscribe arrows -->
+  <line x1="558" y1="178" x2="686" y2="118" stroke="#3a6b64" stroke-width="2" marker-end="url(#arrG)"/>
+  <text x="622" y="132" font-size="11" fill="#3a6b64" text-anchor="middle">subscribe</text>
+  <line x1="558" y1="196" x2="686" y2="298" stroke="#3a6b64" stroke-width="2" marker-end="url(#arrG)"/>
+  <text x="608" y="262" font-size="11" fill="#3a6b64" text-anchor="middle">subscribe</text>
+
+  <!-- subscriber 1 -->
+  <rect x="690" y="76" width="210" height="84" rx="10" fill="#eef2f1" stroke="#2a2521" stroke-width="1.6"/>
+  <text x="795" y="106" font-size="14" font-weight="bold" fill="#2a2521" text-anchor="middle">behavior</text>
+  <text x="795" y="126" font-size="11" fill="#555555" text-anchor="middle">戦略判断ノード（自作）</text>
+  <text x="795" y="144" font-size="11" fill="#555555" text-anchor="middle">相手位置から次の行動を決める</text>
+
+  <!-- subscriber 2: debug terminal -->
+  <rect x="690" y="268" width="210" height="78" rx="10" fill="#faf7fa" stroke="#8a6b85" stroke-width="1.5" stroke-dasharray="6 3"/>
+  <text x="795" y="296" font-size="12.5" font-weight="bold" font-family="Consolas,monospace" fill="#2a2521" text-anchor="middle">$ ros2 topic echo /opponent</text>
+  <text x="795" y="316" font-size="11" fill="#555555" text-anchor="middle">端末から同じデータを覗ける</text>
+  <text x="795" y="332" font-size="11" fill="#555555" text-anchor="middle">（デバッグ・記録に便利）</text>
+
+  <!-- bottom notes -->
+  <text x="40" y="376" font-size="12" fill="#2a2521">① 読む側は後から何個でも足せる。behaviorと端末が同時に受けている＝多対多</text>
+  <text x="40" y="396" font-size="12" fill="#2a2521">② トピックごとに型が決まっているので、繋ぎ間違いがすぐ分かる</text>
+  <text x="40" y="416" font-size="12" fill="#2a2521">③ 関数呼び出しと違い非同期・返事なし。返事が要るやり取りは「サービス」だが今回はほぼ使わない</text>
+</svg>

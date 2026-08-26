@@ -1,0 +1,23 @@
+feetech_demo:
+  ros__parameters:
+    # 2台のコントローラ = 2本のシリアルバス。by-id で固定したい場合は
+    # /dev/serial/by-id/usb-1a86_USB_Single_Serial_XXXX-if00 を指定してもよい。
+    ports:
+      - "/dev/ttyACM0"
+      - "/dev/ttyACM1"
+    baud: 1000000
+
+    # 全バス共通の軸ID。バスごとに変えたい場合は ids_0 / ids_1 で上書きする。
+    ids: [1]
+    # ids_0: [1, 2, 3]
+    # ids_1: [1, 2, 3]
+
+    rate_hz: 50.0        # 閉ループ周波数（書き→読みを1サイクル）
+
+    # 安全: 既定は読み取りのみ（トルクOFF, 機体は動かない）。
+    # 実際に動かす場合のみ true にする。
+    enable_motion: false
+    amplitude_deg: 20.0  # 起点位置まわりのサイン波振幅
+    period_s: 4.0        # サイン波の周期
+    move_speed: 2000     # SyncWritePosEx の速度 (step/s)
+    move_acc: 50         # SyncWritePosEx の加速度

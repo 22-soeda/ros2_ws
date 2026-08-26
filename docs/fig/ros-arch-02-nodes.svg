@@ -1,0 +1,168 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 700" font-family="'Hiragino Sans','Yu Gothic UI','Noto Sans JP',sans-serif">
+  <rect width="1120" height="700" fill="#ffffff"/>
+  <defs>
+    <marker id="arrG" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto-start-reverse">
+      <path d="M0,0 L9,4.5 L0,9 z" fill="#3a6b64"/>
+    </marker>
+    <marker id="arrHW" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto-start-reverse">
+      <path d="M0,0 L9,4.5 L0,9 z" fill="#888888"/>
+    </marker>
+  </defs>
+
+  <text x="24" y="30" font-size="17" font-weight="bold" fill="#2a2521">図2: ROBO-ONE Auto 2026 推奨ノード構成</text>
+  <text x="24" y="50" font-size="12" fill="#6b6b6b">箱=ノード（プログラム）、緑矢印=トピック（名前・型・目安周期）。周期は目安、※印は要実測。</text>
+
+  <!-- column headers -->
+  <text x="90" y="68" font-size="11" fill="#9aa7a4" text-anchor="middle">センサ・入力</text>
+  <text x="287" y="68" font-size="11" fill="#9aa7a4" text-anchor="middle">ドライバノード</text>
+  <text x="582" y="68" font-size="11" fill="#9aa7a4" text-anchor="middle">知覚・変換</text>
+  <text x="860" y="68" font-size="11" fill="#9aa7a4" text-anchor="middle">判断・制御</text>
+  <text x="1055" y="68" font-size="11" fill="#9aa7a4" text-anchor="middle">出力</text>
+
+  <!-- ===== hardware (left) ===== -->
+  <rect x="25" y="95" width="130" height="64" rx="6" fill="#f0f0f0" stroke="#888888" stroke-width="1.2"/>
+  <text x="90" y="118" font-size="12" font-weight="bold" fill="#444444" text-anchor="middle">RealSense D435if</text>
+  <text x="90" y="135" font-size="10" fill="#444444" text-anchor="middle">深度カメラ（USB3）</text>
+  <text x="90" y="149" font-size="10" fill="#444444" text-anchor="middle">IMU内蔵</text>
+
+  <rect x="25" y="496" width="130" height="56" rx="6" fill="#f0f0f0" stroke="#888888" stroke-width="1.2"/>
+  <text x="90" y="518" font-size="12" font-weight="bold" fill="#444444" text-anchor="middle">PS3コントローラ</text>
+  <text x="90" y="536" font-size="9.5" fill="#444444" text-anchor="middle">Bluetooth・開発/非常停止</text>
+
+  <!-- ===== driver nodes ===== -->
+  <rect x="200" y="92" width="175" height="70" rx="8" fill="#faf7fa" stroke="#8a6b85" stroke-width="1.5" stroke-dasharray="6 3"/>
+  <text x="287" y="115" font-size="12.5" font-weight="bold" fill="#2a2521" text-anchor="middle">realsense2_camera</text>
+  <text x="287" y="133" font-size="10.5" fill="#555555" text-anchor="middle">既製: realsense-ros</text>
+  <text x="287" y="149" font-size="10.5" fill="#555555" text-anchor="middle">カメラ/IMUドライバ</text>
+
+  <rect x="200" y="494" width="175" height="60" rx="8" fill="#faf7fa" stroke="#8a6b85" stroke-width="1.5" stroke-dasharray="6 3"/>
+  <text x="287" y="519" font-size="12.5" font-weight="bold" fill="#2a2521" text-anchor="middle">joy_node</text>
+  <text x="287" y="539" font-size="10.5" fill="#555555" text-anchor="middle">既製: joy（ボタン読取）</text>
+
+  <!-- ===== perception ===== -->
+  <rect x="495" y="76" width="175" height="84" rx="8" fill="#eef2f1" stroke="#2a2521" stroke-width="1.6"/>
+  <text x="582" y="99" font-size="12.5" font-weight="bold" fill="#2a2521" text-anchor="middle">opponent_detector</text>
+  <text x="582" y="117" font-size="10.5" fill="#555555" text-anchor="middle">自作: 相手検知</text>
+  <text x="582" y="133" font-size="10.5" fill="#555555" text-anchor="middle">RANSAC床面除去＋</text>
+  <text x="582" y="147" font-size="10.5" fill="#555555" text-anchor="middle">最近接クラスタ重心</text>
+
+  <rect x="495" y="210" width="175" height="66" rx="8" fill="#faf7fa" stroke="#8a6b85" stroke-width="1.5" stroke-dasharray="6 3"/>
+  <text x="582" y="233" font-size="12.5" font-weight="bold" fill="#2a2521" text-anchor="middle">imu_filter</text>
+  <text x="582" y="251" font-size="10" fill="#555555" text-anchor="middle">既製: imu_filter_madgwick</text>
+  <text x="582" y="266" font-size="10.5" fill="#555555" text-anchor="middle">姿勢（傾き）を推定</text>
+
+  <rect x="495" y="492" width="175" height="64" rx="8" fill="#eef2f1" stroke="#2a2521" stroke-width="1.6"/>
+  <text x="582" y="514" font-size="12.5" font-weight="bold" fill="#2a2521" text-anchor="middle">teleop</text>
+  <text x="582" y="532" font-size="10.5" fill="#555555" text-anchor="middle">自作: ボタン→指令変換</text>
+  <text x="582" y="548" font-size="10.5" fill="#555555" text-anchor="middle">非常停止・技の手動発動</text>
+
+  <!-- ===== decision ===== -->
+  <rect x="770" y="76" width="175" height="84" rx="8" fill="#eef2f1" stroke="#2a2521" stroke-width="1.6"/>
+  <text x="857" y="99" font-size="12.5" font-weight="bold" fill="#2a2521" text-anchor="middle">behavior</text>
+  <text x="857" y="117" font-size="10.5" fill="#555555" text-anchor="middle">自作: 戦略ステートマシン</text>
+  <text x="857" y="133" font-size="10.5" fill="#555555" text-anchor="middle">探索→接近→攻撃の</text>
+  <text x="857" y="147" font-size="10.5" fill="#555555" text-anchor="middle">状態遷移で行動決定</text>
+
+  <!-- ===== motion (realtime) ===== -->
+  <rect x="725" y="290" width="250" height="158" rx="8" fill="#eef2f1" stroke="#2a2521" stroke-width="2.2"/>
+  <text x="850" y="313" font-size="13" font-weight="bold" fill="#2a2521" text-anchor="middle">motion（歩行・姿勢制御）</text>
+  <text x="850" y="331" font-size="10.5" fill="#b23b3b" text-anchor="middle">制御ループ 200Hz※（周期5ms）</text>
+  <text x="850" y="352" font-size="10.5" fill="#2a2521" text-anchor="middle">① 歩行パターン生成・技の再生</text>
+  <text x="850" y="368" font-size="10.5" fill="#2a2521" text-anchor="middle">② IKで18関節の角度に変換</text>
+  <text x="850" y="384" font-size="10.5" fill="#2a2521" text-anchor="middle">③ IMUフィードバックで補正</text>
+  <text x="850" y="400" font-size="10.5" fill="#2a2521" text-anchor="middle">④ 全サーボへ一斉送信</text>
+  <text x="850" y="424" font-size="10" fill="#b23b3b" text-anchor="middle">この箱の中はトピックを通らない（図3）</text>
+
+  <!-- ===== ui ===== -->
+  <rect x="770" y="560" width="175" height="58" rx="8" fill="#eef2f1" stroke="#2a2521" stroke-width="1.6"/>
+  <text x="857" y="584" font-size="12.5" font-weight="bold" fill="#2a2521" text-anchor="middle">ui</text>
+  <text x="857" y="604" font-size="10.5" fill="#555555" text-anchor="middle">自作: OLED/LEDへ状態表示</text>
+
+  <!-- ===== hardware (right) ===== -->
+  <rect x="1005" y="310" width="100" height="96" rx="6" fill="#f0f0f0" stroke="#888888" stroke-width="1.2"/>
+  <text x="1055" y="336" font-size="12" font-weight="bold" fill="#444444" text-anchor="middle">Feetech</text>
+  <text x="1055" y="352" font-size="12" font-weight="bold" fill="#444444" text-anchor="middle">サーボ ×18</text>
+  <text x="1055" y="370" font-size="9.5" fill="#444444" text-anchor="middle">FE-URT-2 ×2系統</text>
+  <text x="1055" y="384" font-size="9.5" fill="#444444" text-anchor="middle">/dev/ttyACM0,1</text>
+
+  <rect x="1005" y="528" width="100" height="70" rx="6" fill="#f0f0f0" stroke="#888888" stroke-width="1.2"/>
+  <text x="1055" y="547" font-size="11.5" font-weight="bold" fill="#444444" text-anchor="middle">OLED QT095B</text>
+  <text x="1055" y="562" font-size="9.5" fill="#444444" text-anchor="middle">SSD1331・96×64</text>
+  <text x="1055" y="576" font-size="9.5" fill="#444444" text-anchor="middle">SPI: GPIO10/11</text>
+  <text x="1055" y="590" font-size="9.5" fill="#444444" text-anchor="middle">DC24 RES25 CS23</text>
+
+  <rect x="1005" y="606" width="100" height="46" rx="6" fill="#f0f0f0" stroke="#888888" stroke-width="1.2"/>
+  <text x="1055" y="624" font-size="11.5" font-weight="bold" fill="#444444" text-anchor="middle">RGB LED</text>
+  <text x="1055" y="640" font-size="9.5" fill="#444444" text-anchor="middle">GPIO12/13/18 PWM</text>
+
+  <rect x="1005" y="660" width="100" height="40" rx="6" fill="#f0f0f0" stroke="#888888" stroke-width="1.2"/>
+  <text x="1055" y="678" font-size="11.5" font-weight="bold" fill="#444444" text-anchor="middle">ブザー</text>
+  <text x="1055" y="692" font-size="9.5" fill="#444444" text-anchor="middle">GPIO19 PWM</text>
+
+  <!-- ===== edges ===== -->
+  <line x1="155" y1="127" x2="196" y2="127" stroke="#888888" stroke-width="1.5" marker-end="url(#arrHW)"/>
+  <text x="177" y="117" font-size="9.5" fill="#888888" text-anchor="middle">USB3</text>
+
+  <line x1="375" y1="120" x2="491" y2="115" stroke="#3a6b64" stroke-width="1.8" marker-end="url(#arrG)"/>
+  <text x="435" y="104" font-size="10" font-family="Consolas,monospace" fill="#3a6b64" text-anchor="middle">/camera/…/points</text>
+  <text x="435" y="134" font-size="9.5" fill="#3a6b64" text-anchor="middle">PointCloud2・15–30Hz</text>
+
+  <line x1="340" y1="162" x2="491" y2="238" stroke="#3a6b64" stroke-width="1.8" marker-end="url(#arrG)"/>
+  <text x="417" y="190" font-size="10" font-family="Consolas,monospace" fill="#3a6b64" text-anchor="middle">/camera/imu</text>
+  <text x="417" y="204" font-size="9.5" fill="#3a6b64" text-anchor="middle">Imu・200Hz</text>
+
+  <line x1="670" y1="118" x2="766" y2="118" stroke="#3a6b64" stroke-width="1.8" marker-end="url(#arrG)"/>
+  <text x="718" y="104" font-size="10" font-family="Consolas,monospace" fill="#3a6b64" text-anchor="middle">/opponent</text>
+  <text x="718" y="134" font-size="9" fill="#3a6b64" text-anchor="middle">PointStamped・15Hz</text>
+
+  <line x1="670" y1="243" x2="721" y2="330" stroke="#3a6b64" stroke-width="1.8" marker-end="url(#arrG)"/>
+  <text x="690" y="270" font-size="10" font-family="Consolas,monospace" fill="#3a6b64" text-anchor="middle">/imu/data</text>
+  <text x="690" y="284" font-size="9.5" fill="#3a6b64" text-anchor="middle">姿勢・200Hz</text>
+
+  <line x1="880" y1="160" x2="880" y2="286" stroke="#3a6b64" stroke-width="1.8" marker-end="url(#arrG)"/>
+  <text x="890" y="210" font-size="10" font-family="Consolas,monospace" fill="#3a6b64">/cmd_walk（Twist・20Hz）</text>
+  <text x="890" y="226" font-size="10" font-family="Consolas,monospace" fill="#3a6b64">/cmd_motion（技の指令）</text>
+
+  <line x1="795" y1="290" x2="795" y2="164" stroke="#3a6b64" stroke-width="1.4" marker-end="url(#arrG)"/>
+  <text x="785" y="210" font-size="10" font-family="Consolas,monospace" fill="#3a6b64" text-anchor="end">/motion/state</text>
+  <text x="785" y="226" font-size="9.5" fill="#3a6b64" text-anchor="end">技の完了通知など</text>
+
+  <line x1="155" y1="524" x2="196" y2="524" stroke="#888888" stroke-width="1.5" marker-end="url(#arrHW)"/>
+  <text x="177" y="514" font-size="9.5" fill="#888888" text-anchor="middle">BT</text>
+
+  <line x1="375" y1="524" x2="491" y2="524" stroke="#3a6b64" stroke-width="1.8" marker-end="url(#arrG)"/>
+  <text x="435" y="512" font-size="10" font-family="Consolas,monospace" fill="#3a6b64" text-anchor="middle">/joy</text>
+  <text x="435" y="540" font-size="9.5" fill="#3a6b64" text-anchor="middle">ボタン状態・入力時</text>
+
+  <line x1="655" y1="492" x2="752" y2="452" stroke="#3a6b64" stroke-width="1.8" marker-end="url(#arrG)"/>
+  <text x="772" y="464" font-size="10" font-family="Consolas,monospace" fill="#3a6b64">/estop（非常停止）</text>
+  <text x="772" y="480" font-size="10" font-family="Consolas,monospace" fill="#3a6b64">/cmd_walk（手動デバッグ）</text>
+
+  <line x1="975" y1="368" x2="1001" y2="368" stroke="#888888" stroke-width="1.8" marker-end="url(#arrHW)"/>
+  <text x="980" y="386" font-size="9.5" fill="#888888" text-anchor="middle">シリアル</text>
+  <text x="980" y="398" font-size="9.5" fill="#b23b3b" text-anchor="middle">1Mbps※</text>
+
+  <line x1="850" y1="448" x2="850" y2="556" stroke="#3a6b64" stroke-width="1.4" marker-end="url(#arrG)"/>
+  <text x="860" y="500" font-size="10" font-family="Consolas,monospace" fill="#3a6b64">/joint_states・10Hz</text>
+  <text x="860" y="516" font-size="10" font-family="Consolas,monospace" fill="#3a6b64">/motion/state</text>
+
+  <line x1="945" y1="580" x2="1001" y2="562" stroke="#888888" stroke-width="1.5" marker-end="url(#arrHW)"/>
+  <text x="972" y="556" font-size="9.5" fill="#888888" text-anchor="middle">4線SPI</text>
+  <line x1="945" y1="596" x2="1001" y2="624" stroke="#888888" stroke-width="1.5" marker-end="url(#arrHW)"/>
+  <text x="968" y="620" font-size="9.5" fill="#888888" text-anchor="middle">PWM</text>
+  <line x1="945" y1="606" x2="1001" y2="676" stroke="#888888" stroke-width="1.5" marker-end="url(#arrHW)"/>
+
+  <!-- ===== legend ===== -->
+  <rect x="25" y="560" width="440" height="126" rx="6" fill="#ffffff" stroke="#9aa7a4" stroke-width="1"/>
+  <text x="40" y="580" font-size="11" font-weight="bold" fill="#2a2521">凡例</text>
+  <rect x="40" y="590" width="28" height="14" rx="3" fill="#eef2f1" stroke="#2a2521" stroke-width="1.4"/>
+  <text x="80" y="601" font-size="10.5" fill="#2a2521">自作ノード（私たちが書くプログラム・5個）</text>
+  <rect x="40" y="610" width="28" height="14" rx="3" fill="#faf7fa" stroke="#8a6b85" stroke-width="1.3" stroke-dasharray="5 3"/>
+  <text x="80" y="621" font-size="10.5" fill="#2a2521">既製パッケージ（導入するだけ・書かない・3個）</text>
+  <rect x="40" y="630" width="28" height="14" rx="3" fill="#f0f0f0" stroke="#888888" stroke-width="1.1"/>
+  <text x="80" y="641" font-size="10.5" fill="#2a2521">ハードウェア（ROSの外）</text>
+  <line x1="40" y1="657" x2="68" y2="657" stroke="#3a6b64" stroke-width="1.8" marker-end="url(#arrG)"/>
+  <text x="80" y="661" font-size="10.5" fill="#2a2521">トピック（名前・型・目安周期）</text>
+  <line x1="40" y1="677" x2="68" y2="677" stroke="#888888" stroke-width="1.5" marker-end="url(#arrHW)"/>
+  <text x="80" y="681" font-size="10.5" fill="#2a2521">ROSを通らない物理接続。赤字※=要実測</text>
+</svg>
