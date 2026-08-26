@@ -82,6 +82,25 @@ ros2 topic pub --once --qos-durability transient_local \
 YAML 1.1 ではこれらが真偽値として解釈され、`"{data: off}"` が `data="False"` に
 なって黙って届かない (実測)。消灯プリセットの名前は `dark` にしてある。
 
+## 決定事項 (2026-08-27)
+
+- **表示は ASCII のみ。日本語表示はしない。** よって 8x8 日本語ビットマップフォントの
+  同梱も不要。ASCII 外の文字は `?` に落とす (`OledDisplay._sanitize`)
+- **プリセットは今のものを起点に、機能追加に合わせて足していく。** `ui_node.py` の
+  `LED_PATTERNS` / `BUZZER_PATTERNS` に足すだけでよく、トピックの型は変わらない。
+  現状は仮置きの `dark` / `ready` / `warn` / `estop`、`beep` / `ack` / `error`
+- 画像も同様に `images/*.png` を足すだけ。起動時に自動で読み込まれる
+  (`setup.py` の `data_files` は `glob` なので追記不要)
+
+## 残っていること
+
+- **Gate 5**: `/motion/state` を購読して 状態名 → OLED文言・LED色・ブザー音 に落とす。
+  motion ノードが出来てからでよい (`docs/ros-architecture.md` §5 でも ui は最後)
+- **+5V レールのテスター実測**。可変 DCDC なので 5.00V とは限らず、LED 電流に効くため
+  `DEFAULT_GAIN` の最終確定に要る。現在の値は目視で問題なしと確認済み
+- **LED の用途が競技規定由来かどうか**。ROBO-ONE Auto に自律動作状態のインジケータ規定が
+  あるなら色・輝度・視認方向に要求があるはず。未確認
+
 ## 実測値 (2026-08-27, Raspberry Pi 5 / Ubuntu 24.04 / kernel 6.8.0-1060-raspi)
 
 | 項目 | 値 |
