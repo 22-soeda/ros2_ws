@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>roboone_bringup</name>
+  <version>0.1.0</version>
+  <description>
+    機体をひとまとめに立ち上げる launch。ui・teleop（joy 込み）・カメラ・記録を
+    1 コマンドで起動する。各パッケージの launch はそのまま残し、このパッケージは
+    「どれをどの順で、どの引数で上げるか」の一点だけを持つ。
+  </description>
+  <maintainer email="soedayu.030622@gmail.com">auto</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>roboone_teleop</exec_depend>
+  <exec_depend>roboone_ui</exec_depend>
+  <exec_depend>realsense_bringup</exec_depend>
+  <exec_depend>rosbag2_transport</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

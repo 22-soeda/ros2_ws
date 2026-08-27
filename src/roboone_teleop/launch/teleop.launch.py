@@ -55,10 +55,15 @@ def generate_launch_description():
         DeclareLaunchArgument('device_id', default_value='0'),
         DeclareLaunchArgument('autorepeat_rate', default_value='20.0'),
 
+        # joy 側は respawn する。Bluetooth は切れるものなので、落ちたら上げ直す。
+        # 切れている間は teleop の無通信ウォッチドッグが脱力を掛けるので、
+        # 勝手に上げ直しても安全側は壊れない。
         Node(package='joy', executable='game_controller_node', name='joy_node',
-             parameters=joy_params, output='screen', condition=IfCondition(is_gc)),
+             parameters=joy_params, output='screen', condition=IfCondition(is_gc),
+             respawn=True, respawn_delay=2.0),
         Node(package='joy', executable='joy_node', name='joy_node',
-             parameters=joy_params, output='screen', condition=IfCondition(is_joy)),
+             parameters=joy_params, output='screen', condition=IfCondition(is_joy),
+             respawn=True, respawn_delay=2.0),
 
         Node(package='roboone_teleop', executable='teleop_node', name='teleop',
              parameters=[config], output='screen'),

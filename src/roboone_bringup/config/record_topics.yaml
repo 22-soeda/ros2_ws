@@ -1,0 +1,27 @@
+# ros2 bag record で録るトピック（roboone.launch.py の record:=true）。
+#
+# 方針: 「あとで転んだ理由を追える最小限」。点群と画像は入れない。
+#   848x480x30 の点群だけで数十 MB/s になり、Pi の SD カードが持たない。
+#   カメラを録りたいときは別建てで `ros2 bag record /camera/...` を回す。
+#
+# 名前の通らないトピック（まだ誰も publish していないもの）は無視されるだけなので、
+# motion / behavior / opponent_detector の分を先に書いておいてよい。
+
+topics:
+  # --- 操作入力 ---
+  - /joy                # 生のコントローラ入力。teleop の解釈ミスと切り分けられる
+  # --- 指令 ---
+  - /cmd_walk           # 20Hz
+  - /cmd_motion
+  - /estop              # 脱力・トルクオンの履歴
+  - /autonomy           # 手動 / 自律の切り替え履歴
+  # --- 機体の状態 ---
+  - /motion/state
+  - /joint_states
+  - /imu/data
+  # --- 判断層 ---
+  - /opponent
+  # --- 表示（何が出ていたか。操作者の見ていたものを再現できる）---
+  - /ui/led/pattern
+  - /ui/oled/text
+  - /ui/buzzer
