@@ -34,6 +34,54 @@ Ubuntu 付属の `pwm.dtbo` / `pwm-2chan.dtbo` は**使えない**。理由は `
 
 確認は `bash ~/scratch/pwm_check.sh` (読み取りのみ)。
 
+## 起動確認ブザー (boot 時に自動で鳴る)
+
+「ラズパイがちゃんと起動したか」を音で確かめるための起動メロディ。ROS とは独立に
+systemd から鳴らす。**`hw/roboone-boot-chime.py` は意図的に自己完結**させてあり、
+colcon ワークスペースが壊れていても `install/` が無くても鳴る (それが目的なので)。
+
+```bash
+sudo install -m 0755 hw/roboone-boot-chime.py /usr/local/sbin/roboone-boot-chime.py
+sudo install -m 0644 hw/roboone-boot-chime.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable roboone-boot-chime.service
+sudo systemctl start roboone-boot-chime.service     # 鳴らして確認
+```
+
+鳴るタイミングは `systemd-user-sessions.service` の後 = ログインが許可される時点。
+`ui-pwm-setup.service` の後でもある (ch3 の export と gpio 権限が先に要る)。
+
+手で鳴らすときは直接叩ける。
+
+```bash
+hw/roboone-boot-chime.py                 # 既定の chime
+hw/roboone-boot-chime.py -m pororon      # 別のメロディ
+hw/roboone-boot-chime.py -d 20           # デューティを下げて小さく
+hw/roboone-boot-chime.py --sweep         # 3.4k-4.6kHz を鳴らして共振を耳で確認
+```
+
+| 名前 | 中身 |
+|---|---|
+| `chime` | **既定**。1 音ずつ長めに立てる。実機の聴感で一番聞き取りやすかった |
+| `pororon` | 上昇 3 音 + 締め 1 音。速くて軽快だが、その分聞き逃しやすい |
+| `skip` | ピッ・ピッ・ポーン。短い |
+| `down` | 下降 4 音。停止側に使うなら |
+| `wide` | 音域を広げた 5 音。メロディらしさは一番だが両端が小さい |
+
+メロディを変えるときは `roboone-boot-chime.py` の `MELODIES` を編集するか、
+`roboone-boot-chime.service` の `ExecStart` の `-m` を差し替えて `daemon-reload`。
+
+### ★音階が 3.1k-5.3kHz に寄っている理由
+
+BZ1 (PKM13EPYH4000-A0) は共振 4.0kHz の外部駆動型で、共振から離れるほど音圧が落ちる。
+ふつうの音域 (数百 Hz) でメロディを書くと「鳴っているのに聞こえない」になるため、
+共振の ±17% (A7 3520 / B7 3951 / C8 4186 / D8 4699) だけを使っている。加えて聴覚は
+200ms 以下の音を短いほど小さく感じる (時間積分) ので、1 音を 80ms 以上、締めの音を
+300ms 以上にしてある。最初は 3.1k-5.3k / 1 音 45ms で書いたが実機で「小さくて
+聞こえにくい」となり、この形に落ち着いた (2026-08-28)。音色がチャイム/オルゴール
+寄りの高音で、音程の幅が狭いのはこの制約による。
+`ui_node.py` 側のビープが 4kHz 固定なのは変えていない (そちらは通知音なので単音でよい)。
+
 ## 起動
 
 ```bash

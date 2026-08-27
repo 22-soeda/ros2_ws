@@ -1,0 +1,19 @@
+[Unit]
+Description=roboone boot chime (buzzer melody on GPIO19, to confirm the Pi has booted)
+Documentation=file:///home/auto/ros2_ws/src/roboone_ui/hw/roboone-boot-chime.py
+# ch3 の export と gpio 権限付与が先。これが無いと PWM に書けない
+Wants=ui-pwm-setup.service
+After=ui-pwm-setup.service
+# ログインが許可される時点 = 実用上の「起動できた」。ここまで来てから鳴らす
+After=systemd-user-sessions.service
+ConditionPathExistsGlob=/sys/class/pwm/pwmchip*
+
+[Service]
+Type=oneshot
+# メロディを変えるときはここの -m を pororon / chime / skip / down から選ぶ
+ExecStart=/usr/local/sbin/roboone-boot-chime.py -m chime
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
