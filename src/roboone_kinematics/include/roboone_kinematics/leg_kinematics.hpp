@@ -103,9 +103,18 @@ struct Vec3
 
   constexpr double dot(const Vec3 & o) const { return x * o.x + y * o.y + z * o.z; }
   constexpr double normSq() const { return x * x + y * y + z * z; }
+  double norm() const { return std::sqrt(normSq()); }
+  constexpr Vec3 cross(const Vec3 & o) const
+  {
+    return {y * o.z - z * o.y, z * o.x - x * o.z, x * o.y - y * o.x};
+  }
   constexpr Vec3 operator+(const Vec3 & o) const { return {x + o.x, y + o.y, z + o.z}; }
   constexpr Vec3 operator-(const Vec3 & o) const { return {x - o.x, y - o.y, z - o.z}; }
+  constexpr Vec3 operator*(double k) const { return {x * k, y * k, z * k}; }
+  constexpr Vec3 operator-() const { return {-x, -y, -z}; }
 };
+
+constexpr Vec3 operator*(double k, const Vec3 & v) { return v * k; }
 
 /// 行優先の 3x3。
 struct Mat3

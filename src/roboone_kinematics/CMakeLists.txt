@@ -30,8 +30,22 @@ add_executable(leg_dump src/leg_dump.cpp)
 target_link_libraries(leg_dump roboone_kinematics)
 target_compile_options(leg_dump PRIVATE -O2)
 
+# ---------------------------------------------------------------------------
+# 足首パラレルリンク（docs/足首パラレルリンク導出.pdf）
+#   ankle_selftest : §8 の検算 + 文書が本文で挙げている数値との照合
+#   ankle_dump     : 中間量を出す確認用（CAD の値を入れたあとの点検に使う）
+# ---------------------------------------------------------------------------
+add_executable(ankle_selftest src/ankle_selftest.cpp)
+target_link_libraries(ankle_selftest roboone_kinematics)
+target_compile_options(ankle_selftest PRIVATE -O2)
+
+add_executable(ankle_dump src/ankle_dump.cpp)
+target_link_libraries(ankle_dump roboone_kinematics)
+target_compile_options(ankle_dump PRIVATE -O2)
+
 install(DIRECTORY include/ DESTINATION include)
-install(TARGETS leg_selftest leg_dump DESTINATION lib/${PROJECT_NAME})
+install(TARGETS leg_selftest leg_dump ankle_selftest ankle_dump
+  DESTINATION lib/${PROJECT_NAME})
 
 install(TARGETS roboone_kinematics EXPORT export_roboone_kinematics)
 ament_export_targets(export_roboone_kinematics HAS_LIBRARY_TARGET)
@@ -41,6 +55,7 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   # 自己検算をそのまま ctest に載せる (姿勢数を減らして高速に)
   add_test(NAME leg_selftest COMMAND leg_selftest -n 3000)
+  add_test(NAME ankle_selftest COMMAND ankle_selftest -n 2000)
 endif()
 
 ament_package()
