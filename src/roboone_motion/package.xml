@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>roboone_motion</name>
+  <version>0.1.0</version>
+  <description>
+    歩行計画 (walk_core) と、その計画過程を可視化するツール。
+    docs/ros2_walk_implementation.pdf の §11 手順 1〜2 に相当する。
+    walk_core は ROS 非依存で、motion ノード (今後実装) がプロセス内で呼ぶ。
+  </description>
+  <maintainer email="soedayu.030622@gmail.com">soedayu</maintainer>
+  <license>MIT</license>
+
+  <depend>python3-yaml</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

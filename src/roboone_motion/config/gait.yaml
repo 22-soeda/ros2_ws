@@ -1,0 +1,25 @@
+# 歩行の静的設定 (docs/ros2_walk_implementation.pdf 表 2 のうち計画に効く項目)。
+# 値の意味と単位は roboone_motion/walk_core/params.py を参照。
+# ここに無いキーを足すと GaitParams.from_yaml() が KeyError で落ちる (打ち間違い対策)。
+
+z_c: 0.16               # [m] 骨盤高さ。発熱試験で下限を決める
+gravity: 9.81
+t_step: 0.40             # [s] 1 歩の周期。短いほど押しに強い
+foot_spacing: 0.08       # [m] 左右の足間隔 W。CAD の股間隔から決める
+
+swing_height: 0.02       # [m] 遊脚の頂点高さ
+swing_lock_phase: 0.70   # 着地点の凍結位相
+td_overdrive: 0.004      # [m] 名目床面より下へ突き抜ける量
+td_speed_max: 0.10       # [m/s] 着地直前の降下速度上限
+
+v_max: [0.15, 0.08]      # [m/s] (x, y) 指令の飽和
+a_max: [0.3, 0.2]        # [m/s^2] 指令のレート制限
+
+step_clamp_x: 0.04       # [m] 着地点の前後許容ずれ
+step_clamp_out: 0.045    # [m] 外側
+step_clamp_in: 0.015     # [m] 内側 (脚同士の干渉のため狭い)
+
+start_pushoff_max: 0.15  # [s] 押し出しの最長時間
+k_dcm: 1.0               # 踏み出し補正のゲイン (計画値を入れている間は純 FF)
+cmd_timeout: 0.5         # [s] 指令途絶で停止に入る (motion ノード側で使う)
+loop_hz: 200.0
