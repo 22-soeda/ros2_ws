@@ -5,8 +5,8 @@ docs/ros2_walk_implementation.pdf の設計に従う。時計も乱数も持た�
 update(vx, vy, dt) の入力列だけで決定的に動く。
 """
 
-from .engine import (ESTOP, IDLE, LEFT, RIGHT, START, STEP, STOP,
-                     StepRecord, WalkEngine, WalkOutputs)
+from .engine import (ESTOP, IDLE, LEFT, RIGHT, START, STEP, StepRecord, STOP,
+                     WalkEngine, WalkOutputs)
 from .params import GaitParams
 
 __all__ = [

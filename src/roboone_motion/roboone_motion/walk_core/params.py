@@ -9,8 +9,8 @@ v_max / a_max は (x, y) の 2 成分になり、文書式 (2) の楕円制限�
 前進と横移動の同時要求 (斜め歩き) に読み替えて適用する。
 """
 
+from dataclasses import dataclass, fields
 import math
-from dataclasses import dataclass, field, fields
 
 
 @dataclass
@@ -29,7 +29,13 @@ class GaitParams:
 
     # --- 指令の整形 -------------------------------------------------------
     v_max: tuple = (0.15, 0.08)     # [m/s]     (x, y) の飽和
-    a_max: tuple = (0.3, 0.2)       # [m/s^2]   (x, y) のレート制限
+    # a_max は文書表 2 では (0.3, 0.2) だが、純フィードフォワードでは 1 歩あたりの
+    # 指令変化 ΔL = a·T が着地点クランプで吸収できる範囲
+    #   ΔLx (1 + 1/(e^{ωT}-1)) < step_clamp_x,  ΔLy (1 + 1/(e^{ωT}+1)) < step_clamp_in
+    # を超えると、吸収残りが e^{ωT} ≈ 22.9 倍に増幅されて発散する。
+    # その条件 (a_x < 0.24, a_y < 0.09) に余裕を持たせた値に下げてある。
+    # 踏み出し補正 (推定 ξ) を入れた段階で戻すか再検討する。
+    a_max: tuple = (0.15, 0.08)     # [m/s^2]   (x, y) のレート制限
 
     # --- 着地点クランプ (式 11) -------------------------------------------
     step_clamp_x: float = 0.04      # [m] 前後の許容ずれ
@@ -44,7 +50,7 @@ class GaitParams:
 
     # --- 閾値 (実装で追加。文書に明示値がないもの) --------------------------
     v_start_eps: float = 0.005       # [m/s] これ以上で歩き始める
-    v_stop_eps: float = 0.003        # [m/s] 歩の境界でこれ未満なら停止へ
+    v_stop_eps: float = 0.010        # [m/s] 歩の境界でこれ未満なら停止シーケンスへ
     settle_eps: float = 0.002        # [m]   |ξ - x_C| がこれ未満で静止とみなす
     stop_outside_eps: float = 0.005  # [m]   ξ が支持多角形からこれ以上外れたらもう 1 歩
 

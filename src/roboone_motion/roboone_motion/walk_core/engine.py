@@ -27,8 +27,8 @@ DCM オフセット b の式について (文書式 (6)(7)(8) の一般化):
     (文書式 (8) は Ly ≠ 0 で数 % の近似になる)。
 """
 
-import math
 from dataclasses import dataclass
+import math
 from typing import List, Optional
 
 from .params import GaitParams
@@ -57,6 +57,7 @@ def _quintic(tau: float) -> float:
 @dataclass
 class WalkOutputs:
     """1 周期ぶんの出力。座標は全て世界座標 [m]。"""
+
     t: float = 0.0
     state: str = IDLE
     step_idx: int = 0
@@ -91,10 +92,11 @@ class WalkOutputs:
 @dataclass
 class StepRecord:
     """確定した 1 歩のパラメータ (デバッグ・可視化用)。"""
+
     step_idx: int
     t_start: float
     support: int
-    stopping: bool
+    mode: str                 # 'walk' / 'prep' (停止準備) / 'stop' (足を揃える)
     v: tuple
     p_support: tuple
     p_nom: tuple = None
@@ -135,7 +137,8 @@ class WalkEngine:
         self.xi_eos = None
         self.clamp_box = None
         self.locked = False
-        self.stopping = False
+        self.stopping = False             # いまの歩が足を揃える最後の歩か
+        self.stop_prep = False            # 次の歩で足を揃える (この歩は準備歩)
         self.steps: List[StepRecord] = []  # 歩の履歴 (可視化用)
 
     # ------------------------------------------------------------ 指令の整形
@@ -212,12 +215,34 @@ class WalkEngine:
         self.xi_eos = xi_eos
         self.p_land = self._clamp_landing(raw, p_nom)
 
-    def _update_stop_landing(self):
-        """停止の最後の歩 (文書 §4.3)。着地点は「終端 ξ が両足の中点になる」位置。
+    def _update_prep_landing(self):
+        """停止準備歩 (歩 N-1 に入る前の歩 N-2)。文書 §4.3 式 (21)。
 
-        名目は支持足の真横 p_N = p_{N-1} + (0, s W)。式 (21) は b の形だが、
-        計画では終端 ξ が閉形式で出るので、中点条件 m = ξ_eos を直接
-        p_N = 2 ξ_eos - p_{N-1} と解いてクランプする方が単純で等価。
+        停止を判断した時点で ξ は歩行の始点オフセットを既に持っていて、
+        その歩の終端 ξ は変えられない (ξ_eos は支持足と ξ_ini だけで決まる)。
+        変えられるのは着地点なので、次の歩の始点オフセットが式 (21) の
+        b_{N-1} = (m_N - p_{N-1}) e^{-ωT} = (0, s_N W/2) e^{-ωT}
+        になるよう p_{N-1} = ξ_eos - b_{N-1} と置く。s_N (最後に揃える足の側) は
+        いまの支持足の側に等しい。
+        """
+        p = self.p
+        s_next = -self.sup
+        sx, sy = self.foot[self.sup]
+        p_nom = [sx, sy + s_next * p.foot_spacing]   # v=0 の名目 (真横)
+        xi_eos = self._predict_xi_eos()
+        b_stop = (0.0, self.sup * (p.foot_spacing / 2.0) / p.e_wt)
+        raw = [xi_eos[k] - b_stop[k] for k in (0, 1)]
+        self.p_nom = p_nom
+        self.b_next = list(b_stop)
+        self.xi_eos = xi_eos
+        self.p_land = self._clamp_landing(raw, p_nom)
+
+    def _update_stop_landing(self):
+        """停止の最後の歩 (文書 §4.3 の歩 N-1)。着地点は「終端 ξ が両足の中点」。
+
+        名目は支持足の真横 p_N = p_{N-1} + (0, s W)。準備歩が式 (21) どおりに
+        踏めていれば ξ_eos はちょうど中点に来るので、中点条件 m = ξ_eos を
+        p_N = 2 ξ_eos - p_{N-1} と解いてクランプする (補正が要らなければ名目に一致)。
         """
         p = self.p
         s_next = -self.sup
@@ -244,15 +269,29 @@ class WalkEngine:
         swing = -self.sup
         self.swing_r0 = list(self.foot[swing])   # いま床を離れる足の現在位置
         self.swing_z = 0.0
-        self.stopping = math.hypot(*self.v) < p.v_stop_eps
-        if self.stopping:
+        v_small = math.hypot(*self.v) < p.v_stop_eps
+        if self.stop_prep:
+            # 準備歩の次 = 足を揃える最後の歩。ここまで来たら指令が復活しても
+            # 完了させる (途中復帰は ξ の整合が崩れて発散するため。歩き直しは
+            # 停止後に START からやり直す)。
+            mode = 'stop'
+            self.stopping = True
+            self.stop_prep = False
             self._update_stop_landing()
-            self.locked = True                   # 停止歩は指令で動かさない
+            self.locked = True
+        elif v_small:
+            mode = 'prep'
+            self.stopping = False
+            self.stop_prep = True
+            self._update_prep_landing()
+            self.locked = True                   # ξ_eos も b も歩の中で不変
         else:
+            mode = 'walk'
+            self.stopping = False
             self._update_landing()
         self.steps.append(StepRecord(
             step_idx=self.step_idx, t_start=self.t, support=self.sup,
-            stopping=self.stopping, v=tuple(self.v),
+            mode=mode, v=tuple(self.v),
             p_support=tuple(self.foot[self.sup])))
 
     def _finish_step_record(self):
@@ -299,7 +338,6 @@ class WalkEngine:
     # ------------------------------------------------------------------- 本体
     def update(self, vx_cmd: float, vy_cmd: float, dt: float,
                estop: bool = False) -> WalkOutputs:
-        p = self.p
         self.t += dt
         self._shape_cmd(vx_cmd, vy_cmd, dt)
 
@@ -350,6 +388,7 @@ class WalkEngine:
         self.xi_ini = list(self.xi)
         self.zmp = list(self.foot[-self.sup])      # ZMP は押し出し足 (式 19)
         self.stopping = False
+        self.stop_prep = False
 
     # ----------------------------------------------------------------- START
     def _tick_start(self, dt: float):
@@ -366,7 +405,17 @@ class WalkEngine:
         self.clamp_box = None
         target_y = self.foot[self.sup][1] + b_here[1]
         if self.sup * (self.xi[1] - target_y) >= 0.0:
-            self._enter_step()          # ξ が支持足の上に乗った (式 20 の条件版)
+            # ξ が支持足の上に乗った (式 20 の条件版)。
+            # 5 ms 刻みのままだと交差の行き過ぎが最大 ~3 mm 出て、それが次の歩で
+            # e^{ωT} ≈ 22.9 倍に増幅される。交差時刻 t* を閉形式で解き、ξ を
+            # 交差点ちょうどに置いてから歩に入る (時間の ≤5 ms のずれは無視する)。
+            zy = self.zmp[1]
+            y0 = self.xi_ini[1]
+            if abs(y0 - zy) > 1e-12 and (target_y - zy) / (y0 - zy) > 0.0:
+                e_star = (target_y - zy) / (y0 - zy)
+                self.xi[0] = self.zmp[0] + (self.xi_ini[0] - self.zmp[0]) * e_star
+                self.xi[1] = target_y
+            self._enter_step()
         elif self.t_local > p.start_pushoff_max:
             # 押し出し切れず。実機では異常だが、計画では静かに立位へ戻す
             self.state = STOP
@@ -376,10 +425,12 @@ class WalkEngine:
     # ------------------------------------------------------------------ STEP
     def _tick_step(self, dt: float):
         p = self.p
-        self.t_local += dt
+        # 歩の境界も閉形式で T ちょうどに取る (START の交差と同じ増幅対策)。
+        # 残り時間 ≤5 ms の切り捨ては位相にだけ効き、ξ の整合には効かない。
+        self.t_local = min(self.t_local + dt, p.t_step)
         self.phase = self.t_local / p.t_step
         self._advance_dcm(dt)
-        if not self.stopping:
+        if not self.locked:
             if self.phase < p.swing_lock_phase:
                 self._update_landing()
             else:
@@ -388,7 +439,7 @@ class WalkEngine:
         sx, sy, sz = self._swing_pos(dt)
         self.foot[swing][0] = sx
         self.foot[swing][1] = sy
-        if self.phase >= 1.0:
+        if self.t_local >= p.t_step:
             self._land(swing)
 
     def _land(self, swing: int):
@@ -469,4 +520,4 @@ class WalkEngine:
             b_next=tuple(self.b_next) if self.b_next else None,
             xi_eos=tuple(self.xi_eos) if self.xi_eos else None,
             clamp_box=self.clamp_box,
-            locked=self.locked, stopping=self.stopping)
+            locked=self.locked, stopping=self.stopping or self.stop_prep)

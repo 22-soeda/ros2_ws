@@ -13,7 +13,7 @@ setup(
         ('share/' + package_name + '/config', ['config/gait.yaml']),
     ],
     package_data={
-        'roboone_motion.viz': ['template.html'],
+        'roboone_motion.viz': ['template.html', 'walkcore.js'],
     },
     include_package_data=True,
     install_requires=['setuptools'],

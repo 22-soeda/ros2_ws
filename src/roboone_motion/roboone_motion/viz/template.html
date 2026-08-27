@@ -1,0 +1,944 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>歩行計画ビジュアライザ</title>
+<style>
+:root {
+  color-scheme: light;
+  --surface-1: #fcfcfb;      /* チャート面 */
+  --page: #f9f9f7;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11,11,11,0.10);
+  --xi: #2a78d6;             /* ξ (DCM) — series 1 */
+  --com: #eb6834;            /* 重心 — series 2 */
+  --zmp: #1baf7a;            /* ZMP — series 3 */
+  --warn: #ec835a;           /* クランプ発動などの注意 */
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --page: #0d0d0d;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255,255,255,0.10);
+    --xi: #3987e5;
+    --com: #d95926;
+    --zmp: #199e70;
+    --warn: #ec835a;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-1: #1a1a19;
+  --page: #0d0d0d;
+  --ink: #ffffff;
+  --ink-2: #c3c2b7;
+  --muted: #898781;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --border: rgba(255,255,255,0.10);
+  --xi: #3987e5;
+  --com: #d95926;
+  --zmp: #199e70;
+  --warn: #ec835a;
+}
+* { box-sizing: border-box; margin: 0; }
+body {
+  background: var(--page);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans CJK JP", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 16px;
+}
+h1 { font-size: 18px; font-weight: 650; }
+.sub { color: var(--ink-2); font-size: 12.5px; margin-top: 2px; }
+header { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; justify-content: space-between; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 10px; }
+.tab {
+  border: 1px solid var(--border); background: var(--surface-1); color: var(--ink-2);
+  border-radius: 8px; padding: 5px 12px; cursor: pointer; font-size: 13px;
+}
+.tab.active { color: var(--ink); border-color: var(--ink-2); font-weight: 600; }
+.tab:hover { color: var(--ink); }
+button.ctrl {
+  border: 1px solid var(--border); background: var(--surface-1); color: var(--ink);
+  border-radius: 8px; padding: 4px 10px; cursor: pointer; font-size: 13px;
+}
+select.ctrl {
+  border: 1px solid var(--border); background: var(--surface-1); color: var(--ink);
+  border-radius: 8px; padding: 4px 6px; font-size: 13px;
+}
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; }
+@media (max-width: 980px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+.card {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 12px; padding: 12px;
+}
+.card h2 { font-size: 13px; font-weight: 650; color: var(--ink-2); margin-bottom: 8px; }
+.playbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+.playbar input[type=range] { flex: 1; min-width: 120px; accent-color: var(--xi); }
+.tlabel { font-variant-numeric: tabular-nums; color: var(--ink-2); min-width: 108px; font-size: 12.5px; }
+.badge {
+  display: inline-block; border-radius: 6px; padding: 1px 8px; font-size: 12px; font-weight: 600;
+  border: 1px solid var(--border); color: var(--ink-2); min-width: 52px; text-align: center;
+}
+canvas { display: block; width: 100%; }
+#topdown { height: 460px; cursor: crosshair; }
+.chartbox { margin-top: 14px; }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink-2); margin: 2px 0 4px; flex-wrap: wrap; }
+.legend .key { display: inline-flex; align-items: center; gap: 5px; }
+.swatch { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+.chart { height: 150px; cursor: crosshair; }
+.tooltip {
+  position: fixed; pointer-events: none; z-index: 10; display: none;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 9px; font-size: 12px; color: var(--ink); box-shadow: 0 2px 10px rgba(0,0,0,.18);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.tooltip .trow { display: flex; gap: 8px; justify-content: space-between; }
+dl.pipe { font-size: 12.5px; }
+dl.pipe > div {
+  display: flex; justify-content: space-between; gap: 8px; padding: 4px 0;
+  border-bottom: 1px solid var(--grid);
+}
+dl.pipe > div:last-child { border-bottom: none; }
+dl.pipe dt { color: var(--ink-2); }
+dl.pipe dt .eq { color: var(--muted); font-size: 11px; margin-left: 4px; }
+dl.pipe dd { font-variant-numeric: tabular-nums; text-align: right; }
+dl.pipe dd.na { color: var(--muted); }
+.clampflag { color: var(--warn); font-weight: 600; }
+#joy { width: 120px; height: 120px; margin: 4px auto 0; display: block; }
+table.steps { border-collapse: collapse; width: 100%; font-size: 12px; margin-top: 4px; }
+table.steps th, table.steps td {
+  padding: 3px 8px; text-align: right; border-bottom: 1px solid var(--grid);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+table.steps th { color: var(--ink-2); font-weight: 600; position: sticky; top: 0; background: var(--surface-1); }
+table.steps td:nth-child(2), table.steps td:nth-child(3) { text-align: center; }
+table.steps tr.cur td { background: color-mix(in srgb, var(--xi) 10%, transparent); }
+table.steps tr { cursor: pointer; }
+.stepwrap { max-height: 260px; overflow: auto; }
+details.params { margin-top: 14px; }
+details.params summary { cursor: pointer; color: var(--ink-2); font-size: 13px; }
+details.params .grid {
+  display: grid; grid-template-columns: auto auto; gap: 2px 14px; font-size: 12px;
+  margin-top: 8px; font-variant-numeric: tabular-nums;
+}
+details.params .grid span:nth-child(odd) { color: var(--ink-2); }
+.note { color: var(--muted); font-size: 11.5px; margin-top: 6px; }
+#joy.live { cursor: grab; touch-action: none; }
+#joy.live:active { cursor: grabbing; }
+.joyhint { display: none; text-align: center; color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+.live-on .joyhint { display: block; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>歩行計画ビジュアライザ</h1>
+    <div class="sub">walk_core の歩行パラメータ生成と重心軌道 — 平行移動のみ (回転なし・IMU 外挿なしの純フィードフォワード)</div>
+  </div>
+  <button class="ctrl" id="themeBtn" title="テーマ切替">テーマ: 自動</button>
+</header>
+
+<div class="tabs" id="tabs"></div>
+<div class="sub" id="scdesc" style="margin:-4px 0 10px"></div>
+
+<div class="layout">
+  <div class="card">
+    <div class="playbar">
+      <button class="ctrl" id="playBtn">⏸ 停止</button>
+      <select class="ctrl" id="speedSel">
+        <option value="0.25">0.25×</option>
+        <option value="0.5">0.5×</option>
+        <option value="1" selected>1×</option>
+        <option value="2">2×</option>
+      </select>
+      <input type="range" id="scrub" min="0" max="100" value="0" step="1">
+      <button class="ctrl" id="resetBtn" style="display:none">↺ リセット</button>
+      <span class="tlabel" id="timeLabel">t = 0.00 s</span>
+      <span class="badge" id="stateBadge">IDLE</span>
+    </div>
+    <canvas id="topdown"></canvas>
+    <div class="note">上から見た世界座標 (x 前・y 左)。●=現在値、実線=軌跡、×=補正後の着地点、○=名目着地点、破線枠=クランプ域、◇=終端 ξ 予測。支持足は薄い緑で塗る。</div>
+
+    <div class="chartbox">
+      <div class="legend" id="legY"></div>
+      <canvas class="chart" id="chartY"></canvas>
+    </div>
+    <div class="chartbox">
+      <div class="legend" id="legX"></div>
+      <canvas class="chart" id="chartX"></canvas>
+    </div>
+    <div class="chartbox">
+      <div class="legend" id="legZ"></div>
+      <canvas class="chart" id="chartZ"></canvas>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>指令 → 1 歩のパラメータ (毎周期)</h2>
+      <canvas id="joy" width="140" height="140" style="width:140px;height:140px;margin:4px auto 0;display:block"></canvas>
+      <div class="joyhint">パッドをドラッグ / WASD・矢印キーで操縦。離すと停止</div>
+      <dl class="pipe" id="pipe"></dl>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h2>歩の履歴 (歩の境界で確定)</h2>
+      <div class="stepwrap">
+        <table class="steps">
+          <thead><tr>
+            <th>#</th><th>モード</th><th>支持</th><th>v [m/s]</th>
+            <th>b [mm]</th><th>着地点 [m]</th><th></th>
+          </tr></thead>
+          <tbody id="stepBody"></tbody>
+        </table>
+      </div>
+      <details class="params">
+        <summary>歩行パラメータ (gait.yaml)</summary>
+        <div class="grid" id="paramGrid"></div>
+      </details>
+    </div>
+  </div>
+</div>
+
+<div class="tooltip" id="tip"></div>
+
+<script>
+/*__WALK_CORE_JS__*/
+</script>
+<script>
+'use strict';
+const DATA = /*__WALK_DATA__*/null;
+
+const STATES = ['IDLE', 'START', 'STEP', 'STOP', 'ESTOP'];
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const FOOT_L = 0.048, FOOT_W = 0.030;   // 足裏の描画サイズ (見た目用)
+
+// ---------------------------------------------------------------- テーマ
+const themeBtn = document.getElementById('themeBtn');
+const themes = [['', '自動'], ['light', 'ライト'], ['dark', 'ダーク']];
+let themeIdx = 0;
+themeBtn.onclick = () => {
+  themeIdx = (themeIdx + 1) % 3;
+  const [v, label] = themes[themeIdx];
+  if (v) document.documentElement.setAttribute('data-theme', v);
+  else document.documentElement.removeAttribute('data-theme');
+  themeBtn.textContent = 'テーマ: ' + label;
+  renderAll();
+};
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => renderAll());
+
+// ---------------------------------------------------------------- 状態
+let sc = DATA.scenarios[0];
+let frame = 0;
+let playing = true;
+let speed = 1;
+let lastTs = null;
+let live = null;          // ライブ操縦モード (null = 記録シナリオ再生)
+
+const nFrames = s => s.ticks.t.length;
+
+// ------------------------------------------------------------ ライブ操縦
+const LIVE_DT = 0.005;        // エンジン周期 (200 Hz)
+const LIVE_REC = 2;           // 2 tick に 1 回記録 (100 Hz)
+const LIVE_KEEP = 1200;       // 記録バッファ 12 s ぶん
+
+function makeLive() {
+  const cols = {};
+  for (const k of ['t','st','ph','sup','stop','lock','cx','cy','vx','vy',
+                   'xix','xiy','comx','comy','zx','zy',
+                   'lfx','lfy','lfz','rfx','rfy','rfz',
+                   'pnx','pny','plx','ply','bx','by','xex','xey']) cols[k] = [];
+  const eng = new WalkEngineJS();
+  return {
+    eng,
+    cmd: [0, 0],              // ジョイスティックの生指令
+    keys: {},                 // 押下中のキー
+    acc: 0,                   // 未消化のシミュレーション時間
+    tickCount: 0,
+    paused: false,
+    lastBox: undefined,
+    sc: { id: '__live', label: '操縦', dt: LIVE_DT * LIVE_REC,
+          desc: 'ライブ操縦 — 右パネルのパッドをドラッグ (または WASD / 矢印キー)。' +
+                '指令はエンジン内で整形され、歩行がリアルタイムに生成される',
+          ticks: cols, boxes: [], steps: eng.steps },
+  };
+}
+
+function liveKeyCmd() {
+  // キー操縦: 押している間だけ最大速度の 70 %
+  const k = live.keys;
+  const vm = DATA.params.v_max;
+  let vx = 0, vy = 0;
+  if (k.ArrowUp || k.w) vx += vm[0] * 0.7;
+  if (k.ArrowDown || k.s) vx -= vm[0] * 0.7;
+  if (k.ArrowLeft || k.a) vy += vm[1] * 0.7;
+  if (k.ArrowRight || k.d) vy -= vm[1] * 0.7;
+  return [vx, vy];
+}
+
+function liveCmdNow() {
+  const kc = liveKeyCmd();
+  if (kc[0] || kc[1]) return kc;
+  return live.cmd;
+}
+
+function pushLiveFrame(o, cmd) {
+  const k = live.sc.ticks;
+  const stCode = { IDLE: 0, START: 1, STEP: 2, STOP: 3, ESTOP: 4 }[o.state];
+  k.t.push(o.t); k.st.push(stCode); k.ph.push(o.phase); k.sup.push(o.support);
+  k.stop.push(o.stopping ? 1 : 0); k.lock.push(o.locked ? 1 : 0);
+  k.cx.push(cmd[0]); k.cy.push(cmd[1]); k.vx.push(o.v[0]); k.vy.push(o.v[1]);
+  k.xix.push(o.xi[0]); k.xiy.push(o.xi[1]);
+  k.comx.push(o.com[0]); k.comy.push(o.com[1]);
+  k.zx.push(o.zmp[0]); k.zy.push(o.zmp[1]);
+  k.lfx.push(o.leftFoot[0]); k.lfy.push(o.leftFoot[1]); k.lfz.push(o.leftFoot[2]);
+  k.rfx.push(o.rightFoot[0]); k.rfy.push(o.rightFoot[1]); k.rfz.push(o.rightFoot[2]);
+  k.pnx.push(o.pNom ? o.pNom[0] : null); k.pny.push(o.pNom ? o.pNom[1] : null);
+  k.plx.push(o.pLand ? o.pLand[0] : null); k.ply.push(o.pLand ? o.pLand[1] : null);
+  k.bx.push(o.bNext ? o.bNext[0] : null); k.by.push(o.bNext ? o.bNext[1] : null);
+  k.xex.push(o.xiEos ? o.xiEos[0] : null); k.xey.push(o.xiEos ? o.xiEos[1] : null);
+  // クランプ域は変化時だけ記録 (記録シナリオと同じ形式)
+  const boxKey = o.clampBox ? o.clampBox.join(',') : 'null';
+  if (boxKey !== live.lastBox) {
+    live.sc.boxes.push([k.t.length - 1].concat(o.clampBox ? o.clampBox : [null]));
+    live.lastBox = boxKey;
+  }
+}
+
+function trimLive() {
+  const k = live.sc.ticks;
+  const extra = k.t.length - LIVE_KEEP;
+  if (extra <= 0) return;
+  for (const key of Object.keys(k)) k[key].splice(0, extra);
+  // クランプ域の frame 参照をずらし、窓の外に出たものは直近 1 個だけ残す
+  const boxes = live.sc.boxes;
+  for (const b of boxes) b[0] -= extra;
+  while (boxes.length > 1 && boxes[1][0] <= 0) boxes.shift();
+  if (boxes.length && boxes[0][0] < 0) boxes[0][0] = 0;
+  // 終わった歩は窓の中だけ残す (進行中 t1=null は常に残す)
+  const t0 = k.t[0];
+  const st = live.sc.steps;
+  while (st.length && st[0].t1 != null && st[0].t1 < t0) st.shift();
+}
+
+function advanceLive(wallDt) {
+  live.acc += Math.min(wallDt, 0.1);      // タブ非表示明けのまとめ実行を抑制
+  const cmd = liveCmdNow();
+  let stepsBefore = live.sc.steps.length;
+  while (live.acc >= LIVE_DT) {
+    live.acc -= LIVE_DT;
+    const o = live.eng.update(cmd[0], cmd[1], LIVE_DT, false);
+    if (++live.tickCount % LIVE_REC === 0) pushLiveFrame(o, cmd);
+  }
+  trimLive();
+  if (live.sc.steps.length !== stepsBefore) buildSteps();
+  // 追従カメラ: 機体中心へゆっくり寄せる
+  const k = live.sc.ticks;
+  const n = k.t.length;
+  if (n) {
+    const cx = (k.lfx[n-1] + k.rfx[n-1]) / 2, cy = (k.lfy[n-1] + k.rfy[n-1]) / 2;
+    const r = td.getBoundingClientRect();
+    view.scale = Math.min(r.width, r.height) / 0.75;   // 約 0.75 m 四方を表示
+    view.cx += 0.08 * (cx - view.cx);
+    view.cy += 0.08 * (cy - view.cy);
+  }
+}
+
+function enterLive() {
+  live = makeLive();
+  sc = live.sc;
+  frame = 0;
+  playing = true; updatePlayBtn();
+  scrub.style.display = 'none';
+  document.getElementById('speedSel').style.display = 'none';
+  document.getElementById('resetBtn').style.display = '';
+  document.body.classList.add('live-on');
+  joyCv.classList.add('live');
+  view.cx = 0; view.cy = 0;
+  // 最初の 1 frame を入れて描画を成立させる
+  pushLiveFrame(live.eng.update(0, 0, LIVE_DT, false), [0, 0]);
+  buildSteps(); renderAll();
+}
+
+function exitLive() {
+  live = null;
+  scrub.style.display = '';
+  document.getElementById('speedSel').style.display = '';
+  document.getElementById('resetBtn').style.display = 'none';
+  document.body.classList.remove('live-on');
+  joyCv.classList.remove('live');
+}
+
+// ---------------------------------------------------------------- タブ
+const tabsEl = document.getElementById('tabs');
+DATA.scenarios.forEach((s, i) => {
+  const b = document.createElement('button');
+  b.className = 'tab' + (i === 0 ? ' active' : '');
+  b.textContent = s.label;
+  b.onclick = () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    b.classList.add('active');
+    exitLive();
+    sc = s; frame = 0; playing = true; updatePlayBtn();
+    fitView(); buildSteps(); renderAll();
+  };
+  tabsEl.appendChild(b);
+});
+{
+  const b = document.createElement('button');
+  b.className = 'tab';
+  b.textContent = '🕹 操縦';
+  b.onclick = () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    b.classList.add('active');
+    enterLive();
+  };
+  tabsEl.appendChild(b);
+}
+
+// ------------------------------------------------------------ 再生コントロール
+const playBtn = document.getElementById('playBtn');
+const scrub = document.getElementById('scrub');
+const timeLabel = document.getElementById('timeLabel');
+const stateBadge = document.getElementById('stateBadge');
+const joyCv = document.getElementById('joy');
+function updatePlayBtn() { playBtn.textContent = playing ? '⏸ 停止' : '▶ 再生'; }
+playBtn.onclick = () => { playing = !playing; updatePlayBtn(); };
+document.getElementById('speedSel').onchange = e => { speed = +e.target.value; };
+document.getElementById('resetBtn').onclick = () => { if (live) enterLive(); };
+scrub.oninput = () => {
+  playing = false; updatePlayBtn();
+  frame = Math.round(scrub.value / 100 * (nFrames(sc) - 1));
+  renderAll();
+};
+
+function loop(ts) {
+  const wall = lastTs != null ? (ts - lastTs) / 1000 : 0;
+  if (live) {
+    if (playing) advanceLive(wall);
+    frame = nFrames(sc) - 1;
+    renderAll();
+  } else if (playing) {
+    frame += wall * speed / sc.dt;
+    if (frame >= nFrames(sc)) frame = 0;   // ループ再生
+    renderAll();
+  }
+  lastTs = ts;
+  requestAnimationFrame(loop);
+}
+
+// ---------------------------------------------- ライブ操縦の入力 (パッド / キー)
+function joyFromEvent(ev) {
+  const r = joyCv.getBoundingClientRect();
+  const cx = r.width / 2, cy = r.height / 2;
+  const rad = (Math.min(cx, cy) - 6) * 0.9;
+  let dx = (ev.clientX - r.left - cx) / rad;
+  let dy = (ev.clientY - r.top - cy) / rad;
+  const m = Math.hypot(dx, dy);
+  if (m > 1) { dx /= m; dy /= m; }
+  const vm = DATA.params.v_max;
+  return [-dy * vm[0], -dx * vm[1]];   // 上 = +x 前, 左 = +y
+}
+joyCv.addEventListener('pointerdown', ev => {
+  if (!live) return;
+  joyCv.setPointerCapture(ev.pointerId);
+  live.joyActive = true;
+  live.cmd = joyFromEvent(ev);
+  ev.preventDefault();
+});
+joyCv.addEventListener('pointermove', ev => {
+  if (live && live.joyActive) live.cmd = joyFromEvent(ev);
+});
+for (const evName of ['pointerup', 'pointercancel']) {
+  joyCv.addEventListener(evName, () => {
+    if (live) { live.joyActive = false; live.cmd = [0, 0]; }   // 離すと停止
+  });
+}
+addEventListener('keydown', ev => {
+  if (!live) return;
+  const k = ev.key.length === 1 ? ev.key.toLowerCase() : ev.key;
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'w', 'a', 's', 'd'].includes(k)) {
+    live.keys[k] = true;
+    ev.preventDefault();
+  }
+});
+addEventListener('keyup', ev => {
+  if (!live) return;
+  const k = ev.key.length === 1 ? ev.key.toLowerCase() : ev.key;
+  delete live.keys[k];
+});
+
+// ---------------------------------------------------------------- 座標変換
+const td = document.getElementById('topdown');
+let view = { cx: 0, cy: 0, scale: 1000 };   // 世界[m] → px
+
+function fitView() {
+  if (live) return;             // ライブは追従カメラ (advanceLive)
+  const k = sc.ticks;
+  let xs = [], ys = [];
+  for (let i = 0; i < nFrames(sc); i++) {
+    xs.push(k.lfx[i], k.rfx[i]); ys.push(k.lfy[i], k.rfy[i]);
+    if (k.plx[i] != null) { xs.push(k.plx[i]); ys.push(k.ply[i]); }
+  }
+  const x0 = Math.min(...xs) - 0.09, x1 = Math.max(...xs) + 0.09;
+  const y0 = Math.min(...ys) - 0.09, y1 = Math.max(...ys) + 0.09;
+  const r = td.getBoundingClientRect();
+  view.scale = Math.min(r.width / (x1 - x0), r.height / (y1 - y0));
+  view.cx = (x0 + x1) / 2; view.cy = (y0 + y1) / 2;
+}
+// 画面: 世界 +x → 右, +y → 上
+function W2S(x, y, r) {
+  return [r.width / 2 + (x - view.cx) * view.scale,
+          r.height / 2 - (y - view.cy) * view.scale];
+}
+
+function setupCanvas(cv) {
+  const r = cv.getBoundingClientRect();
+  const dpr = devicePixelRatio || 1;
+  if (cv.width !== Math.round(r.width * dpr) || cv.height !== Math.round(r.height * dpr)) {
+    cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
+  }
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return [ctx, r];
+}
+
+// ---------------------------------------------------------------- 上面図
+function footPath(ctx, x, y, r) {
+  const [sx, sy] = W2S(x, y, r);
+  const w = FOOT_L * view.scale, h = FOOT_W * view.scale;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(sx - w / 2, sy - h / 2, w, h, 3);
+  else ctx.rect(sx - w / 2, sy - h / 2, w, h);
+}
+
+function drawTopdown() {
+  const [ctx, r] = setupCanvas(td);
+  const k = sc.ticks, f = Math.floor(frame);
+  ctx.clearRect(0, 0, r.width, r.height);
+
+  // グリッド (0.1 m)
+  ctx.strokeStyle = css('--grid'); ctx.lineWidth = 1;
+  ctx.fillStyle = css('--muted'); ctx.font = '10px system-ui';
+  const gx0 = Math.floor((view.cx - r.width / 2 / view.scale) / 0.1) * 0.1;
+  const gx1 = view.cx + r.width / 2 / view.scale;
+  for (let gx = gx0; gx <= gx1; gx += 0.1) {
+    const [sx] = W2S(gx, 0, r);
+    ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, r.height); ctx.stroke();
+    ctx.fillText(gx.toFixed(1), sx + 3, r.height - 5);
+  }
+  const gy0 = Math.floor((view.cy - r.height / 2 / view.scale) / 0.1) * 0.1;
+  const gy1 = view.cy + r.height / 2 / view.scale;
+  for (let gy = gy0; gy <= gy1; gy += 0.1) {
+    const [, sy] = W2S(0, gy, r);
+    ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(r.width, sy); ctx.stroke();
+    ctx.fillText(gy.toFixed(1), 4, sy - 3);
+  }
+
+  // 過去の着地跡 (ゴースト)
+  ctx.strokeStyle = css('--axis'); ctx.lineWidth = 1;
+  for (const s of sc.steps) {
+    if (s.t1 == null || s.t1 > k.t[f] || !s.pland) continue;
+    footPath(ctx, s.pland[0], s.pland[1], r);
+    ctx.stroke();
+  }
+
+  // クランプ域と着地点マーカー
+  if (k.plx[f] != null) {
+    const box = boxAt(f);
+    if (box && box[1] != null) {
+      const [bx0, by0] = W2S(box[1], box[4], r);
+      const [bx1, by1] = W2S(box[2], box[3], r);
+      ctx.save();
+      ctx.strokeStyle = css('--muted'); ctx.setLineDash([4, 3]); ctx.lineWidth = 1;
+      ctx.strokeRect(bx0, by0, bx1 - bx0, by1 - by0);
+      ctx.restore();
+    }
+    if (k.pnx[f] != null) {   // 名目 ○
+      const [nx, ny] = W2S(k.pnx[f], k.pny[f], r);
+      ctx.strokeStyle = css('--muted'); ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(nx, ny, 5, 0, 7); ctx.stroke();
+    }
+    const [lx, ly] = W2S(k.plx[f], k.ply[f], r);   // 補正後 ×
+    ctx.strokeStyle = css('--ink'); ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(lx - 5, ly - 5); ctx.lineTo(lx + 5, ly + 5);
+    ctx.moveTo(lx - 5, ly + 5); ctx.lineTo(lx + 5, ly - 5);
+    ctx.stroke();
+  }
+  if (k.xex[f] != null) {     // 終端 ξ 予測 ◇
+    const [ex, ey] = W2S(k.xex[f], k.xey[f], r);
+    ctx.strokeStyle = css('--xi'); ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(ex, ey - 6); ctx.lineTo(ex + 6, ey); ctx.lineTo(ex, ey + 6);
+    ctx.lineTo(ex - 6, ey); ctx.closePath(); ctx.stroke();
+  }
+
+  // 軌跡 (現在まで)
+  const trail = (xk, yk, color, dash) => {
+    ctx.save();
+    ctx.strokeStyle = color; ctx.lineWidth = 2;
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    if (dash) ctx.setLineDash(dash);
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i <= f; i++) {
+      const [sx, sy] = W2S(k[xk][i], k[yk][i], r);
+      if (!started) { ctx.moveTo(sx, sy); started = true; } else ctx.lineTo(sx, sy);
+    }
+    ctx.stroke(); ctx.restore();
+  };
+  trail('zx', 'zy', css('--zmp'), [3, 3]);
+  trail('comx', 'comy', css('--com'));
+  trail('xix', 'xiy', css('--xi'));
+
+  // 現在の足
+  const swingSide = k.sup[f] === 1 ? -1 : (k.sup[f] === -1 ? 1 : 0);
+  const feet = [[k.lfx[f], k.lfy[f], k.lfz[f], 1, 'L'], [k.rfx[f], k.rfy[f], k.rfz[f], -1, 'R']];
+  for (const [fx, fy, fz, side, name] of feet) {
+    const inAir = fz > 1e-4;
+    footPath(ctx, fx, fy, r);
+    if (!inAir) {
+      ctx.fillStyle = (k.sup[f] === side)
+        ? 'color-mix(in srgb, ' + css('--zmp') + ' 15%, ' + css('--surface-1') + ')'
+        : css('--surface-1');
+      ctx.fill();
+      ctx.strokeStyle = css('--ink-2'); ctx.lineWidth = 2; ctx.stroke();
+    } else {
+      ctx.save();
+      ctx.strokeStyle = css('--ink-2'); ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]);
+      ctx.stroke(); ctx.restore();
+      // 高さをリングの大きさで示す
+      const [sx, sy] = W2S(fx, fy, r);
+      const rad = 4 + fz / DATA.params.swing_height * 8;
+      ctx.strokeStyle = css('--ink-2'); ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(sx, sy, rad, 0, 7); ctx.stroke();
+    }
+    const [tx, ty] = W2S(fx, fy, r);
+    ctx.fillStyle = css('--ink-2'); ctx.font = '600 10px system-ui';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(name, tx, ty);
+    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  }
+
+  // 現在値マーカー (surface ring 付き)
+  const dot = (x, y, color) => {
+    const [sx, sy] = W2S(x, y, r);
+    ctx.beginPath(); ctx.arc(sx, sy, 6, 0, 7);
+    ctx.fillStyle = color; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = css('--surface-1'); ctx.stroke();
+  };
+  dot(k.zx[f], k.zy[f], css('--zmp'));
+  dot(k.comx[f], k.comy[f], css('--com'));
+  dot(k.xix[f], k.xiy[f], css('--xi'));
+}
+
+function boxAt(f) {
+  let cur = null;
+  for (const b of sc.boxes) { if (b[0] <= f) cur = b; else break; }
+  return cur;
+}
+
+// ---------------------------------------------------------------- チャート
+function niceStep(raw) {
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  for (const m of [1, 2, 5, 10]) if (raw <= m * mag) return m * mag;
+  return 10 * mag;
+}
+
+function makeChart(id, legId, seriesDef, unit) {
+  const cv = document.getElementById(id);
+  const leg = document.getElementById(legId);
+  const chart = { cv, seriesDef, unit, hover: null };
+
+  leg.innerHTML = seriesDef.map(s =>
+    `<span class="key"><span class="swatch" style="background:var(${s.cssVar})"></span>${s.label}</span>`
+  ).join('');
+
+  const pos = ev => {
+    const r = cv.getBoundingClientRect();
+    return [(ev.clientX - r.left), (ev.clientY - r.top), r];
+  };
+  const toFrame = px => {
+    const r = cv.getBoundingClientRect();
+    const u = (px - M.l) / (r.width - M.l - M.r);
+    return Math.max(0, Math.min(nFrames(sc) - 1, Math.round(u * (nFrames(sc) - 1))));
+  };
+  let dragging = false;
+  cv.addEventListener('mousedown', ev => {
+    dragging = true; playing = false; updatePlayBtn();
+    frame = toFrame(pos(ev)[0]); renderAll();
+  });
+  addEventListener('mouseup', () => dragging = false);
+  cv.addEventListener('mousemove', ev => {
+    const [px] = pos(ev);
+    chart.hover = { px, ev };
+    if (dragging) { frame = toFrame(px); }
+    renderAll();
+  });
+  cv.addEventListener('mouseleave', () => { chart.hover = null; tip.style.display = 'none'; renderAll(); });
+  return chart;
+}
+
+const M = { l: 44, r: 10, t: 16, b: 18 };
+const tip = document.getElementById('tip');
+
+function drawChart(chart) {
+  const [ctx, r] = setupCanvas(chart.cv);
+  const k = sc.ticks, N = nFrames(sc), f = Math.floor(frame);
+  ctx.clearRect(0, 0, r.width, r.height);
+  if (N < 2) return;
+  const t0 = k.t[0], t1 = k.t[N - 1];
+  const X = t => M.l + (t - t0) / (t1 - t0) * (r.width - M.l - M.r);
+
+  // y レンジ
+  let lo = Infinity, hi = -Infinity;
+  for (const s of chart.seriesDef) {
+    for (const v of k[s.key]) if (v != null) { if (v < lo) lo = v; if (v > hi) hi = v; }
+  }
+  if (!(hi > lo)) { lo = -1; hi = 1; }
+  const pad = (hi - lo) * 0.12 + 1e-6;
+  lo -= pad; hi += pad;
+  const Y = v => M.t + (hi - v) / (hi - lo) * (r.height - M.t - M.b);
+
+  // 状態変化の縦ライン + ラベル
+  ctx.font = '10px system-ui';
+  for (let i = 1; i < N; i++) {
+    if (k.st[i] !== k.st[i - 1]) {
+      const x = X(k.t[i]);
+      ctx.strokeStyle = css('--axis'); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x, M.t); ctx.lineTo(x, r.height - M.b); ctx.stroke();
+      ctx.fillStyle = css('--muted');
+      ctx.fillText(STATES[k.st[i]], x + 3, M.t - 4);
+    }
+  }
+
+  // 横グリッドと目盛
+  const step = niceStep((hi - lo) / 4);
+  ctx.fillStyle = css('--muted'); ctx.textAlign = 'right';
+  for (let gy = Math.ceil(lo / step) * step; gy <= hi; gy += step) {
+    const y = Y(gy);
+    ctx.strokeStyle = css('--grid'); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(M.l, y); ctx.lineTo(r.width - M.r, y); ctx.stroke();
+    ctx.fillText((Math.abs(gy) < 1e-9 ? 0 : gy.toFixed(3)) + '', M.l - 5, y + 3);
+  }
+  ctx.textAlign = 'left';
+  ctx.fillText(chart.unit, M.l - 38, 10);
+
+  // 時間軸
+  ctx.strokeStyle = css('--axis');
+  ctx.beginPath(); ctx.moveTo(M.l, r.height - M.b); ctx.lineTo(r.width - M.r, r.height - M.b); ctx.stroke();
+  ctx.fillStyle = css('--muted');
+  for (let tt = Math.ceil(t0); tt <= t1; tt += 1) {
+    ctx.fillText(tt + 's', X(tt) + 2, r.height - 5);
+  }
+
+  // 系列
+  for (const s of chart.seriesDef) {
+    ctx.strokeStyle = css(s.cssVar); ctx.lineWidth = 2;
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    if (s.dash) ctx.setLineDash(s.dash); else ctx.setLineDash([]);
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i < N; i++) {
+      const v = k[s.key][i];
+      if (v == null) { started = false; continue; }
+      const x = X(k.t[i]), y = Y(v);
+      if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // 現在時刻カーソル
+  const cx = X(k.t[f]);
+  ctx.strokeStyle = css('--ink'); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(cx, M.t); ctx.lineTo(cx, r.height - M.b); ctx.stroke();
+
+  // ホバー: クロスヘア + ツールチップ
+  if (chart.hover) {
+    const { px, ev } = chart.hover;
+    const hf = Math.max(0, Math.min(N - 1,
+      Math.round((px - M.l) / (r.width - M.l - M.r) * (N - 1))));
+    const hx = X(k.t[hf]);
+    ctx.strokeStyle = css('--muted'); ctx.setLineDash([2, 3]);
+    ctx.beginPath(); ctx.moveTo(hx, M.t); ctx.lineTo(hx, r.height - M.b); ctx.stroke();
+    ctx.setLineDash([]);
+    let html = `<div class="trow"><span>t</span><span>${k.t[hf].toFixed(2)} s</span></div>`;
+    for (const s of chart.seriesDef) {
+      const v = k[s.key][hf];
+      html += `<div class="trow"><span><span class="swatch" style="background:var(${s.cssVar});width:10px"></span> ${s.label}</span><span>${v == null ? '—' : v.toFixed(4)}</span></div>`;
+    }
+    tip.innerHTML = html;
+    tip.style.display = 'block';
+    const tw = tip.offsetWidth;
+    tip.style.left = Math.min(ev.clientX + 14, innerWidth - tw - 8) + 'px';
+    tip.style.top = (ev.clientY + 14) + 'px';
+  }
+}
+
+const chartY = makeChart('chartY', 'legY', [
+  { key: 'xiy', label: 'ξ_y (DCM)', cssVar: '--xi' },
+  { key: 'comy', label: '重心 y', cssVar: '--com' },
+  { key: 'zy', label: 'ZMP参照 y', cssVar: '--zmp', dash: [3, 3] },
+], 'y [m]');
+const chartX = makeChart('chartX', 'legX', [
+  { key: 'xix', label: 'ξ_x (DCM)', cssVar: '--xi' },
+  { key: 'comx', label: '重心 x', cssVar: '--com' },
+  { key: 'zx', label: 'ZMP参照 x', cssVar: '--zmp', dash: [3, 3] },
+], 'x [m]');
+const chartZ = makeChart('chartZ', 'legZ', [
+  { key: 'lfz', label: '左足 z', cssVar: '--xi' },
+  { key: 'rfz', label: '右足 z', cssVar: '--com' },
+], 'z [m]');
+
+// ---------------------------------------------------- パイプライン (右パネル)
+const pipeEl = document.getElementById('pipe');
+const fmt = (x, y, nd = 3) =>
+  (x == null) ? '—' : `(${(+x).toFixed(nd)}, ${(+y).toFixed(nd)})`;
+
+function drawPipe() {
+  const k = sc.ticks, f = Math.floor(frame);
+  const T = DATA.params.t_step;
+  const clampedNow = isClampedNow(f);
+  const rows = [
+    ['生指令 v_cmd', '', fmt(k.cx[f], k.cy[f], 3) + ' m/s'],
+    ['整形後 v', '式(1)(2)', fmt(k.vx[f], k.vy[f], 3) + ' m/s'],
+    ['歩幅 L = vT', '式(4)', fmt(k.vx[f] * T, k.vy[f] * T, 3) + ' m'],
+    ['名目着地 p_nom', '式(5)', fmt(k.pnx[f], k.pny[f])],
+    ['DCMオフセット b', '式(8)', k.bx[f] == null ? '—' :
+      `(${(k.bx[f] * 1000).toFixed(1)}, ${(k.by[f] * 1000).toFixed(1)}) mm`],
+    ['終端予測 ξ_eos', '式(9)', fmt(k.xex[f], k.xey[f])],
+    ['着地点 p_land', '式(10)(11)', fmt(k.plx[f], k.ply[f]) +
+      (clampedNow ? ' <span class="clampflag">⚠ クランプ</span>' : '')],
+    ['状態 / 位相', '', `${STATES[k.st[f]]} / φ=${(k.ph[f] ?? 0).toFixed(2)}` +
+      (k.lock[f] ? ' 🔒' : '')],
+    ['支持足', '', k.sup[f] === 1 ? '左' : (k.sup[f] === -1 ? '右' : '両足')],
+  ];
+  pipeEl.innerHTML = rows.map(([dt, eq, dd]) =>
+    `<div><dt>${dt}${eq ? `<span class="eq">${eq}</span>` : ''}</dt>` +
+    `<dd class="${dd === '—' ? 'na' : ''}">${dd}</dd></div>`).join('');
+  drawJoy(f);
+}
+
+function isClampedNow(f) {
+  const k = sc.ticks;
+  if (k.plx[f] == null) return false;
+  const box = boxAt(f);
+  if (!box || box[1] == null) return false;
+  const eps = 1e-6;
+  return Math.abs(k.plx[f] - box[1]) < eps || Math.abs(k.plx[f] - box[2]) < eps ||
+         Math.abs(k.ply[f] - box[3]) < eps || Math.abs(k.ply[f] - box[4]) < eps;
+}
+
+// ジョイスティック表示 (上 = +x 前, 左 = +y)
+function drawJoy(f) {
+  const cv = document.getElementById('joy');
+  const [ctx, r] = setupCanvas(cv);
+  const k = sc.ticks;
+  const cx = r.width / 2, cy = r.height / 2, rad = Math.min(cx, cy) - 6;
+  ctx.clearRect(0, 0, r.width, r.height);
+  ctx.strokeStyle = css('--grid'); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(cx, cy, rad, 0, 7); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx - rad, cy); ctx.lineTo(cx + rad, cy);
+  ctx.moveTo(cx, cy - rad); ctx.lineTo(cx, cy + rad); ctx.stroke();
+  ctx.fillStyle = css('--muted'); ctx.font = '9px system-ui';
+  ctx.fillText('前', cx - 5, cy - rad + 10);
+  ctx.fillText('左', cx - rad + 3, cy + 3);
+  const vm = DATA.params.v_max;
+  const px = (vy) => cx - vy / vm[1] * rad * 0.9;
+  const py = (vx) => cy - vx / vm[0] * rad * 0.9;
+  // 生指令 (薄) と整形後 (濃)
+  ctx.fillStyle = css('--muted');
+  ctx.beginPath(); ctx.arc(px(k.cy[f]), py(k.cx[f]), 4, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(px(k.vy[f]), py(k.vx[f]), 6, 0, 7);
+  ctx.fillStyle = css('--ink'); ctx.fill();
+  ctx.lineWidth = 2; ctx.strokeStyle = css('--surface-1'); ctx.stroke();
+}
+
+// ------------------------------------------------------------------ 歩の表
+const stepBody = document.getElementById('stepBody');
+function buildSteps() {
+  const modeLabel = { walk: '通常', prep: '停止準備', stop: '停止' };
+  stepBody.innerHTML = sc.steps.map(s =>
+    `<tr data-t0="${s.t0}"><td>${s.i}</td>` +
+    `<td>${modeLabel[s.mode] || s.mode}</td>` +
+    `<td>${s.sup === 1 ? '左' : '右'}</td>` +
+    `<td>${fmt(s.v[0], s.v[1], 2)}</td>` +
+    `<td>${s.b ? `(${(s.b[0] * 1000).toFixed(1)}, ${(s.b[1] * 1000).toFixed(1)})` : '—'}</td>` +
+    `<td>${s.pland ? fmt(s.pland[0], s.pland[1]) : '—'}</td>` +
+    `<td>${s.clamped ? '<span class="clampflag">⚠</span>' : ''}</td></tr>`
+  ).join('');
+  [...stepBody.rows].forEach((tr, i) => {
+    tr.onclick = () => {
+      playing = false; updatePlayBtn();
+      frame = Math.max(0, Math.round((sc.steps[i].t0 - sc.ticks.t[0]) / sc.dt));
+      renderAll();
+    };
+  });
+}
+function highlightStep() {
+  const f = Math.floor(frame), t = sc.ticks.t[f];
+  [...stepBody.rows].forEach((tr, i) => {
+    const s = sc.steps[i];
+    tr.classList.toggle('cur', s.t0 <= t && (s.t1 == null || t <= s.t1));
+  });
+}
+
+// ------------------------------------------------------------ パラメータ表
+const paramGrid = document.getElementById('paramGrid');
+{
+  const p = DATA.params, d = DATA.derived;
+  const rows = [
+    ['z_c (骨盤高さ)', p.z_c + ' m'], ['T (歩周期)', p.t_step + ' s'],
+    ['W (足間隔)', p.foot_spacing + ' m'], ['h_sw (遊脚高)', p.swing_height + ' m'],
+    ['φ_lock', p.swing_lock_phase], ['v_max', `(${p.v_max}) m/s`],
+    ['a_max', `(${p.a_max}) m/s²`],
+    ['クランプ (前後/外/内)', `${p.step_clamp_x}/${p.step_clamp_out}/${p.step_clamp_in} m`],
+    ['k_dcm', p.k_dcm],
+    ['ω = √(g/z_c)', d.omega + ' rad/s'], ['e^{ωT}', d.e_wt],
+    ['b_x @0.10 m/s', (d['b_x_at_0.10'] * 1000).toFixed(2) + ' mm'],
+    ['b_y (横振り)', (d.b_y_lateral * 1000).toFixed(2) + ' mm'],
+  ];
+  paramGrid.innerHTML = rows.map(([a, b]) => `<span>${a}</span><span>${b}</span>`).join('');
+}
+
+// ------------------------------------------------------------------ 描画
+const scdesc = document.getElementById('scdesc');
+function renderAll() {
+  if (frame >= nFrames(sc)) frame = nFrames(sc) - 1;
+  const f = Math.floor(frame);
+  scdesc.textContent = sc.desc;
+  timeLabel.textContent = `t = ${sc.ticks.t[f].toFixed(2)} s`;
+  stateBadge.textContent = STATES[sc.ticks.st[f]] + (sc.ticks.stop[f] ? ' (停止中)' : '');
+  if (!live && !scrubActive()) scrub.value = Math.round(f / (nFrames(sc) - 1) * 100);
+  drawTopdown();
+  drawChart(chartY);
+  drawChart(chartX);
+  drawChart(chartZ);
+  drawPipe();
+  highlightStep();
+}
+function scrubActive() { return document.activeElement === scrub && !playing; }
+
+addEventListener('resize', () => { fitView(); renderAll(); });
+fitView();
+buildSteps();
+renderAll();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
