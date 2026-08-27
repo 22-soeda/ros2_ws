@@ -53,6 +53,7 @@ ament_target_dependencies(feetech_demo_node rclcpp sensor_msgs)
 #   feetech_goto_test : 定義済み全軸を一斉に約30秒かけて 2047 へ動かす
 #   feetech_shell     : 1軸ずつ手で操作する対話CLI（bus/ID を選んで ping/pos/on/off/go）
 #   feetech_set_limits: 設定ファイル(YAML)の角度リミットを全軸へ一括書き込み
+#   feetech_calibrate_home: 1軸ずつ手で原点を合わせ、生カウントを YAML に保存する
 # ---------------------------------------------------------------------------
 add_executable(feetech_scan_test test/feetech_scan_test.cpp)
 # scan は SMS_STS の EEPROM アドレス定義 (SMS_STS_*) を直接使うので SDK にもリンクする。
@@ -70,6 +71,11 @@ add_executable(feetech_set_limits test/feetech_set_limits.cpp)
 target_link_libraries(feetech_set_limits feetech_servo scservo yaml-cpp::yaml-cpp)
 ament_target_dependencies(feetech_set_limits ament_index_cpp)
 
+# calibrate_home も軸一覧(YAML)と TORQUE_ENABLE のアドレス定義を使う。
+add_executable(feetech_calibrate_home test/feetech_calibrate_home.cpp)
+target_link_libraries(feetech_calibrate_home feetech_servo scservo yaml-cpp::yaml-cpp)
+ament_target_dependencies(feetech_calibrate_home ament_index_cpp)
+
 # ---------------------------------------------------------------------------
 # install / export
 # ---------------------------------------------------------------------------
@@ -83,7 +89,7 @@ install(TARGETS feetech_servo scservo
   INCLUDES DESTINATION include)
 
 install(TARGETS feetech_demo_node feetech_scan_test feetech_goto_test feetech_shell
-  feetech_set_limits
+  feetech_set_limits feetech_calibrate_home
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch config
