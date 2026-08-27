@@ -47,7 +47,7 @@ enum class Mode : uint8_t
 class FeetechBus
 {
 public:
-  // port 例: "/dev/ttyACM0"、baud 例: 1000000。End=0 は SMS/STS のリトルエンディアン。
+  // port 例: "/dev/feetech_right"、baud 例: 1000000。End=0 は SMS/STS のリトルエンディアン。
   // timeout_ms: 1トランザクションの受信タイムアウト。軸が欠けたとき最大この時間だけ待つ。
   //   SDK既定は100msだが、応答欠損時のループ停滞を避けるため既定20ms（Python版と同値）。
   FeetechBus(

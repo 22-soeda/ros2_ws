@@ -1,6 +1,6 @@
 // FeetechManager: 複数のシリアルバス（=複数コントローラ）を束ねる。
 //
-// 本構成ではコントローラ2台 = バス2本（例 /dev/ttyACM0, /dev/ttyACM1）。
+// 本構成ではコントローラ2台 = バス2本（例 /dev/feetech_right, /dev/feetech_left）。
 // 各バスは独立オブジェクトなので、呼び出し側でバスごとに別スレッドを割り当てれば
 // 2本を真に並列で回せる（デモ node がその形）。
 #ifndef FEETECH_SERVO__FEETECH_MANAGER_HPP_

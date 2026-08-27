@@ -37,7 +37,7 @@ feetech_servo/
 #include <feetech_servo/feetech_bus.hpp>
 using namespace feetech_servo;
 
-FeetechBus bus("/dev/ttyACM0", 1000000);
+FeetechBus bus("/dev/feetech_right", 1000000);
 bus.open();
 std::vector<uint8_t> ids = bus.scan({1, 2, 3});
 for (auto id : ids) bus.init_motor(id, Mode::kPosition, /*torque=*/true);
@@ -94,7 +94,7 @@ ros2 launch feetech_servo feetech_demo.launch.py enable_motion:=true
 
 ```bash
 ros2 run feetech_servo feetech_scan_test                      # 既定2ポート, ID 0..253
-ros2 run feetech_servo feetech_scan_test --port /dev/ttyACM0  # ポート指定（複数可）
+ros2 run feetech_servo feetech_scan_test --port /dev/feetech_right  # ポート指定（複数可）
 ros2 run feetech_servo feetech_scan_test --id-max 20          # 探索範囲を狭めて高速化
 ```
 
@@ -117,7 +117,7 @@ ros2 run feetech_servo feetech_scan_test --id-max 20          # 探索範囲を�
 ros2 run feetech_servo feetech_goto_test                  # 30秒かけて校正した姿勢(90deg)へ
 ros2 run feetech_servo feetech_goto_test --angle 120      # 全軸 120deg へ
 ros2 run feetech_servo feetech_goto_test --dry-run        # 換算した目標を見るだけ（動かさない）
-ros2 run feetech_servo feetech_goto_test --motors /dev/ttyACM0:1,5,6 --duration 10
+ros2 run feetech_servo feetech_goto_test --motors /dev/feetech_right:1,5,6 --duration 10
 ros2 run feetech_servo feetech_goto_test --torque 500     # HLS系の目標トルクを下げる
 ros2 run feetech_servo feetech_goto_test --family sms     # SMS/STS サーボの場合
 ```
@@ -161,7 +161,7 @@ echo -e "id 5\npos\ngo 2047" | ros2 run feetech_servo feetech_shell   # パイ�
 
 | コマンド | 内容 |
 |---|---|
-| `bus [N\|PORT]` | コントローラを選ぶ（`bus 1` / `bus /dev/ttyACM0`）。未接続なら開き直しを試す |
+| `bus [N\|PORT]` | コントローラを選ぶ（`bus 1` / `bus /dev/feetech_right`）。未接続なら開き直しを試す |
 | `buses` | バス一覧と接続状態 |
 | `id [N]` | 操作するIDを選ぶ。**ping で存在確認できたときだけ**選択が変わる |
 | `ping [N]` | そのIDが応答するか |
@@ -205,7 +205,7 @@ SDK の高レベル関数を使わず自前で7バイトブロックを組み、
 44/45 に `goal_torque`（既定 1000, `set_goal_torque()` で変更）を載せる。
 
 ```cpp
-FeetechBus bus("/dev/ttyACM1", 1000000, 0, 20, Family::kHls);  // 既定が kHls
+FeetechBus bus("/dev/feetech_left", 1000000, 0, 20, Family::kHls);  // 既定が kHls
 bus.set_goal_torque(1000);   // 0 にすると動かなくなるので注意
 ```
 
@@ -231,7 +231,7 @@ ros2 run feetech_servo feetech_set_limits -c ./my.yaml --yes
 ```yaml
 baud: 1000000
 buses:
-  - port: /dev/ttyACM0
+  - port: /dev/feetech_right
     servos:
       1:  [1024, 3072]     # 90deg .. 270deg
       2:  [0, 0]           # 0,0 = 制限なし（多回転可）
@@ -298,7 +298,7 @@ ros2 run feetech_servo feetech_calibrate_home -o ~/home.yaml  # 保存先を変�
 center: 2048
 home_deg: 90.0      # 合わせた姿勢を何 deg と呼ぶか（--home-deg。記録するだけ）
 buses:
-  - port: /dev/ttyACM0
+  - port: /dev/feetech_right
     servos:
       1:   {home: 2100, offset:    52}   # 184.6 deg
 ```
@@ -345,10 +345,57 @@ EEPROM の `MIN_ANGLE_LIMIT(9)` / `MAX_ANGLE_LIMIT(11)` は**全軸 `0 .. 0`（�
 [bus1 id2]> on
 ```
 
+## ポートの固定名（udev ルール）
+
+**`/dev/ttyACM0` / `/dev/ttyACM1` は使わない。** この数字は「カーネルが見つけた順」の
+連番なので、挿し順・起動タイミング・USB の再列挙で入れ替わる。2 バス構成のこの機体で
+入れ替わると左右の系統が逆になり、`servo_home.yaml` のホーム較正値も違うバスへ当たる
+（較正値はポート名をキーに持っている）。
+
+`hw/99-feetech.rules` がアダプタのシリアル番号から固定名を振る。初回だけ導入する:
+
+```bash
+sudo install -m 0644 hw/99-feetech.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=tty
+ls -l /dev/feetech_bus*
+```
+
+以後、設定・ツールはすべて `/dev/feetech_right` `/dev/feetech_left` を使う。
+
+| 固定名 | シリアル | 軸 |
+|---|---|---|
+| `/dev/feetech_right` | `5B79033801` | ID 1-10（10軸。**ID 7 がある**） |
+| `/dev/feetech_left` | `5B79032047` | ID 1-6, 8-10（9軸。ID 7 は欠番） |
+
+### どちらが右か —— ID 7 の有無で見分ける
+
+**ID 7 がある方が右半身。** 左半身は ID 7 が欠番の 9 軸。12V を入れた状態で、
+読み取りのみのスキャンを回せば確認できる（**トルクは不要**。むしろ入れると目標角
+レジスタに残っている古い値へ飛ぶ）:
+
+```bash
+ros2 run feetech_servo feetech_scan_test --id-max 12
+```
+
+`/dev/feetech_right` 側に ID 7 が出れば正しい。逆なら `hw/99-feetech.rules` の 2 行の
+シリアルを入れ替えて再導入する。
+
+強電が入っていないと応答が欠けて判別できない（電圧が低いと通信が間欠的に落ちる）。
+
+アダプタを交換したら、新しいシリアルを調べてルールを書き換える:
+
+```bash
+udevadm info -q property -n /dev/ttyACM0 | grep ID_SERIAL_SHORT
+```
+
+**2026-08-28 の実測で、ttyACM の番号が較正時（8/27 21:30）と入れ替わっていたことが
+判明した。** `servo_home.yaml` / `servo_limits.yaml` の較正値は、ポート名ではなく
+ID の中身（ID 7 の有無）を基準に振り直してある。まさにこのルールが防ぐ事象。
+
 ## 注意
 
 - CH343 は `cdc_acm` ドライバなので **`/dev/ttyACM*`**（`ttyUSB` ではない）。
-  安定させたい場合は `/dev/serial/by-id/...` を `ports` に指定。
+  ただし設定ではこれを直接使わない（下の「ポートの固定名」を参照）。
 - ポートを開くにはユーザーが **`dialout` グループ**に入っている必要がある。
 - **供給電圧が低い**とサーボの通信が間欠的に欠け、`sync_read_states` の取得軸数が減り
   `rx_fail` が増える。読み取り信頼性が低いときはまず電源電圧を定格（STS3215 なら ~12V）に戻す。

@@ -3,7 +3,7 @@
 // ROS を使わない素のCLIツール（実機がないと意味がないので ament のテストには載せない）。
 //
 //   ros2 run feetech_servo feetech_scan_test                      # 既定2ポート, ID 0..253
-//   ros2 run feetech_servo feetech_scan_test --port /dev/ttyACM0  # ポート指定（複数可）
+//   ros2 run feetech_servo feetech_scan_test --port /dev/feetech_right  # ポート指定（複数可）
 //   ros2 run feetech_servo feetech_scan_test --id-max 30          # 探索範囲を狭めて高速化
 //
 // 各IDについて EEPROM（型番/ファーム/モード/ボーレート/角度リミット/オフセット等）と
@@ -214,7 +214,7 @@ void usage(const char * argv0)
 {
   std::printf(
     "使い方: %s [--port PORT]... [--baud N] [--id-min N] [--id-max N] [--timeout MS]\n"
-    "  --port     走査するシリアルポート（複数指定可。既定: /dev/ttyACM0, /dev/ttyACM1）\n"
+    "  --port     走査するシリアルポート（複数指定可。既定: /dev/feetech_right, /dev/feetech_left）\n"
     "  --baud     ボーレート（既定 1000000）\n"
     "  --id-min   探索開始ID（既定 0）\n"
     "  --id-max   探索終了ID（既定 253）\n"
@@ -261,7 +261,7 @@ int main(int argc, char ** argv)
     }
   }
   if (ports.empty()) {
-    ports = {"/dev/ttyACM0", "/dev/ttyACM1"};
+    ports = {"/dev/feetech_right", "/dev/feetech_left"};
   }
   if (id_min < 0) {
     id_min = 0;

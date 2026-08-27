@@ -40,7 +40,7 @@ public:
   {
     // --- パラメータ ---
     ports_ = declare_parameter<std::vector<std::string>>(
-      "ports", {"/dev/ttyACM0", "/dev/ttyACM1"});
+      "ports", {"/dev/feetech_right", "/dev/feetech_left"});
     baud_ = declare_parameter<int>("baud", 1000000);
     const auto ids_shared = declare_parameter<std::vector<int64_t>>("ids", {1});
     rate_hz_ = declare_parameter<double>("rate_hz", 50.0);

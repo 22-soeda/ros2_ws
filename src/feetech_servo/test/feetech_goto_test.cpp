@@ -19,7 +19,7 @@
 //   ros2 run feetech_servo feetech_goto_test --angle 120     # 全軸 120deg へ
 //   ros2 run feetech_servo feetech_goto_test --dry-run       # 換算した目標を見るだけ（動かさない）
 //   ros2 run feetech_servo feetech_goto_test --duration 10
-//   ros2 run feetech_servo feetech_goto_test --motors /dev/ttyACM0:1,2,3
+//   ros2 run feetech_servo feetech_goto_test --motors /dev/feetech_right:1,2,3
 //   ros2 run feetech_servo feetech_goto_test --no-torque     # 動作確認用: トルクを入れない
 //
 // Ctrl-C で中断すると、その時点の指令位置で保持したまま終了する（トルクは切らない）。
@@ -258,7 +258,7 @@ std::vector<MotorDef> parse_motors_arg(const std::string & spec)
   // "PORT:1,2,3" 形式。呼び出しごとに1バス。
   const size_t colon = spec.rfind(':');
   if (colon == std::string::npos) {
-    std::fprintf(stderr, "--motors の書式は PORT:ID,ID,... （例 /dev/ttyACM0:1,2,3）\n");
+    std::fprintf(stderr, "--motors の書式は PORT:ID,ID,... （例 /dev/feetech_right:1,2,3）\n");
     std::exit(2);
   }
   MotorDef d;

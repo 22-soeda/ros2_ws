@@ -1,0 +1,33 @@
+# Feetech サーボバス (FE-URT-2 / WCH CH343) に固定名を振る udev ルール。
+#
+# 問題: /dev/ttyACM0 と /dev/ttyACM1 の数字は「カーネルが見つけた順」の連番なので、
+#       挿し順・起動タイミング・USB の再列挙で入れ替わる。2 バス構成のこの機体では
+#       入れ替わると左右の系統が逆になり、servo_home.yaml のホーム較正値も
+#       違うバスへ当たる (較正値はポート名をキーに持っている)。
+#
+# 対策: アダプタ固有のシリアル番号を条件にして、順番に依存しない別名を作る。
+#
+#   ATTRS{serial}      … USB デバイスのシリアル文字列。`udevadm info -q property -n
+#                        /dev/ttyACM0` の ID_SERIAL_SHORT と同じ値
+#   SYMLINK+=          … 元の ttyACMn は残したまま、この名前も指す (+= は追加の意味)
+#   GROUP/MODE         … dialout グループが読み書きできるようにする。ttyACM の既定と同じ
+#
+# 導入:
+#   sudo install -m 0644 hw/99-feetech.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=tty
+#   ls -l /dev/feetech_bus*
+#
+# アダプタを交換したら: udevadm info -q property -n /dev/ttyACM0 | grep ID_SERIAL_SHORT
+# で新しいシリアルを調べ、下の値を書き換える。
+#
+# バスの見分け方: **ID 7 がある方が右半身**。左半身は ID 7 が欠番の 9 軸。
+# 12V を入れた状態で読み取りのみのスキャンを回せば確認できる (トルクは不要):
+#
+#   ros2 run feetech_servo feetech_scan_test --id-max 12
+#
+# 2026-08-28 実測でこの対応を確定した。**このとき ttyACM の番号が較正時 (8/27 21:30)
+# と入れ替わっていたことも判明している** — まさにこのルールが防ぐ事象。
+# アダプタを差し替えたら必ずスキャンし直して、下の 2 行を貼り替えること。
+
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", ATTRS{serial}=="5B79033801", SYMLINK+="feetech_right", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", ATTRS{serial}=="5B79032047", SYMLINK+="feetech_left", GROUP="dialout", MODE="0660"

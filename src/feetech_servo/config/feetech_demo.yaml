@@ -1,10 +1,11 @@
 feetech_demo:
   ros__parameters:
-    # 2台のコントローラ = 2本のシリアルバス。by-id で固定したい場合は
-    # /dev/serial/by-id/usb-1a86_USB_Single_Serial_XXXX-if00 を指定してもよい。
+    # 2台のコントローラ = 2本のシリアルバス。
+    # ★/dev/ttyACMn は「見つかった順」の連番で挿し順・再列挙で入れ替わるので使わない。
+    #   hw/99-feetech.rules がシリアル番号から固定名を振っている (README「固定名」参照)。
     ports:
-      - "/dev/ttyACM0"
-      - "/dev/ttyACM1"
+      - "/dev/feetech_right"    # ID 1-10 (ID 7 がある方)
+      - "/dev/feetech_left"     # ID 1-6, 8-10 (ID 7 は欠番)
     baud: 1000000
 
     # 全バス共通の軸ID。バスごとに変えたい場合は ids_0 / ids_1 で上書きする。

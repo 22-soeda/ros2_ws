@@ -65,7 +65,7 @@ void print_help()
 {
   std::printf(
     "\n--- コマンド（対象は「選択中の bus + ID」1軸のみ）---\n"
-    "  bus [N|PORT]   操作するコントローラを選ぶ／今の選択を表示 (例: bus 1, bus /dev/ttyACM0)\n"
+    "  bus [N|PORT]   操作するコントローラを選ぶ／今の選択を表示 (例: bus 1, bus /dev/feetech_right)\n"
     "  buses          接続中のバス一覧\n"
     "  id [N]         操作するIDを選ぶ（ping で存在確認してから選択）／今の選択を表示\n"
     "  ping [N]       そのIDが応答するか（省略時は選択中のID）\n"
@@ -95,7 +95,7 @@ void usage(const char * argv0)
   std::printf(
     "使い方: %s [--port PORT]... [--baud N] [--bus N] [--id N] [--speed N] [--acc N]\n"
     "         [--torque N] [--family hls|sms] [--timeout MS]\n"
-    "  --port     開くシリアルポート（複数指定可。既定: /dev/ttyACM0, /dev/ttyACM1）\n"
+    "  --port     開くシリアルポート（複数指定可。既定: /dev/feetech_right, /dev/feetech_left）\n"
     "  --bus      起動時に選択するバス番号（既定 0）\n"
     "  --id       起動時に選択するサーボID\n"
     "  --speed    移動速度 step/s（既定 600、0=最速）\n"
@@ -159,7 +159,7 @@ int main(int argc, char ** argv)
     }
   }
   if (ports.empty()) {
-    ports = {"/dev/ttyACM0", "/dev/ttyACM1"};
+    ports = {"/dev/feetech_right", "/dev/feetech_left"};
   }
 
   std::signal(SIGINT, on_sigint);
