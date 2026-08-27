@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>roboone_kinematics</name>
+  <version>0.1.0</version>
+  <description>
+    片脚 6 自由度の順運動学・逆運動学（解析解）。docs/脚IK導出.tex の導出に、
+    大腿・下腿リンクの x 成分を入れた拡張版。ヘッダオンリ・ROS 非依存・
+    ヒープも外部ライブラリも使わないので、motion ノードの制御ループから直接呼べる。
+  </description>
+  <maintainer email="soedayu.030622@gmail.com">auto</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
