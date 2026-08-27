@@ -9,6 +9,8 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(Threads REQUIRED)
+find_package(ament_index_cpp REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 # ---------------------------------------------------------------------------
 # 同梱した Feetech 公式 SCServo SDK (静的ライブラリ)
@@ -50,6 +52,7 @@ ament_target_dependencies(feetech_demo_node rclcpp sensor_msgs)
 #   feetech_scan_test : 1Mbps のバス上の全サーボを列挙して情報を出す
 #   feetech_goto_test : 定義済み全軸を一斉に約30秒かけて 2047 へ動かす
 #   feetech_shell     : 1軸ずつ手で操作する対話CLI（bus/ID を選んで ping/pos/on/off/go）
+#   feetech_set_limits: 設定ファイル(YAML)の角度リミットを全軸へ一括書き込み
 # ---------------------------------------------------------------------------
 add_executable(feetech_scan_test test/feetech_scan_test.cpp)
 # scan は SMS_STS の EEPROM アドレス定義 (SMS_STS_*) を直接使うので SDK にもリンクする。
@@ -61,6 +64,11 @@ target_link_libraries(feetech_goto_test feetech_servo Threads::Threads)
 # shell も EEPROM アドレス定義 (SMS_STS_*) を使うので SDK にリンクする。
 add_executable(feetech_shell test/feetech_shell.cpp)
 target_link_libraries(feetech_shell feetech_servo scservo)
+
+# set_limits は EEPROM アドレス定義と YAML パーサ、既定設定の場所解決に ament_index を使う。
+add_executable(feetech_set_limits test/feetech_set_limits.cpp)
+target_link_libraries(feetech_set_limits feetech_servo scservo yaml-cpp::yaml-cpp)
+ament_target_dependencies(feetech_set_limits ament_index_cpp)
 
 # ---------------------------------------------------------------------------
 # install / export
@@ -75,6 +83,7 @@ install(TARGETS feetech_servo scservo
   INCLUDES DESTINATION include)
 
 install(TARGETS feetech_demo_node feetech_scan_test feetech_goto_test feetech_shell
+  feetech_set_limits
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch config
