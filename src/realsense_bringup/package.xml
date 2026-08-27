@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>realsense_bringup</name>
+  <version>0.1.0</version>
+  <description>
+    RealSense D435if の起動設定（launch + パラメータ）と、実機ストリームを検証する
+    CLI テストツール。ストリーミング本体は既製の realsense2_camera_node を使い、
+    このパッケージは「この機体でどう起動するか」の一点だけを持つ。
+    既定は depth + IMU のみ（RGB は帯域を食うので既定 OFF）。
+  </description>
+  <maintainer email="soedayu.030622@gmail.com">auto</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+
+  <exec_depend>realsense2_camera</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
