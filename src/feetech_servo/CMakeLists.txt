@@ -50,7 +50,7 @@ ament_target_dependencies(feetech_demo_node rclcpp sensor_msgs)
 # ---------------------------------------------------------------------------
 # 実機テストツール (ROS非依存の素のCLI。実機がないと意味がないので ament テストには載せない)
 #   feetech_scan_test : 1Mbps のバス上の全サーボを列挙して情報を出す
-#   feetech_goto_test : 定義済み全軸を一斉に約30秒かけて 2047 へ動かす
+#   feetech_goto_test : 全軸を一斉に約30秒かけて「角度指定」の姿勢へ動かす（原点オフセット込み）
 #   feetech_shell     : 1軸ずつ手で操作する対話CLI（bus/ID を選んで ping/pos/on/off/go）
 #   feetech_set_limits: 設定ファイル(YAML)の角度リミットを全軸へ一括書き込み
 #   feetech_calibrate_home: 1軸ずつ手で原点を合わせ、生カウントを YAML に保存する
@@ -59,8 +59,10 @@ add_executable(feetech_scan_test test/feetech_scan_test.cpp)
 # scan は SMS_STS の EEPROM アドレス定義 (SMS_STS_*) を直接使うので SDK にもリンクする。
 target_link_libraries(feetech_scan_test feetech_servo scservo)
 
+# goto は原点ファイル(YAML)を読み、その場所解決に ament_index を使う。
 add_executable(feetech_goto_test test/feetech_goto_test.cpp)
-target_link_libraries(feetech_goto_test feetech_servo Threads::Threads)
+target_link_libraries(feetech_goto_test feetech_servo Threads::Threads yaml-cpp::yaml-cpp)
+ament_target_dependencies(feetech_goto_test ament_index_cpp)
 
 # shell も EEPROM アドレス定義 (SMS_STS_*) を使うので SDK にリンクする。
 add_executable(feetech_shell test/feetech_shell.cpp)
