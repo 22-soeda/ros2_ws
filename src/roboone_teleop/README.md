@@ -11,8 +11,9 @@ DualSense --BT--> joy (既製: game_controller_node) --/joy--> teleop --> /estop
                                                                     --> /cmd_walk
                                                                     --> /cmd_motion
                                                                     --> /autonomy   → behavior
-                                                                    --> /ui/led, /ui/buzzer
-                                                                        (無線テストのときだけ)
+                                                                    --> /ui/oled/text     → ui
+                                                                        /ui/led/pattern
+                                                                        /ui/buzzer
 ```
 
 ## 1. コントローラを繋ぐ
@@ -117,6 +118,30 @@ motion 側で解く羽目になる。トルクの ON/OFF は経路を 1 本に�
 |---|---|---|---|
 | `/autonomy` | `std_msgs/Bool` (latched) | teleop → behavior | true の間だけ behavior が `/cmd_walk`・`/cmd_motion` を出してよい |
 
+### 状態表示（OLED / RGB LED）
+
+**操作者からは「今どのモードか」が機体を見ても分からない。** 特に自律動作中は teleop が
+`/cmd_walk` を黙るので、behavior が起動していないと「入れたのに動かない」になり、故障と
+区別が付かない。状態が変わるたびに OLED と LED へ出す。
+
+| 状態 | OLED | LED | 音 |
+|---|---|---|---|
+| `/joy` 未受信 | `TELEOP` / `no joy` | 消灯 (`dark`) | — |
+| 脱力（トルクOFF） | `RELAX` / `OPTIONS=home` | **赤の速い点滅** (`estop`) | `error` |
+| 再武装待ち | `MANUAL` / `release R1` | 黄の点滅 (`warn`) | — |
+| 手動・武装済み | `MANUAL` / `R1 = walk` | 緑の点灯 (`ready`) | `beep` |
+| 自律動作中 | `AUTO` / `any 4 = stop` | **青の点滅** (`auto`) | `ack` |
+| 無線テスト中 | `LINK TEST` / `radio ok` | シアンの点灯 (`link`) | （テスト自身のブザー） |
+
+* **色は teleop 側に持たない。** ui のプリセット名だけを送り、実際の色は ui が決める
+  (`roboone_ui` の `LED_PATTERNS`)。色を 1 箇所で管理できるのと、無線テストが終わった
+  ときに「元の状態のプリセットをもう一度送る」だけで復帰できる利点がある
+* 送るのは**変化したときだけ**。20Hz で latched トピックを叩き続けない
+* OLED は 8x8 フォントで 1 行ちょうど 12 文字（`roboone_ui` 実測）。日本語は出せないので
+  ASCII。文字数はテストで見張っている
+* 音は「操作者が画面を見ていなくても気付くべき変化」だけ。起動直後の初期表示では鳴らさない
+* `ui.enable: false` で全部止められる
+
 ### 無線テスト
 
 Create ボタンを押している間、頭の RGB LED がシアンに変わり、ブザーが鳴り続ける。
@@ -129,7 +154,8 @@ Create ボタンを押している間、頭の RGB LED がシアンに変わり�
   「1 回鳴って止まる」設計なので、押しっぱなし用の長いパターンを ui に足すより、
   短いのを撃ち続けるほうが安全側に倒れる。teleop が落ちても電波が切れても、
   次の 1 発が来ないので 100ms 以内に鳴り止む。
-* 相手側に ui ノードが要る: `ros2 run roboone_ui ui_node`
+* 表示には ui ノードが要る: `ros2 run roboone_ui ui_node`。上がっていなくても teleop は
+  そのまま動く（publish するだけで購読者の有無は見ていない）
 
 ## 4. 安全設計
 

@@ -15,7 +15,7 @@ import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from roboone_interfaces.msg import LedColor
+from roboone_interfaces.msg import OledText
 from roboone_teleop.bindings import apply_deadzone, Binding, parse_motion_bindings
 from roboone_teleop.teleop_node import LATCHED, TeleopNode
 from sensor_msgs.msg import Joy
@@ -39,6 +39,7 @@ PARAMS = {
     'link_test.color': [0, 200, 255], 'link_test.release_color': [0, 0, 0],
     'link_test.buzzer': 'beep', 'link_test.buzzer_hz': 15.0,
     'link_test.stale': 0.1,
+    'ui.enable': True,
 }
 
 DEADMAN, RELAX, HOME, LINK, AUTO = 10, 9, 6, 4, 11
@@ -60,7 +61,8 @@ class Harness(Node):
         self.walk = []
         self.estop = []
         self.motion = []
-        self.led = []
+        self.led = []          # /ui/led/pattern のプリセット名
+        self.oled = []         # (line1, line2)
         self.buzzer = []
         self.auto = []
         self._joy = self.create_publisher(Joy, '/joy', 10)
@@ -68,7 +70,9 @@ class Harness(Node):
         self.create_subscription(Bool, '/estop', lambda m: self.estop.append(m.data), LATCHED)
         self.create_subscription(String, '/cmd_motion', lambda m: self.motion.append(m.data), 10)
         self.create_subscription(
-            LedColor, '/ui/led', lambda m: self.led.append((m.r, m.g, m.b)), LATCHED)
+            String, '/ui/led/pattern', lambda m: self.led.append(m.data), LATCHED)
+        self.create_subscription(
+            OledText, '/ui/oled/text', lambda m: self.oled.append((m.line1, m.line2)), LATCHED)
         self.create_subscription(
             String, '/ui/buzzer', lambda m: self.buzzer.append(m.data), LATCHED)
         self.create_subscription(Bool, '/autonomy', lambda m: self.auto.append(m.data), LATCHED)
@@ -302,14 +306,16 @@ def test_link_test_needs_no_deadman_and_works_while_relaxed(rig):
     buttons = [0] * N_BUTTONS
     buttons[LINK] = 1                           # デッドマンは押さない
     _pump(harness, None, buttons, seconds=0.5)
-    assert harness.led[0] == (0, 200, 255), 'LED の色が変わっていない'
-    assert len(harness.buzzer) >= 4, f'ブザーの再送が少なすぎる: {harness.buzzer}'
-    assert set(harness.buzzer) == {'beep'}
+    assert harness.led[-1] == 'link', f'LED が link になっていない: {harness.led}'
+    assert ('LINK TEST', 'radio ok') in harness.oled
+    beeps = [b for b in harness.buzzer if b == 'beep']
+    assert len(beeps) >= 4, f'ブザーの再送が少なすぎる: {harness.buzzer}'
 
-    n_before = len(harness.buzzer)
+    n_before = len(beeps)
     _pump(harness, None, None, seconds=0.3)     # 離す
-    assert harness.led[-1] == (0, 0, 0), 'LED が消えていない'
-    assert len(harness.buzzer) == n_before, '離したのにブザーが鳴り続けている'
+    assert harness.led[-1] == 'estop', f'脱力表示に戻っていない: {harness.led}'
+    assert len([b for b in harness.buzzer if b == 'beep']) == n_before, \
+        '離したのにブザーが鳴り続けている'
 
 
 def test_link_test_stops_when_joy_is_lost(rig):
@@ -323,13 +329,14 @@ def test_link_test_stops_when_joy_is_lost(rig):
     buttons = [0] * N_BUTTONS
     buttons[LINK] = 1
     _pump(harness, None, buttons, seconds=0.3)
-    assert harness.led[-1] == (0, 200, 255)
+    assert harness.led[-1] == 'link'
 
     time.sleep(0.2)                             # link_test.stale=0.1 を超えて黙る
-    assert harness.led[-1] == (0, 0, 0), '電波が切れても LED が点いたまま'
-    n_after_drop = len(harness.buzzer)
+    assert harness.led[-1] != 'link', '電波が切れても LED が link のまま'
+    n_after_drop = len([b for b in harness.buzzer if b == 'beep'])
     time.sleep(0.3)
-    assert len(harness.buzzer) == n_after_drop, '電波が切れてもブザーが鳴り続けている'
+    assert len([b for b in harness.buzzer if b == 'beep']) == n_after_drop, \
+        '電波が切れてもブザーが鳴り続けている'
 
 
 # ---------------------------------------------------------------- 自律動作
@@ -398,7 +405,7 @@ def test_link_test_interrupts_autonomy(rig):
     _pump(harness, None, _btn(LINK), seconds=0.3)
     assert not teleop._auto
     assert harness.auto[-1] is False
-    assert harness.led[-1] == (0, 200, 255)
+    assert harness.led[-1] == 'link'
 
 
 def test_home_interrupts_autonomy(rig):
@@ -472,3 +479,58 @@ def test_autonomy_does_not_repeat_while_held(rig):
     assert teleop._auto
     n = len([v for v in harness.auto if v is True])
     assert n == 1, f'/autonomy true が {n} 回出ている'
+
+
+# ---------------------------------------------------------------- 状態表示
+def test_ui_shows_each_state(rig):
+    """OLED と LED のプリセットが状態ごとに切り替わる。
+
+    自律動作中は teleop が /cmd_walk を黙るので、behavior が上がっていないと
+    「入れたのに動かない」になる。操作者が今どのモードかを機体側で見分けられる
+    ことがこの表示の目的。
+    """
+    harness, teleop = rig
+
+    _pump(harness, seconds=0.3)                      # 手動・武装済み
+    assert harness.led[-1] == 'ready'
+    assert harness.oled[-1] == ('MANUAL', 'R1 = walk')
+
+    _pump(harness, None, _btn(RELAX), seconds=0.2)   # 脱力
+    assert harness.led[-1] == 'estop'
+    assert harness.oled[-1] == ('RELAX', 'OPTIONS=home')
+
+    # ホーム。R1 を押したまま復帰すると再武装待ち (黄) で止まる。
+    # ここが「押しっぱなしで復帰していきなり歩き出す」を防いでいる表示。
+    _pump(harness, None, _btn(HOME, DEADMAN), seconds=0.6)
+    assert not teleop._estop
+    assert harness.led[-1] == 'warn'
+    assert harness.oled[-1] == ('MANUAL', 'release R1')
+
+    _pump(harness, seconds=0.2)                      # 離して武装
+    assert harness.led[-1] == 'ready'
+
+    _pump(harness, None, _btn(AUTO), seconds=0.5)    # 自律動作
+    assert teleop._auto
+    assert harness.led[-1] == 'auto'
+    assert harness.oled[-1] == ('AUTO', 'any 4 = stop')
+
+
+def test_ui_publishes_only_on_change(rig):
+    """20Hz で latched トピックを叩き続けない。"""
+    harness, _ = rig
+    _pump(harness, seconds=0.5)
+    n = len(harness.led)
+    _pump(harness, seconds=0.5)                      # 状態を変えずに回す
+    assert len(harness.led) == n, f'変化していないのに {len(harness.led) - n} 回送った'
+
+
+def test_oled_lines_fit_the_screen(rig):
+    """OLED は 8x8 フォントで 1 行 12 文字ちょうど。はみ出すと読めない。"""
+    harness, teleop = rig
+    _pump(harness, seconds=0.2)
+    for key in teleop._ui_pattern:
+        teleop._link = (key == 'link')
+        _, line1, line2, _ = teleop._ui_state()
+        assert len(line1) <= 12, f'{key}: line1 が {len(line1)} 文字 ({line1!r})'
+        assert len(line2) <= 12, f'{key}: line2 が {len(line2)} 文字 ({line2!r})'
+    teleop._link = False

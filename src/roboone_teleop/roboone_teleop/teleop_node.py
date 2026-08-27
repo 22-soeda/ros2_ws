@@ -8,7 +8,8 @@ ros-architecture §2/§4 の約束事:
               /cmd_walk (geometry_msgs/Twist) … 歩行指令。20Hz
               /cmd_motion (std_msgs/String)   … 技名。イベント時
               /autonomy (std_msgs/Bool)       … 自律動作の可否。イベント時 (★新設)
-              /ui/led, /ui/buzzer             … 無線テストのときだけ
+              /ui/oled/text, /ui/led/pattern  … 操作者向けの状態表示
+              /ui/buzzer                      … 状態が変わったときの合図
 
 指令の対応 (割り当ての既定値は config/ps5_dualsense.yaml):
 
@@ -63,6 +64,23 @@ ros-architecture §2/§4 の約束事:
 無線テストだけは上の制約の外にある。**デッドマン不要・脱力中でも動く**。
 機体を安全な脱力状態に置いたまま、離れた場所で電波が届いているかを確かめるための
 機能なので、動作条件を付けると用を成さない。
+
+状態表示 (ui ノードへ):
+
+  操作者からは「今どのモードか」が機体を見ても分からない。特に自律動作中は teleop が
+  /cmd_walk を黙るので、behavior が起動していないと「入れたのに動かない」になり、
+  故障と区別が付かない。そこで状態が変わるたびに OLED と LED へ出す。
+
+      待機   NO LINK   dark    /joy がまだ来ていない
+      脱力   RELAX     estop   赤の速い点滅
+      手動   MANUAL    warn    デッドマンの再武装待ち (黄の点滅)
+      手動   MANUAL    ready   武装済み。R1 で歩ける (緑の点灯)
+      自律   AUTO      auto    青の点滅。人が近寄ってはいけない状態
+      無線   LINK TEST link    シアンの点灯
+
+  色は teleop 側に持たない。ui のプリセット名だけを送り、実際の色は ui が決める
+  (roboone_ui の LED_PATTERNS)。1 箇所で色を管理できるのと、無線テストが終わった
+  ときに「元の状態のプリセットをもう一度送る」だけで復帰できる利点がある。
 """
 
 import math
@@ -74,7 +92,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.signals import SignalHandlerOptions
-from roboone_interfaces.msg import LedColor
+from roboone_interfaces.msg import OledText
 from sensor_msgs.msg import Joy
 from std_msgs.msg import Bool, String
 
@@ -148,14 +166,28 @@ class TeleopNode(Node):
         self._motion_cooldown = p('motion_cooldown', 0.5).value
 
         # 無線テスト。押している間だけブザーと LED で「届いている」ことを示す。
-        self._link_color = _rgb(p('link_test.color', [0, 200, 255]).value)
-        self._link_off_color = _rgb(p('link_test.release_color', [0, 0, 0]).value)
         self._link_buzzer = p('link_test.buzzer', 'beep').value
         self._link_hz = p('link_test.buzzer_hz', 15.0).value
         # 無線テストだけは joy_timeout (0.5s) では遅い。電波の切れ目を耳で探すのが
         # 目的なので、数フレーム落ちた時点で鳴り止ませる。20Hz の autorepeat なら
         # 0.15s = 3 フレームぶん。
         self._link_stale = p('link_test.stale', 0.15).value
+
+        # 状態表示。色は持たず ui のプリセット名だけを送る (docstring 参照)。
+        self._ui_enable = p('ui.enable', True).value
+        self._ui_pattern = {
+            'nolink': p('ui.pattern.nolink', 'dark').value,
+            'relax':  p('ui.pattern.relax', 'estop').value,
+            'unarmed': p('ui.pattern.unarmed', 'warn').value,
+            'manual': p('ui.pattern.manual', 'ready').value,
+            'auto':   p('ui.pattern.auto', 'auto').value,
+            'link':   p('ui.pattern.link', 'link').value,
+        }
+        self._ui_beep = {
+            'relax': p('ui.buzzer.relax', 'error').value,
+            'auto':  p('ui.buzzer.auto', 'ack').value,
+            'manual': p('ui.buzzer.manual', 'beep').value,
+        }
 
         # --- 状態 -----------------------------------------------------------
         self._joy = None            # 最新の Joy。まだ一度も来ていなければ None
@@ -175,14 +207,18 @@ class TeleopNode(Node):
         self._warned_short = False
         self._link = False          # 無線テストのボタンを押しているか
         self._link_next = 0.0       # 次にブザーを鳴らし直す時刻
+        self._ui_shown = None       # 最後に ui へ送った状態。変化時だけ送る
 
         # --- 通信 -----------------------------------------------------------
         self._pub_walk = self.create_publisher(Twist, '/cmd_walk', 10)
         self._pub_estop = self.create_publisher(Bool, '/estop', LATCHED)
         self._pub_motion = self.create_publisher(String, '/cmd_motion', 10)
         self._pub_auto = self.create_publisher(Bool, '/autonomy', LATCHED)
-        # 無線テスト用。ui ノードの購読側が latched なので、こちらも latched で出す。
-        self._pub_led = self.create_publisher(LedColor, '/ui/led', LATCHED)
+        # ui ノードの購読側が latched なので、こちらも latched で出す。
+        # LED は /ui/led (直接 RGB 指定) ではなく /ui/led/pattern を使う。色を
+        # teleop 側に持たないため (docstring「状態表示」参照)。
+        self._pub_oled = self.create_publisher(OledText, '/ui/oled/text', LATCHED)
+        self._pub_pattern = self.create_publisher(String, '/ui/led/pattern', LATCHED)
         self._pub_buzzer = self.create_publisher(String, '/ui/buzzer', LATCHED)
         self.create_subscription(Joy, '/joy', self._on_joy, 10)
 
@@ -190,6 +226,7 @@ class TeleopNode(Node):
         # motion・behavior はこれを受けて初期状態を確定できる。
         self._publish_estop()
         self._publish_auto()
+        self._publish_ui()
 
         self._timer = self.create_timer(1.0 / self._rate_hz, self._tick)
         self.get_logger().info(
@@ -277,6 +314,9 @@ class TeleopNode(Node):
             msg = Twist()
             msg.linear.x, msg.linear.y, msg.angular.z = self._cmd
             self._pub_walk.publish(msg)
+
+        # 7.5) 状態表示。変化したときだけ ui へ送る。
+        self._publish_ui()
 
         # 8) 脱力中は 2 秒に 1 回だけ再送。latched QoS があるので本来不要だが、
         #    後から繋いだ購読者や再接続時の取りこぼしに対する保険。
@@ -420,12 +460,12 @@ class TeleopNode(Node):
             self._link = True
             self._link_next = 0.0
             self._interrupt('無線確認ブザー')
-            self._pub_led.publish(self._link_color)
             self.get_logger().info('無線テスト 開始 (電波が届いている)')
         elif not down and self._link:
             self._link = False
-            self._pub_led.publish(self._link_off_color)
             self.get_logger().info('無線テスト 終了')
+        # LED/OLED は _publish_ui() が状態から決める。離したときの復帰も、
+        # 元の状態のプリセットをもう一度送るだけで済む。
 
         if self._link and now >= self._link_next:
             self._link_next = now + 1.0 / self._link_hz
@@ -460,6 +500,52 @@ class TeleopNode(Node):
             self._pub_motion.publish(String(data=name))
             self.get_logger().info(f'/cmd_motion → {name}')
 
+    # ------------------------------------------------------------ 状態表示
+    def _ui_state(self):
+        """今の状態を (キー, OLED 1 行目, OLED 2 行目, 文字色) で返す。
+
+        OLED は 8x8 フォントで 1 行 12 文字ちょうど (roboone_ui 実測)。
+        はみ出しは ui 側がクリップするが、読めなくなるので 12 文字に収める。
+        日本語は出せないので ASCII で書く。
+        """
+        if self._link:
+            return ('link', 'LINK TEST', 'radio ok', (0, 200, 255))
+        if self._joy_stamp is None:
+            return ('nolink', 'TELEOP', 'no joy', (120, 120, 120))
+        if self._estop:
+            return ('relax', 'RELAX', 'OPTIONS=home', (255, 60, 60))
+        if self._auto:
+            return ('auto', 'AUTO', 'any 4 = stop', (60, 140, 255))
+        if not self._armed:
+            return ('unarmed', 'MANUAL', 'release R1', (255, 180, 0))
+        return ('manual', 'MANUAL', 'R1 = walk', (0, 255, 0))
+
+    def _publish_ui(self):
+        """状態が変わったときだけ ui へ送る。
+
+        毎周期送っても ui 側はタプル比較でデバウンスするが、20Hz で latched
+        トピックを叩き続ける意味は無いのでこちらで止める。
+        """
+        if not self._ui_enable:
+            return
+        state = self._ui_state()
+        if state == self._ui_shown:
+            return
+        key, line1, line2, color = state
+        prev = self._ui_shown[0] if self._ui_shown else None
+        self._ui_shown = state
+
+        msg = OledText()
+        msg.line1, msg.line2 = line1, line2
+        msg.r, msg.g, msg.b = color
+        self._pub_oled.publish(msg)
+        self._pub_pattern.publish(String(data=self._ui_pattern[key]))
+
+        # 音は「操作者が見ていなくても気付くべき変化」だけ。無線テストは
+        # それ自体がブザーを鳴らしているので鳴らさない。
+        if key != prev and key in self._ui_beep and prev is not None:
+            self._pub_buzzer.publish(String(data=self._ui_beep[key]))
+
     def _publish_estop(self):
         self._pub_estop.publish(Bool(data=self._estop))
 
@@ -481,19 +567,12 @@ class TeleopNode(Node):
                 self._pub_walk.publish(Twist())
                 self._estop = True
                 self._publish_estop()
-                if self._link:
-                    self._pub_led.publish(self._link_off_color)   # 色を消し忘れない
+                self._link = False
+                self._publish_ui()            # 消灯ではなく「脱力」を表示して終わる
                 time.sleep(0.05)
         except Exception:
             pass
         return super().destroy_node()
-
-
-def _rgb(triple) -> LedColor:
-    """[r, g, b] を LedColor にする。範囲外は黙って 0-255 に丸める。"""
-    vals = list(triple) + [0, 0, 0]
-    return LedColor(**{k: max(0, min(255, int(v)))
-                       for k, v in zip(('r', 'g', 'b'), vals)})
 
 
 def _slew(current: float, target: float, max_step: float) -> float:

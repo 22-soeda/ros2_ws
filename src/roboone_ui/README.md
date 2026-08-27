@@ -101,6 +101,19 @@ ros2 run roboone_ui ui_node
 プリセット名は `ui_node.py` の `LED_PATTERNS` / `BUZZER_PATTERNS` にある。
 未知の名前は警告 1 行を出して現状維持。例外は投げない。
 
+| LED プリセット | 色 | 使う場面 |
+|---|---|---|
+| `dark` | 消灯 | teleop がまだ `/joy` を受けていない |
+| `ready` | 緑 点灯 | 手動・武装済み（R1 で歩ける） |
+| `warn` | 黄 点滅 | デッドマンの再武装待ち |
+| `estop` | 赤 速い点滅 | 脱力（トルクOFF） |
+| `auto` | 青 点滅 | **自律動作中。人が近寄ってはいけない** |
+| `link` | シアン 点灯 | 無線テスト中 |
+
+`auto` / `link` は teleop の状態表示のために足したもの（`roboone_teleop` の README
+「状態表示」）。自律動作を青の点滅にしてあるのは、手動（緑の点灯）と一目で区別が
+付くようにするため。
+
 ### ★QoS の注意 — CLI から叩くときはフラグが要る
 
 購読側は全部 latched (`depth=1` / `RELIABLE` / `TRANSIENT_LOCAL`)。
@@ -136,7 +149,8 @@ YAML 1.1 ではこれらが真偽値として解釈され、`"{data: off}"` が 
   同梱も不要。ASCII 外の文字は `?` に落とす (`OledDisplay._sanitize`)
 - **プリセットは今のものを起点に、機能追加に合わせて足していく。** `ui_node.py` の
   `LED_PATTERNS` / `BUZZER_PATTERNS` に足すだけでよく、トピックの型は変わらない。
-  現状は仮置きの `dark` / `ready` / `warn` / `estop`、`beep` / `ack` / `error`
+  `dark` / `ready` / `warn` / `estop` / `auto` / `link`、`beep` / `ack` / `error`
+  (`auto` / `link` は 2026-08-28 に teleop の状態表示用として追加した実例)
 - 画像も同様に `images/*.png` を足すだけ。起動時に自動で読み込まれる
   (`setup.py` の `data_files` は `glob` なので追記不要)
 
