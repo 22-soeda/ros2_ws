@@ -81,6 +81,9 @@ void print_help()
     "  speed [N]      移動速度 step/s を設定／表示（0=最速）\n"
     "  acc [N]        加速度を設定／表示\n"
     "  torque [N]     HLS系の目標トルク 0-1000 を設定／表示（0 だと駆動しない）\n"
+    "  getb/getw A    生レジスタを読む (例: getw 9 = 角度リミット下限)\n"
+    "  setb/setw A V  生レジスタに書く。EEPROM(addr<40) は自動で unlock/lock\n"
+    "  limits [Lo Hi] 角度リミットを表示/設定。全軸 0 0 が既定（0 0 = 制限なし）\n"
     "  stats          このバスの tx / rx_fail\n"
     "  help           このヘルプ\n"
     "  quit           終了（トルクの状態はそのまま）\n"
@@ -217,6 +220,29 @@ int main(int argc, char ** argv)
       std::vector<ServoState> st;
       bus->sync_read_states({static_cast<uint8_t>(id)}, st);
       return st.empty() ? ServoState{} : st[0];
+    };
+
+  // EEPROM(addr<40) を安全に書く: トルクOFF確認 → unlock → 書き → lock → 読み戻し。
+  // 書き込み回数に上限があるので、設定修正のときだけ使うこと。
+  auto eeprom_write = [&](FeetechBus * bus, int id, int addr, int val, bool is_word) -> bool {
+      const uint8_t u = static_cast<uint8_t>(id);
+      if (bus->read_byte(u, SMS_STS_TORQUE_ENABLE) == 1) {
+        std::printf("  トルクONのまま EEPROM は書かない。先に `off`\n");
+        return false;
+      }
+      if (!bus->unlock_eeprom(u, true)) {
+        std::printf("  EEPROMのロック解除に失敗（応答なし）\n");
+        return false;
+      }
+      const bool ok = is_word
+        ? bus->write_word(u, static_cast<uint8_t>(addr), static_cast<uint16_t>(val))
+        : bus->write_byte(u, static_cast<uint8_t>(addr), static_cast<uint8_t>(val));
+      bus->unlock_eeprom(u, false);  // 必ずロックへ戻す
+      const int rb = is_word ? bus->read_word(u, static_cast<uint8_t>(addr))
+        : bus->read_byte(u, static_cast<uint8_t>(addr));
+      std::printf(
+        "  addr %d ← %d … %s（読み戻し %d）\n", addr, val, ok ? "OK" : "失敗", rb);
+      return ok && rb == val;
     };
 
   if (sel_id >= 0) {
@@ -573,6 +599,77 @@ int main(int argc, char ** argv)
       std::printf(
         "目標トルク = %d%s\n", goal_torque,
         goal_torque == 0 ? "  ※ 0 だと HLS系はまったく駆動しない" : "");
+
+    } else if (cmd == "getb" || cmd == "getw") {
+      if (!need_target(bus, id, override_id)) {
+        continue;
+      }
+      if (tok.size() < 2) {
+        std::printf("アドレスを指定して（例: getw 9）\n");
+        continue;
+      }
+      const int addr = arg_int(1, -1);
+      if (addr < 0 || addr > 255) {
+        std::printf("アドレスは 0..255\n");
+        continue;
+      }
+      const int v = (cmd == "getb") ? bus->read_byte(static_cast<uint8_t>(id),
+          static_cast<uint8_t>(addr))
+        : bus->read_word(static_cast<uint8_t>(id), static_cast<uint8_t>(addr));
+      if (v < 0) {
+        std::printf("ID %d addr %d 読めず\n", id, addr);
+      } else {
+        std::printf("ID %d addr %d = %d\n", id, addr, v);
+      }
+
+    } else if (cmd == "setb" || cmd == "setw") {
+      if (!need_target(bus, id, override_id)) {
+        continue;
+      }
+      if (tok.size() < 3) {
+        std::printf("書式: %s ADDR VALUE（例: setw 9 0）\n", cmd.c_str());
+        continue;
+      }
+      const int addr = arg_int(1, -1);
+      const int val = arg_int(2, 0);
+      if (addr < 0 || addr > 255) {
+        std::printf("アドレスは 0..255\n");
+        continue;
+      }
+      const bool is_word = (cmd == "setw");
+      if (addr < SMS_STS_TORQUE_ENABLE) {  // 40未満 = EEPROM 領域
+        std::printf("EEPROM addr %d を書く:\n", addr);
+        eeprom_write(bus, id, addr, val, is_word);
+      } else {
+        const bool ok = is_word
+          ? bus->write_word(static_cast<uint8_t>(id), static_cast<uint8_t>(addr),
+            static_cast<uint16_t>(val))
+          : bus->write_byte(static_cast<uint8_t>(id), static_cast<uint8_t>(addr),
+            static_cast<uint8_t>(val));
+        std::printf("ID %d addr %d ← %d … %s\n", id, addr, val, ok ? "OK" : "失敗");
+      }
+
+    } else if (cmd == "limits") {
+      if (!need_target(bus, id, override_id)) {
+        continue;
+      }
+      if (tok.size() >= 3) {
+        const int lo = arg_int(1, 0);
+        const int hi = arg_int(2, 0);
+        if (lo > hi) {
+          // MIN>MAX は不正。ファームが目標位置をこの窓に丸めるので事実上どこにも動けなくなる。
+          std::printf("下限 %d > 上限 %d は不正な設定。書き込まない\n", lo, hi);
+          continue;
+        }
+        std::printf("ID %d の角度リミットを %d .. %d に設定:\n", id, lo, hi);
+        eeprom_write(bus, id, SMS_STS_MIN_ANGLE_LIMIT_L, lo, true);
+        eeprom_write(bus, id, SMS_STS_MAX_ANGLE_LIMIT_L, hi, true);
+      }
+      const int lo = bus->read_word(static_cast<uint8_t>(id), SMS_STS_MIN_ANGLE_LIMIT_L);
+      const int hi = bus->read_word(static_cast<uint8_t>(id), SMS_STS_MAX_ANGLE_LIMIT_L);
+      std::printf("ID %d 角度リミット: %d .. %d%s\n", id, lo, hi,
+        (lo == 0 && hi == 0) ? "（0 0 = 制限なし）"
+        : (lo > hi ? "  ※ 下限>上限の不正設定。目標位置がここに丸められて動かない" : ""));
 
     } else if (cmd == "stats") {
       bus = cur_bus();
