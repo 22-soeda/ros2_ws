@@ -29,16 +29,20 @@ PARAMS = {
     'scale.x': 1.0, 'scale.y': 1.0, 'scale.yaw': 1.0,
     'accel.x': 1000.0, 'accel.y': 1000.0, 'accel.yaw': 1000.0,
     'buttons.deadman': 'b10', 'buttons.relax': 'b9',
-    'buttons.torque_on': 'b6', 'buttons.link_test': 'b4',
-    'torque_on_hold': 0.3,
-    'motion_bindings': ['b1:punch_r'], 'motion_requires_deadman': True,
+    'buttons.home': 'b6', 'buttons.link_test': 'b4', 'buttons.autonomy': 'b11',
+    'home_hold': 0.3, 'home_motion': 'home', 'home_torque_delay': 0.1,
+    'autonomy_hold': 0.3, 'autonomy.stop_on_joy_loss': True,
+    'motion_bindings': ['b1:punch_r', 'b3:getup_front'],
+    'motion_interrupts': ['getup_front'],
+    'motion_requires_deadman': True,
     'motion_cooldown': 0.05,
     'link_test.color': [0, 200, 255], 'link_test.release_color': [0, 0, 0],
     'link_test.buzzer': 'beep', 'link_test.buzzer_hz': 15.0,
     'link_test.stale': 0.1,
 }
 
-DEADMAN, RELAX, TORQUE_ON, LINK, PUNCH_R = 10, 9, 6, 4, 1
+DEADMAN, RELAX, HOME, LINK, AUTO = 10, 9, 6, 4, 11
+PUNCH_R, GETUP_F = 1, 3
 
 N_AXES = 6
 N_BUTTONS = 21          # DualSense をひととおり覆う数
@@ -58,6 +62,7 @@ class Harness(Node):
         self.motion = []
         self.led = []
         self.buzzer = []
+        self.auto = []
         self._joy = self.create_publisher(Joy, '/joy', 10)
         self.create_subscription(Twist, '/cmd_walk', lambda m: self.walk.append(m), 10)
         self.create_subscription(Bool, '/estop', lambda m: self.estop.append(m.data), LATCHED)
@@ -66,6 +71,7 @@ class Harness(Node):
             LedColor, '/ui/led', lambda m: self.led.append((m.r, m.g, m.b)), LATCHED)
         self.create_subscription(
             String, '/ui/buzzer', lambda m: self.buzzer.append(m.data), LATCHED)
+        self.create_subscription(Bool, '/autonomy', lambda m: self.auto.append(m.data), LATCHED)
 
     def send(self, axes=None, buttons=None):
         msg = Joy()
@@ -99,6 +105,13 @@ def rig():
 def _spin(ex, stop):
     while not stop.is_set():
         ex.spin_once(timeout_sec=0.02)
+
+
+def _btn(*ix):
+    b = [0] * N_BUTTONS
+    for i in ix:
+        b[i] = 1
+    return b
 
 
 def _pump(harness, axes=None, buttons=None, seconds=0.4, hz=50.0):
@@ -175,7 +188,7 @@ def test_deadman_held_at_startup_is_ignored(rig):
     assert all(m.linear.x == 0.0 for m in harness.walk)
 
 
-def test_relax_latches_and_torque_on_needs_long_press(rig):
+def test_relax_latches_and_home_needs_long_press(rig):
     harness, teleop = rig
     _pump(harness, seconds=0.2)                 # まず再武装させる
 
@@ -185,14 +198,37 @@ def test_relax_latches_and_torque_on_needs_long_press(rig):
     assert teleop._estop
     assert harness.estop[-1] is True
 
-    # トルクオンを短く押しても入らない
+    # ホームを短く押しても入らない
     buttons = [0] * N_BUTTONS
-    buttons[TORQUE_ON] = 1
+    buttons[HOME] = 1
     _pump(harness, None, buttons, seconds=0.15)
     assert teleop._estop
 
     # 長押しで入る
     _pump(harness, None, buttons, seconds=0.5)
+    assert not teleop._estop
+    assert harness.estop[-1] is False
+
+
+def test_home_sends_pose_before_torque_on(rig):
+    """ホームポジションは「目標角 → 少し置いてトルクオン」の順。
+
+    逆順だと、サーボに残っている古い目標角へ飛んでからホームへ動く。
+    """
+    harness, teleop = rig
+    _pump(harness, seconds=0.2)
+    _pump(harness, None, _btn(RELAX), seconds=0.2)      # 脱力しておく
+    assert teleop._estop
+    harness.motion.clear()
+    n_estop = len(harness.estop)
+
+    # 長押し成立の直後は、技だけ出ていてトルクはまだ入っていない
+    _pump(harness, None, _btn(HOME), seconds=0.35, hz=200.0)
+    assert harness.motion == ['home'], harness.motion
+    assert teleop._estop, 'ホーム姿勢より先にトルクが入った'
+    assert len(harness.estop) == n_estop
+
+    _pump(harness, None, _btn(HOME), seconds=0.2)
     assert not teleop._estop
     assert harness.estop[-1] is False
 
@@ -294,3 +330,145 @@ def test_link_test_stops_when_joy_is_lost(rig):
     n_after_drop = len(harness.buzzer)
     time.sleep(0.3)
     assert len(harness.buzzer) == n_after_drop, '電波が切れてもブザーが鳴り続けている'
+
+
+# ---------------------------------------------------------------- 自律動作
+def _enter_auto(harness, teleop):
+    _pump(harness, seconds=0.2)                     # 再武装
+    _pump(harness, None, _btn(AUTO), seconds=0.5)   # 長押し
+    assert teleop._auto, '自律動作に入れていない'
+    _pump(harness, seconds=0.1)                     # ボタンを離す
+
+
+def test_autonomy_needs_long_press(rig):
+    harness, teleop = rig
+    _pump(harness, seconds=0.2)
+    _pump(harness, None, _btn(AUTO), seconds=0.15)  # 短押し
+    assert not teleop._auto
+    _pump(harness, None, _btn(AUTO), seconds=0.4)   # 続けて長押し
+    assert teleop._auto
+    assert harness.auto[-1] is True
+
+
+def test_autonomy_stops_publishing_cmd_walk(rig):
+    """自律動作中は /cmd_walk を出さない。behavior と奪い合わないため。"""
+    harness, teleop = rig
+    _enter_auto(harness, teleop)
+    assert harness.walk[-1].linear.x == 0.0, '自律に入る前にゼロを置いていない'
+
+    harness.walk.clear()
+    axes = [0.0, -1.0, 0.0, 0.0, 0.0, 0.0]
+    _pump(harness, axes, _btn(DEADMAN), seconds=0.5)   # スティックもデッドマンも効かない
+    assert harness.walk == [], f'自律動作中に /cmd_walk が出ている: {len(harness.walk)}件'
+
+
+def test_autonomy_ignores_punch(rig):
+    """パンチは割り込みではないので、自律動作中は送らない。"""
+    harness, teleop = rig
+    _enter_auto(harness, teleop)
+    harness.motion.clear()
+    _pump(harness, None, _btn(DEADMAN, PUNCH_R), seconds=0.3)
+    assert harness.motion == []
+    assert teleop._auto, 'パンチで自律動作が止まった'
+
+
+def test_relax_interrupts_autonomy(rig):
+    harness, teleop = rig
+    _enter_auto(harness, teleop)
+    _pump(harness, None, _btn(RELAX), seconds=0.2)
+    assert not teleop._auto
+    assert harness.auto[-1] is False
+    assert teleop._estop
+
+
+def test_getup_interrupts_autonomy_without_deadman(rig):
+    """起き上がりは割り込み技。デッドマン無しで通り、自律動作を止める。"""
+    harness, teleop = rig
+    _enter_auto(harness, teleop)
+    harness.motion.clear()
+    _pump(harness, None, _btn(GETUP_F), seconds=0.3)   # R1 は押さない
+    assert harness.motion == ['getup_front']
+    assert not teleop._auto
+    assert harness.auto[-1] is False
+
+
+def test_link_test_interrupts_autonomy(rig):
+    harness, teleop = rig
+    _enter_auto(harness, teleop)
+    _pump(harness, None, _btn(LINK), seconds=0.3)
+    assert not teleop._auto
+    assert harness.auto[-1] is False
+    assert harness.led[-1] == (0, 200, 255)
+
+
+def test_home_interrupts_autonomy(rig):
+    harness, teleop = rig
+    _enter_auto(harness, teleop)
+    harness.motion.clear()
+    _pump(harness, None, _btn(HOME), seconds=0.6)
+    assert not teleop._auto
+    assert harness.motion == ['home']
+
+
+def test_autonomy_stops_on_joy_loss(rig):
+    """電波が切れたら自律動作も止めて脱力する (stop_on_joy_loss=true)。"""
+    harness, teleop = rig
+    _enter_auto(harness, teleop)
+    time.sleep(0.6)                                    # joy_timeout=0.3 を超えて黙る
+    assert not teleop._auto
+    assert harness.auto[-1] is False
+    assert teleop._estop
+
+
+def test_autonomy_refused_while_relaxed(rig):
+    """脱力中は自律動作に入らない。先にホームポジションでトルクを入れる。"""
+    harness, teleop = rig
+    _pump(harness, seconds=0.2)
+    _pump(harness, None, _btn(RELAX), seconds=0.2)
+    assert teleop._estop
+    _pump(harness, None, _btn(AUTO), seconds=0.5)
+    assert not teleop._auto
+
+
+def test_walk_resumes_after_interrupt_only_after_rearm(rig):
+    """自律から戻っても、デッドマンを一度離すまで歩かない。"""
+    harness, teleop = rig
+    _enter_auto(harness, teleop)
+    axes = [0.0, -1.0, 0.0, 0.0, 0.0, 0.0]
+    # デッドマンを押したまま割り込む → 戻っても動かない
+    _pump(harness, axes, _btn(DEADMAN, GETUP_F), seconds=0.4)
+    assert not teleop._auto
+    harness.walk.clear()
+    _pump(harness, axes, _btn(DEADMAN), seconds=0.4)
+    assert all(m.linear.x == 0.0 for m in harness.walk), '再武装せずに歩き出した'
+    _pump(harness, seconds=0.15)                       # 一度離す
+    harness.walk.clear()
+    _pump(harness, axes, _btn(DEADMAN), seconds=0.5)
+    assert max(m.linear.x for m in harness.walk) > 0.0
+
+
+def test_home_does_not_repeat_while_held(rig):
+    """ホームを押しっぱなしにしても home は 1 回だけ。
+
+    2026-08-28 実機で、押し続けると home_hold ごとに再送されるのを確認して修正。
+    """
+    harness, teleop = rig
+    _pump(harness, seconds=0.2)
+    _pump(harness, None, _btn(RELAX), seconds=0.2)
+    harness.motion.clear()
+    _pump(harness, None, _btn(HOME), seconds=1.5)      # home_hold=0.3 の 5 倍押し続ける
+    assert harness.motion == ['home'], f'押しっぱなしで連射された: {harness.motion}'
+    assert not teleop._estop
+
+    _pump(harness, seconds=0.2)                        # 一度離すと再び効く
+    _pump(harness, None, _btn(HOME), seconds=0.5)
+    assert harness.motion == ['home', 'home']
+
+
+def test_autonomy_does_not_repeat_while_held(rig):
+    harness, teleop = rig
+    _pump(harness, seconds=0.2)
+    _pump(harness, None, _btn(AUTO), seconds=1.5)      # autonomy_hold=0.3 を超えて保持
+    assert teleop._auto
+    n = len([v for v in harness.auto if v is True])
+    assert n == 1, f'/autonomy true が {n} 回出ている'
