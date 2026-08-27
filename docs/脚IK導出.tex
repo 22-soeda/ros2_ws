@@ -1,0 +1,448 @@
+\documentclass[a4paper,11pt]{ltjsarticle}
+\usepackage{amsmath,amssymb,mathtools,graphicx,booktabs,geometry,array}
+\geometry{margin=20mm}
+\usepackage{xcolor}
+\usepackage{framed}
+\definecolor{shadecolor}{RGB}{240,246,245}
+\usepackage[hidelinks,hypertexnames=false]{hyperref}
+
+\newcommand{\ck}[1]{\begin{shaded}\noindent［検算］\ #1\end{shaded}}
+\newcommand{\Rx}{R_x}\newcommand{\Ry}{R_y}\newcommand{\Rz}{R_z}
+\newcommand{\bp}{\boldsymbol{p}}\newcommand{\bo}{\boldsymbol{o}}\newcommand{\br}{\boldsymbol{r}}
+\newcommand{\ba}{\boldsymbol{a}}\newcommand{\bw}{\boldsymbol{w}}\newcommand{\bq}{\boldsymbol{q}}
+\newcommand{\vc}[3]{\begin{pmatrix}#1\\#2\\#3\end{pmatrix}}
+\newcommand{\cs}[1]{c_{#1}}\newcommand{\sn}[1]{s_{#1}}
+\newcommand{\T}{^{\mathsf T}}
+\allowdisplaybreaks
+
+\title{片脚 6 自由度の順運動学と逆運動学（解析解）の導出\\
+\large ---- 股 3 軸交差・膝 1 軸・足首 2 軸（高さオフセット付き）----}
+\author{添田悠介}
+\date{2026-08-27}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+ROBO-ONE Auto 2026 機の片脚について、関節角 $\theta_1,\dots,\theta_6$ から足先の位置 $\bp$ と姿勢 $R$ を求める順運動学（FK）と、
+$\bp,R$ から関節角を求める逆運動学（IK）を、ベクトルと回転行列 $\Rx,\Ry,\Rz$ の形で導出する。
+FK は
+$\bp=\bp_0+R_1R_2R_3\bigl(\bp_3+R_4(\bp_4+R_5(\bp_5+R_6\bp_6))\bigr)$
+を内側から展開するだけである。
+股 3 軸は 1 点で交わる（軸直交）とし、膝は 4 節リンクの出力軸の角度、足首 2 軸はパラレルリンクで駆動されるピボットの角度として扱う。
+足首の 2 軸は交わらず高さ方向に $\ell_5$ のオフセットがあるが、足座標系で書き直すと $z$ 成分への定数の加算に解きほぐせ、
+IK は $A\cos\theta_5$ についての 2 次方程式ひとつで閉じる。
+導出した式は Python で実装し、ランダムな 20\,000 姿勢で $\mathrm{FK}(\mathrm{IK}(x))=x$ を $10^{-13}\,\mathrm{mm}$ の精度で確認した。
+サーボ角と関節角の変換（膝 4 節リンク・足首パラレルリンク）は本文書の範囲外で、接続点だけを最後に示す。
+\end{abstract}
+
+\section{前提と、図で確認しておくこと}
+
+\subsection{機体の軸配置の読み取り}
+CAD 外観図（図~\ref{fig:cad}）から読み取った関節配置を表~\ref{tab:joints} にまとめる。
+腰に近い側から、股 3 軸（ピッチ・ロール・ヨー）、膝（4 節リンク、ロール軸）、足首 2 軸（ピッチ・ロール、パラレルリンク駆動）である。
+図で確認できる事実は次の 3 つで、これが座標系の取り方を決める。
+\begin{itemize}
+\item 股の 2 軸目（J2）のホーン面と膝クランク板は同じ向き（視線方向）を向く。よってゼロ姿勢で J2 $\parallel$ J4。
+\item 足首の上側ピボットの円筒は画像の左右方向、下側ピボットの端面は視線方向を向く。よって J5 $\parallel$ J1、J6 $\parallel$ J4。
+\item 足首の 2 つのピボットは同じ高さにない。J5 と J6 は高さ方向に数 mm ずれる。
+\end{itemize}
+したがって「ロール」と呼ばれる J2・J4・J6 は共通の方向を軸に持ち、「ピッチ」と呼ばれる J1・J5 はそれと直交する共通の方向を軸に持つ。
+本文書ではロール軸の方向を $x$、ピッチ軸の方向を $y$、上向きを $z$ と定め、ロール $=\Rx$、ピッチ $=\Ry$、ヨー $=\Rz$ とする。
+膝は $x$ 軸まわりに曲がるので、脚の屈曲面（歩行の前後面）は $y$--$z$ 平面である。
+CAD の $x$ 軸（外観図の赤線）は J1 の軸に沿って見え、本文書の $y$ に相当する。CAD 座標をそのまま使いたい場合は $x\leftrightarrow y$ を読み替えればよく、導出の構造は変わらない。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[height=170mm]{fig/cad_annotated.png}
+\caption{CAD 外観図に関節番号と軸方向を重ねたもの。⊙ は紙面手前向きの軸。J4 のピボット位置は概略で、CAD で確定する。}
+\label{fig:cad}
+\end{figure}
+
+\subsection{仮定}
+閉形式解が出るために置く仮定は次の 3 つで、いずれも CAD で mm 単位で確かめる項目である。
+\begin{description}
+\item[A1] 股 3 軸は 1 点 $\bo_3$ で交わる。
+\item[A2] 股中心 $\bo_3$ は膝の屈曲面内にある。すなわち、膝軸（$x$ 方向の直線）と足首ピッチ軸（$y$ 方向の直線）の共通垂線を含み膝軸に垂直な平面の上に $\bo_3$ が乗る（$\bo_3$ から下腿線への $x$ 方向オフセットが 0）。
+\item[A3] 足首の 2 軸のオフセットは高さ方向のみ。J5 軸と J6 軸の共通垂線の足は、下腿線が J5 軸に当たる点 $\bo_5$ と一致する。
+\end{description}
+A1 が崩れると股が球面関節でなくなり、位置と姿勢の分離（\S\ref{sec:ik-policy}）ができなくなる。
+A2・A3 が崩れると 2 次方程式（\S\ref{sec:ik-quad}）が 4 次以上になる。崩れた場合の扱いは \S\ref{sec:offsets} に書く。
+大腿の $y$ 方向オフセット（膝軸が股中心の真下からずれる）は仮定に含めない。有効大腿長と膝角のオフセットに吸収できる（\S\ref{sec:offsets}）。
+
+\section{記号と約束}
+
+\subsection{回転行列}
+\begin{equation}
+\Rx(\theta)=\begin{pmatrix}1&0&0\\0&\cos\theta&-\sin\theta\\0&\sin\theta&\cos\theta\end{pmatrix},\quad
+\Ry(\theta)=\begin{pmatrix}\cos\theta&0&\sin\theta\\0&1&0\\-\sin\theta&0&\cos\theta\end{pmatrix},\quad
+\Rz(\theta)=\begin{pmatrix}\cos\theta&-\sin\theta&0\\\sin\theta&\cos\theta&0\\0&0&1\end{pmatrix}.
+\label{eq:rot}
+\end{equation}
+いずれも直交行列で $R(\theta)\T=R(\theta)^{-1}=R(-\theta)$。以下 $\cs{k}=\cos\theta_k$、$\sn{k}=\sin\theta_k$ と略記する。
+関節が「その時点のリンク座標系の軸」まわりに回るとき、回転行列は右から掛かる。本文書では全ての関節が局所軸まわりなので、腰側から順に右へ掛けていく。
+
+\subsection{記法：添え字は帰属する軸の番号}
+添え字 $k=1,\dots,6$ は関節（軸）の番号で統一する。
+\begin{itemize}
+\item $R_k$：関節 $k$ の回転行列。$R_1=\Ry(\theta_1)$、$R_2=\Rx(\theta_2)$、$R_3=\Rz(\theta_3)$、$R_4=\Rx(\theta_4)$、$R_5=\Ry(\theta_5)$、$R_6=\Rx(\theta_6)$。積は $R_{123}:=R_1R_2R_3$、$R_{456}:=R_4R_5R_6$ と書く。
+\item $\Sigma_k$：関節 $k$ の回転まで含めたリンク座標系。$\Sigma_0$ はボディ座標系。$\Sigma_0$ から見た $\Sigma_k$ の姿勢は $R_1\cdots R_k$。
+\item $\bo_k$：関節 $k$ の回転中心（$\Sigma_k$ の原点）。股 3 軸は 1 点で交わるので $\bo_1=\bo_2=\bo_3$。
+\item $\bp_k$：関節 $k$ の後ろに付くリンクベクトル。$\bo_k$ から次の回転中心 $\bo_{k+1}$ へのベクトルを $\Sigma_k$ で書いた定数。$\ell_k:=|\bp_k|$。
+\item $\bp_0$：ボディ原点から股中心 $\bo_3$ へのベクトル（$\Sigma_0$、定数。左右の脚で異なる）。
+\item $\bp$、$R$：足先基準点の位置と足の姿勢（$\Sigma_0$）。足座標系 $\Sigma_6$ の原点を $\bp$ に置く。
+\end{itemize}
+ゼロ姿勢（全 $\theta_k=0$）で全ての $\Sigma_k$ は $\Sigma_0$ と同じ向きを持ち、脚は真下に伸び、足裏は水平である。
+
+\begin{table}[htbp]
+\centering
+\caption{関節とリンクの定義。角度の正方向は軸の正方向に対する右ねじ。長さの値は仮置きで、CAD で確定次第差し替える。}
+\label{tab:joints}
+\small
+\begin{tabular}{cllclll}
+\toprule
+$k$ & 呼び名 & 軸 & $R_k$ & 回転中心 $\bo_k$ & $\bp_k$（$\Sigma_k$ で表す） & 備考\\
+\midrule
+1 & 股ピッチ & $y$ & $\Ry(\theta_1)$ & $\bo_3$ & $\boldsymbol 0$ & ボディに直付け\\
+2 & 股ロール & $x$ & $\Rx(\theta_2)$ & $\bo_3$ & $\boldsymbol 0$ & \\
+3 & 股ヨー & $z$ & $\Rz(\theta_3)$ & $\bo_3$：股中心 & $(0,0,-\ell_3)$ 大腿 & 3 軸は $\bo_3$ で交わる（A1）\\
+4 & 膝ロール & $x$ & $\Rx(\theta_4)$ & $\bo_4$：膝軸 & $(0,0,-\ell_4)$ 下腿 & 4 節リンクの出力軸\\
+5 & 足首ピッチ & $y$ & $\Ry(\theta_5)$ & $\bo_5$：上側ピボット & $(0,0,-\ell_5)$ 高さオフセット & パラレルリンク駆動\\
+6 & 足首ロール & $x$ & $\Rx(\theta_6)$ & $\bo_6$：下側ピボット & $(0,0,-\ell_6)$ 足先まで & $\ell_5$ は数 mm\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+$\bp_4$ が $z$ 成分しか持たないのは仮定ではなく、点の取り方による。
+膝軸（$x$ 方向）と足首ピッチ軸（$y$ 方向）は直交するねじれの位置にある 2 直線で、共通垂線は一意に決まる。
+$\bo_4$ と $\bo_5$ をその共通垂線の足に取れば、$\bo_4\to\bo_5$ は両軸に垂直、すなわち $\Sigma_4$ の $z$ 方向になる。$\ell_4$ は 2 軸間の距離である。
+同様に $\bo_5\to\bo_6$ は J5 軸と J6 軸の共通垂線で $\Sigma_5$ の $z$ 方向になり、その足が $\bo_5$ と一致することが仮定 A3 である。
+$\bp_6$ は足先基準点の取り方で決まる任意の定数で、$z$ 成分以外を持っていてもよい。
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=0.95\textwidth]{fig/axis_layout.pdf}
+\caption{骨格の 2 面図。左は $x$ 軸の正側から見た $y$--$z$ 平面、右は $y$ 軸の正側から見た $x$--$z$ 平面。赤の矢印がリンクベクトル $\bp_k$、色付きの軸記号が各関節の回転軸。中央下は足首の拡大で、$\ell_5$ の向きを示す。}
+\label{fig:layout}
+\vspace{6mm}
+\includegraphics[width=0.95\textwidth]{fig/iso_frames.pdf}
+\caption{3D 骨格の正射影。各関節を経た後の座標系 $\Sigma_k$ の三軸（$x$ 赤・$y$ 緑・$z$ 青）と、関節の回転軸（破線）。右の曲げ姿勢で、J1・J5 の軸が $y$ 色、J2・J4・J6 の軸が $x$ 色のまま各座標系と一緒に回っていることを確認する。}
+\label{fig:iso}
+\end{figure}
+
+\section{順運動学}
+
+腰側から順にリンクベクトルを回して足していくだけなので、足先の位置と姿勢は
+\begin{equation}
+\bp=\bp_0+R_1R_2R_3\Bigl(\bp_3+R_4\bigl(\bp_4+R_5(\bp_5+R_6\bp_6)\bigr)\Bigr),\qquad
+R=R_1R_2R_3R_4R_5R_6.
+\tag{FK-1}\label{eq:fk1}
+\end{equation}
+あとはこれを内側から展開して整理する。各関節の回転中心は途中の部分和で、
+$\bo_3=\bp_0$、$\bo_4=\bo_3+R_{123}\bp_3$、$\bo_5=\bo_4+R_{123}R_4\bp_4$、$\bo_6=\bo_5+R_{123}R_4R_5\bp_5$ である。
+股 3 軸が交わるので $\bo_3=\bp_0$ は関節角によらない定数になる。これが IK の要になる。
+
+\subsection{遠位の展開}
+$\Rx(\theta)$ は $(0,0,-\ell)$ を $(0,\ \ell\sin\theta,\ -\ell\cos\theta)$ に、$\Ry(\theta)$ は $(x,y,z)$ を $(\cs{}x+\sn{}z,\ y,\ -\sn{}x+\cs{}z)$ に送る。内側から順に、
+\begin{align}
+R_6\bp_6&=\vc{0}{\ell_6\sn6}{-\ell_6\cs6},\\
+\bp_5+R_6\bp_6&=\vc{0}{\ell_6\sn6}{-(\ell_5+\ell_6\cs6)}=:\vc{0}{\ell_6\sn6}{-\lambda},\qquad \lambda:=\ell_5+\ell_6\cs6,\\
+R_5(\bp_5+R_6\bp_6)&=\vc{-\lambda\sn5}{\ell_6\sn6}{-\lambda\cs5},\\
+\bp_4+R_5(\cdots)&=\vc{-\lambda\sn5}{\ell_6\sn6}{-(\ell_4+\lambda\cs5)}=:\vc{-\lambda\sn5}{\ell_6\sn6}{-\mu},\qquad \mu:=\ell_4+\lambda\cs5,\\
+R_4(\bp_4+\cdots)&=\vc{-\lambda\sn5}{\ell_6\cs4\sn6+\mu\sn4}{\ell_6\sn4\sn6-\mu\cs4},
+\end{align}
+最後に $\bp_3$ を足して、股中心から足先までを $\Sigma_3$ で見たベクトル
+\begin{equation}
+\bq:=\bp_3+R_4\bigl(\bp_4+R_5(\bp_5+R_6\bp_6)\bigr)
+=\vc{-\lambda\sn5}{\ell_6\cs4\sn6+\mu\sn4}{-\ell_3+\ell_6\sn4\sn6-\mu\cs4},
+\qquad \lambda=\ell_5+\ell_6\cs6,\ \ \mu=\ell_4+\lambda\cs5
+\tag{FK-2}\label{eq:q}
+\end{equation}
+を得る。足首オフセット $\ell_5$ は $\lambda$ の中にだけ現れる。$\ell_5$ は「足先までの長さ $\ell_6\cs6$ に足される定数」として効き、$\theta_5$ で回された結果 $x$ 成分 $-\lambda\sn5$ にも顔を出す。
+
+\subsection{股の回転行列}
+\begin{equation}
+\Rx(\theta_2)\Rz(\theta_3)=
+\begin{pmatrix}1&0&0\\0&\cs2&-\sn2\\0&\sn2&\cs2\end{pmatrix}
+\begin{pmatrix}\cs3&-\sn3&0\\\sn3&\cs3&0\\0&0&1\end{pmatrix}
+=\begin{pmatrix}\cs3&-\sn3&0\\\cs2\sn3&\cs2\cs3&-\sn2\\\sn2\sn3&\sn2\cs3&\cs2\end{pmatrix},
+\end{equation}
+\begin{equation}
+R_{123}=\Ry(\theta_1)\Rx(\theta_2)\Rz(\theta_3)
+=\begin{pmatrix}
+\cs1\cs3+\sn1\sn2\sn3 & \sn1\sn2\cs3-\cs1\sn3 & \sn1\cs2\\
+\cs2\sn3 & \cs2\cs3 & -\sn2\\
+-\sn1\cs3+\cs1\sn2\sn3 & \sn1\sn3+\cs1\sn2\cs3 & \cs1\cs2
+\end{pmatrix}.
+\tag{FK-3}\label{eq:R123}
+\end{equation}
+第 2 行と第 3 列が単純なのは、$\Ry$ が $y$ 成分を、$\Rz$ が $z$ 成分を動かさないためで、IK で股角を取り出すときにこの行・列を使う。
+
+\subsection{結果}
+\begin{equation}
+\bp=\bp_0+R_{123}\,\bq,\qquad R=R_{123}R_{456}.
+\tag{FK-4}\label{eq:fk4}
+\end{equation}
+$\bq$ は \eqref{eq:q} の「股中心 $\bo_3$ から足先 $\bp$ までを $\Sigma_3$ で見たベクトル」、すなわち \eqref{eq:fk1} の大括弧の中身で、股 3 軸の回転 $R_{123}$ を掛けて $\bp_0$ を足せば足先位置になる。
+$R_{456}$ は
+\begin{equation}
+R_{456}=\Rx(\theta_4)\Ry(\theta_5)\Rx(\theta_6)
+=\begin{pmatrix}
+\cs5 & \sn5\sn6 & \sn5\cs6\\
+\sn4\sn5 & \cs4\cs6-\sn4\cs5\sn6 & -\cs4\sn6-\sn4\cs5\cs6\\
+-\cs4\sn5 & \sn4\cs6+\cs4\cs5\sn6 & -\sn4\sn6+\cs4\cs5\cs6
+\end{pmatrix}.
+\tag{FK-5}\label{eq:R456}
+\end{equation}
+\ck{ゼロ姿勢 $\theta=0$ で $\lambda=\ell_5+\ell_6$、$\mu=\ell_4+\ell_5+\ell_6$、$\bq=(0,0,-(\ell_3+\ell_4+\ell_5+\ell_6))$、$R=I$ となり、脚が真下に伸びた姿勢と一致する。}
+
+\section{逆運動学}
+
+\subsection{方針：位置と姿勢の分離}\label{sec:ik-policy}
+与えられるのは $\bp$ と $R$。求めるのは $\theta_1,\dots,\theta_6$。
+股 3 軸が $\bo_3$ で交わるため $\bo_3=\bp_0$ は関節角によらない。一方、足座標系から見た $\bo_3$ の位置は、足に近い 3 関節（$\theta_4,\theta_5,\theta_6$）だけで決まる。そこで
+\begin{enumerate}
+\item 股中心 $\bo_3$ から足首ロール軸 $\bo_6$ へのベクトルを足座標系 $\Sigma_6$ で書いたもの $\br$ を目標値から作り、
+\item $\br$ を $\theta_4,\theta_5,\theta_6$ で表した式と突き合わせて 3 角を解き、
+\item 残った回転 $R\,R_{456}\T=R_{123}$ から股 3 角を取り出す
+\end{enumerate}
+という順で解く。手首が球面関節の 6 軸アームを手先側から解く手順と同じで、ここでは球面関節が腰側にあるので足側から解いていく。
+
+\subsection{$\br$ の定義と、遠位 3 角による表現}
+\eqref{eq:fk1} で $R_6\bp_6$ を外した部分が $\bo_6$ なので、$\bo_6=\bp-R\bp_6$。よって
+\begin{equation}
+\br:=R\T(\bo_6-\bo_3)=R\T(\bp-\bp_0)-\bp_6.
+\tag{IK-1}\label{eq:ik1}
+\end{equation}
+右辺は目標値と定数だけなので $\br=(r_x,r_y,r_z)$ は既知である。
+一方 \eqref{eq:fk1} から $\bo_6-\bo_3=R_{123}\bigl(\bp_3+R_4(\bp_4+R_5\bp_5)\bigr)$、$R\T=R_6\T R_5\T R_4\T R_{123}\T$ なので
+\begin{align}
+\br&=R_6\T R_5\T R_4\T\bigl(\bp_3+R_4(\bp_4+R_5\bp_5)\bigr)\notag\\
+&=R_6\T R_5\T\bigl(R_4\T\bp_3+\bp_4+R_5\bp_5\bigr)\notag\\
+&=R_6\T\Bigl(R_5\T\bigl(R_4\T\bp_3+\bp_4\bigr)+\bp_5\Bigr).
+\label{eq:r-chain}
+\end{align}
+FK と同じ入れ子を、転置した回転で内側から剥がした形になっている。$\bp_5$ の前の回転が消えたのが要点で、オフセット $\ell_5$ は $\Sigma_5$ で見ると回転を受けない定数として現れる。
+内側から名前を付けて成分を出す。
+\begin{align}
+\ba&:=R_4\T\bp_3+\bp_4 &&\text{（$\Sigma_4$ で見た $\bo_3\to\bo_5$）}\notag\\
+&=\vc{0}{-\ell_3\sn4}{-\ell_3\cs4}+\vc{0}{0}{-\ell_4}=\vc{0}{-B}{-A},
+\qquad A:=\ell_3\cs4+\ell_4,\ \ B:=\ell_3\sn4.
+\label{eq:a}
+\end{align}
+$A$ は $\Sigma_4$ で見た $\bo_5$ から $\bo_3$ までの高さ、$B$ は屈曲面内の横ずれで、膝角だけで決まる（図~\ref{fig:distal}(a)）。
+$\Ry(-\theta_5)$ の成分は $\begin{pmatrix}\cs5&0&-\sn5\\0&1&0\\\sn5&0&\cs5\end{pmatrix}$ なので
+\begin{equation}
+\bw:=R_5\T\ba+\bp_5=\vc{\cs5\cdot0-\sn5(-A)}{-B}{\sn5\cdot0+\cs5(-A)}+\vc{0}{0}{-\ell_5}
+=\vc{A\sn5}{-B}{-(A\cs5+\ell_5)}
+\qquad\text{（$\Sigma_5$ で見た $\bo_3\to\bo_6$）}.
+\label{eq:w}
+\end{equation}
+$\ell_5$ は $z$ 成分にそのまま足されるだけである（図~\ref{fig:distal}(b)）。これが IK 側の解きほぐしで、以後 $\ell_5$ は $A\cs5$ と組になってしか現れない。
+$\Rx(-\theta_6)$ の成分は $\begin{pmatrix}1&0&0\\0&\cs6&\sn6\\0&-\sn6&\cs6\end{pmatrix}$ なので
+\begin{equation}
+\br=R_6\T\bw=\vc{A\sn5}{-B\cs6-(A\cs5+\ell_5)\sn6}{B\sn6-(A\cs5+\ell_5)\cs6}.
+\label{eq:r}
+\end{equation}
+成分ごとに書くと
+\begin{align}
+r_x&=A\sn5, \tag{IK-2}\label{eq:ik2}\\
+r_y&=-B\cs6-(A\cs5+\ell_5)\sn6, \tag{IK-3}\label{eq:ik3}\\
+r_z&=B\sn6-(A\cs5+\ell_5)\cs6. \tag{IK-4}\label{eq:ik4}
+\end{align}
+未知数は $\theta_4$（$A,B$ の中）、$\theta_5$、$\theta_6$ の 3 つ、式も 3 本である。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{fig/distal_chain.pdf}
+\caption{遠位 3 関節の解きほぐし。(a) $\Sigma_4$ の $y$--$z$ 平面：膝角で $(A,B)$ が決まる。(b) $\Sigma_5$ の $x$--$z$ 平面：$\theta_5$ で回った後に $\ell_5$ が $-z$ 方向に足される。(c) $\Sigma_6$ の $y$--$z$ 平面：$(-B,\,-(A\cs5+\ell_5))$ を $-\theta_6$ 回すと $(r_y,r_z)$ になる。}
+\label{fig:distal}
+\end{figure}
+
+\subsection{$\theta_5$ と $\theta_4$：2 次方程式}\label{sec:ik-quad}
+\eqref{eq:ik3}\eqref{eq:ik4} は $(-B,\ -(A\cs5+\ell_5))$ を角 $-\theta_6$ だけ回した形なので、長さが保たれる。
+\begin{equation}
+r_y^2+r_z^2=\bigl(B\cs6+(A\cs5+\ell_5)\sn6\bigr)^2+\bigl(B\sn6-(A\cs5+\ell_5)\cs6\bigr)^2=B^2+(A\cs5+\ell_5)^2.
+\end{equation}
+（交差項 $2B(A\cs5+\ell_5)\cs6\sn6$ が符号違いで消える。）これに \eqref{eq:ik2} の 2 乗を足すと
+\begin{equation}
+|\br|^2=A^2\sn5^2+B^2+A^2\cs5^2+2\ell_5A\cs5+\ell_5^2=A^2+B^2+2\ell_5A\cs5+\ell_5^2.
+\label{eq:rnorm}
+\end{equation}
+$A^2+B^2$ は膝角だけの量で、
+\begin{equation}
+A^2+B^2=(\ell_3\cs4+\ell_4)^2+\ell_3^2\sn4^2=\ell_3^2+\ell_4^2+2\ell_3\ell_4\cs4.
+\label{eq:cosine}
+\end{equation}
+これは大腿・下腿・$\bo_3\bo_5$ の三角形の余弦定理である。
+ここで $\cs4$ を $A$ で書き直す。$A=\ell_3\cs4+\ell_4$ より $\cs4=(A-\ell_4)/\ell_3$、これを \eqref{eq:cosine} に入れて
+\begin{equation}
+A^2+B^2=\ell_3^2+\ell_4^2+2\ell_4(A-\ell_4)=\ell_3^2-\ell_4^2+2\ell_4A.
+\label{eq:AB-linear}
+\end{equation}
+\eqref{eq:rnorm} に代入すると
+\begin{equation}
+|\br|^2=\ell_3^2-\ell_4^2+2\ell_4A+2\ell_5A\cs5+\ell_5^2
+\quad\Longleftrightarrow\quad
+2\ell_4A+2\ell_5\,(A\cs5)=|\br|^2-\ell_3^2+\ell_4^2-\ell_5^2=:K.
+\tag{IK-5}\label{eq:ik5}
+\end{equation}
+$K$ は既知である。未知数を
+\begin{equation}
+X:=A\cs5,\qquad Y:=A\sn5=r_x\ \ (\text{\eqref{eq:ik2} より既知}),\qquad A=\sqrt{X^2+Y^2}
+\end{equation}
+と置き換えると（$A>0$ を仮定。\S\ref{sec:branch} 参照）、\eqref{eq:ik5} は $X$ だけの方程式
+\begin{equation}
+2\ell_4\sqrt{X^2+Y^2}=K-2\ell_5X
+\tag{IK-6}\label{eq:ik6}
+\end{equation}
+になる。$\ell_5=0$ なら右辺が定数で $A=K/(2\ell_4)$ が直ちに出る。$\ell_5\ne0$ では両辺を 2 乗する（右辺 $\ge0$ が必要。後で確認する）。
+\begin{align}
+4\ell_4^2(X^2+Y^2)&=K^2-4\ell_5KX+4\ell_5^2X^2\notag\\
+4(\ell_4^2-\ell_5^2)X^2+4\ell_5K\,X+4\ell_4^2Y^2-K^2&=0\notag\\
+(\ell_4^2-\ell_5^2)\,X^2+\ell_5K\,X+\Bigl(\ell_4^2Y^2-\tfrac{K^2}{4}\Bigr)&=0.
+\tag{IK-7}\label{eq:ik7}
+\end{align}
+判別式を整理する。
+\begin{align}
+D&=(\ell_5K)^2-4(\ell_4^2-\ell_5^2)\Bigl(\ell_4^2Y^2-\tfrac{K^2}{4}\Bigr)\notag\\
+&=\ell_5^2K^2-4\ell_4^4Y^2+\ell_4^2K^2+4\ell_5^2\ell_4^2Y^2-\ell_5^2K^2\notag\\
+&=\ell_4^2\bigl[K^2-4(\ell_4^2-\ell_5^2)Y^2\bigr].
+\end{align}
+よって
+\begin{equation}
+X=\frac{-\ell_5K\pm \ell_4\sqrt{K^2-4(\ell_4^2-\ell_5^2)\,Y^2}}{2(\ell_4^2-\ell_5^2)}.
+\label{eq:Xpm}
+\end{equation}
+符号の選択。$\ell_5\to0$ で \eqref{eq:Xpm} は $X\to\pm\sqrt{(K/2\ell_4)^2-Y^2}=\pm\sqrt{A^2-Y^2}$ となり、$\pm$ は $\cos\theta_5$ の符号そのものである。
+足首ピッチが $|\theta_5|<90^\circ$ にある通常の姿勢では $\cs5>0$ なので $+$ を取る。
+また 2 乗の前の条件 $K-2\ell_5X\ge0$ は、$+$ 根について
+\begin{align}
+K-2\ell_5X&=\frac{K(\ell_4^2-\ell_5^2)+\ell_5^2K-\ell_5\ell_4\sqrt{K^2-4(\ell_4^2-\ell_5^2)Y^2}}{\ell_4^2-\ell_5^2}
+=\frac{\ell_4\bigl[K\ell_4-\ell_5\sqrt{K^2-4(\ell_4^2-\ell_5^2)Y^2}\bigr]}{\ell_4^2-\ell_5^2}\notag\\
+&\ge\frac{\ell_4\,(K\ell_4-\ell_5K)}{\ell_4^2-\ell_5^2}=\frac{\ell_4K}{\ell_4+\ell_5}>0
+\end{align}
+（$\sqrt{\cdot}\le K$、$K>0$、$\ell_4>\ell_5$ を使った）で自動的に満たされる。$K>0$ は \eqref{eq:ik5} で $A>0$、$X>0$ なら成り立つ。以上から
+\begin{align}
+X&=\frac{-\ell_5K+\ell_4\sqrt{K^2-4(\ell_4^2-\ell_5^2)\,r_x^2}}{2(\ell_4^2-\ell_5^2)},\qquad Y=r_x, \tag{IK-7$'$}\label{eq:ik7d}\\
+\theta_5&=\operatorname{atan2}(Y,\,X), \tag{IK-8}\label{eq:ik8}\\
+A&=\sqrt{X^2+Y^2},\qquad \cos\theta_4=\frac{A-\ell_4}{\ell_3},\qquad \theta_4=\sigma\arccos\frac{A-\ell_4}{\ell_3},\qquad B=\ell_3\sin\theta_4. \tag{IK-9}\label{eq:ik9}
+\end{align}
+$\sigma=\pm1$ は膝の曲がる向きで、機体で一度決めたら固定する（\S\ref{sec:branch}）。
+
+\subsection{$\theta_6$}
+$Q:=A\cs5+\ell_5=X+\ell_5$ と置くと \eqref{eq:ik3}\eqref{eq:ik4} は
+\begin{equation}
+\begin{pmatrix}-r_y\\-r_z\end{pmatrix}=\begin{pmatrix}\cs6&\sn6\\-\sn6&\cs6\end{pmatrix}\begin{pmatrix}B\\Q\end{pmatrix}
+\quad\Longleftrightarrow\quad
+\begin{pmatrix}B\\Q\end{pmatrix}=\begin{pmatrix}\cs6&-\sn6\\\sn6&\cs6\end{pmatrix}\begin{pmatrix}-r_y\\-r_z\end{pmatrix}.
+\end{equation}
+右の式を成分で書くと $B=-\cs6r_y+\sn6r_z$、$Q=-\sn6r_y-\cs6r_z$。
+第 1 式に $-r_y$、第 2 式に $-r_z$ を掛けて足すと $\cs6(r_y^2+r_z^2)=-Br_y-Qr_z$。
+第 1 式に $r_z$、第 2 式に $-r_y$ を掛けて足すと $\sn6(r_y^2+r_z^2)=Br_z-Qr_y$。よって
+\begin{equation}
+\theta_6=\operatorname{atan2}\bigl(B\,r_z-(X+\ell_5)\,r_y,\ \ -B\,r_y-(X+\ell_5)\,r_z\bigr).
+\tag{IK-10}\label{eq:ik10}
+\end{equation}
+$r_y^2+r_z^2=B^2+Q^2>0$ なので atan2 の引数が同時に 0 になることはない。
+
+\subsection{股 3 軸}
+遠位 3 角が決まったので、\eqref{eq:fk4} から
+\begin{equation}
+M:=R\,R_{456}\T=R\,\Rx(-\theta_6)\,\Ry(-\theta_5)\,\Rx(-\theta_4)=R_{123}.
+\tag{IK-11}\label{eq:ik11}
+\end{equation}
+$M$ は数値として既知。\eqref{eq:R123} の単純な成分
+$M_{23}=-\sn2$、$M_{21}=\cs2\sn3$、$M_{22}=\cs2\cs3$、$M_{13}=\sn1\cs2$、$M_{33}=\cs1\cs2$ を使い、$\cs2>0$（$|\theta_2|<90^\circ$）の枝で
+\begin{align}
+\theta_2&=\operatorname{atan2}\Bigl(-M_{23},\ \sqrt{M_{21}^2+M_{22}^2}\Bigr), \tag{IK-12}\label{eq:ik12}\\
+\theta_3&=\operatorname{atan2}(M_{21},\,M_{22}), \tag{IK-13}\label{eq:ik13}\\
+\theta_1&=\operatorname{atan2}(M_{13},\,M_{33}). \tag{IK-14}\label{eq:ik14}
+\end{align}
+$M_{21}^2+M_{22}^2=\cs2^2$ なので \eqref{eq:ik12} は $\cs2\ge0$ を選ぶ形になっている。
+\eqref{eq:ik13}\eqref{eq:ik14} は $\cs2$ で割る代わりに atan2 の両引数に $\cs2$ を残しているので、$\cs2>0$ なら符号を含めて正しい角が出る。
+
+\subsection{手順のまとめ}
+\begin{shaded}
+\noindent 入力：$\bp,\ R$（$\Sigma_0$）、定数 $\bp_0,\bp_6,\ell_3,\ell_4,\ell_5,\sigma$。
+\begin{enumerate}
+\item $\br=R\T(\bp-\bp_0)-\bp_6$ \hfill \eqref{eq:ik1}
+\item $K=|\br|^2-\ell_3^2+\ell_4^2-\ell_5^2$、$Y=r_x$ \hfill \eqref{eq:ik5}\eqref{eq:ik2}
+\item $X=\dfrac{-\ell_5K+\ell_4\sqrt{K^2-4(\ell_4^2-\ell_5^2)Y^2}}{2(\ell_4^2-\ell_5^2)}$ \hfill \eqref{eq:ik7d}
+\item $\theta_5=\operatorname{atan2}(Y,X)$、$A=\sqrt{X^2+Y^2}$ \hfill \eqref{eq:ik8}
+\item $\theta_4=\sigma\arccos\bigl((A-\ell_4)/\ell_3\bigr)$、$B=\ell_3\sin\theta_4$ \hfill \eqref{eq:ik9}
+\item $\theta_6=\operatorname{atan2}\bigl(Br_z-(X+\ell_5)r_y,\ -Br_y-(X+\ell_5)r_z\bigr)$ \hfill \eqref{eq:ik10}
+\item $M=R\,\Rx(-\theta_6)\Ry(-\theta_5)\Rx(-\theta_4)$ \hfill \eqref{eq:ik11}
+\item $\theta_2=\operatorname{atan2}(-M_{23},\sqrt{M_{21}^2+M_{22}^2})$、$\theta_3=\operatorname{atan2}(M_{21},M_{22})$、$\theta_1=\operatorname{atan2}(M_{13},M_{33})$ \hfill \eqref{eq:ik12}--\eqref{eq:ik14}
+\end{enumerate}
+三角関数の呼び出しは atan2 が 5 回、arccos が 1 回、平方根が 3 回、$M$ の計算に $\cos,\sin$ が 3 組。反復はない。
+\end{shaded}
+
+\subsection{分岐・特異点・到達可能性}\label{sec:branch}
+\begin{description}
+\item[膝の分岐 $\sigma$] \eqref{eq:ik9} の $\arccos$ は $\theta_4$ と $-\theta_4$ を区別しない。$\Rx(\theta_4)$ で $\theta_4>0$ は足首を $+y$ 側へ動かす。
+人間型の膝（屈曲で足首が後ろへ下がる）なら、機体の前方が $+y$ か $-y$ かで $\sigma$ が決まる。CAD で前方を確認して固定する。
+\item[膝伸展の特異点] $A\to\ell_3+\ell_4$ で $\cos\theta_4\to1$、$\theta_4\to0$。ここでは $\arccos$ の微分が発散し、目標位置のわずかな誤差で $\theta_4$ が大きく揺れる。
+また数値ノイズで引数が $1$ をわずかに超えることがあるので、$(A-\ell_4)/\ell_3$ は $[-1,1]$ にクランプしてから $\arccos$ に渡す。
+\S\ref{sec:numeric} の数値検算では、$\theta_4=-2.8^\circ$ の姿勢で汎用数値ソルバが $+2.8^\circ$ の枝（残差 $10^{-15}$ の正当な別解）に落ちた例があり、解析解はこの曖昧さを $\sigma$ で明示的に断っている。
+\item[$A>0$ の仮定] $A=\ell_3\cs4+\ell_4>0\Leftrightarrow\cs4>-\ell_4/\ell_3$。$\ell_3\le\ell_4$ なら常に成立。$\ell_3>\ell_4$ のときは膝の屈曲が $|\theta_4|<\arccos(-\ell_4/\ell_3)$ に限られるが、$\ell_3\approx\ell_4$ の脚では実質 $180^\circ$ 近くまで許される。
+\item[$\theta_5$ の分岐] \eqref{eq:Xpm} の $+$ 根が $\cs5>0$。足首ピッチが $\pm90^\circ$ を超える姿勢は使わないので固定してよい。
+\item[股ロールのジンバルロック] $\cs2=0$（$\theta_2=\pm90^\circ$）で $\theta_1$ と $\theta_3$ が分離できない。脚を真横に $90^\circ$ 開く姿勢で、可動域の外にある。
+\item[到達不能の判定] 次のどれかで不能とする。(i) \eqref{eq:Xpm} の根号の中 $K^2-4(\ell_4^2-\ell_5^2)Y^2<0$（$x$ 方向に遠すぎる）。(ii) $|(A-\ell_4)/\ell_3|>1$（遠すぎる、または近すぎる）。(iii) $K\le0$。
+運用では (ii) をクランプで「最寄りの姿勢」に落とすか、エラーを返すかを motion ノード側で決める。
+\item[$\ell_4>\ell_5$] \eqref{eq:Xpm} の分母と符号判定で使った。数 mm の $\ell_5$ に対して自明に成り立つ。
+\end{description}
+
+\subsection{$\ell_5=0$ での検算}
+$\ell_5=0$ とすると \eqref{eq:ik5} は $2\ell_4A=|\br|^2-\ell_3^2+\ell_4^2$、すなわち
+\begin{equation}
+A=\frac{|\br|^2-\ell_3^2+\ell_4^2}{2\ell_4},\qquad
+\cos\theta_4=\frac{A-\ell_4}{\ell_3}=\frac{|\br|^2-\ell_3^2-\ell_4^2}{2\ell_3\ell_4}
+\end{equation}
+となり、$\bo_3\bo_4\bo_5$ の三角形の余弦定理そのものに戻る。梶田編『ヒューマノイドロボット』の脚 IK（股 3 軸交差＋膝＋足首 2 軸交差）で膝角を $|\br|$ の余弦定理から出す段と同じである。
+同書の脚は膝と足首ピッチが平行（$\Ry$ が 3 つ並ぶ）で、本機は膝が $\Rx$、足首が $\Ry$ の後 $\Rx$ なので、膝角の後の足首角の取り出し方が異なる。
+本機の場合は \eqref{eq:ik2} から $\theta_5$、\eqref{eq:ik10} から $\theta_6$ の順で、いずれも atan2 ひとつで出る。
+「位置で遠位 3 角、姿勢で股 3 角」という分離の構造は同じである。
+
+\section{仮定が崩れたときの扱い}\label{sec:offsets}
+\paragraph{大腿の $y$ オフセット（吸収できる）}
+膝軸が股中心の真下から屈曲面内でずれていて $\bp_3=(0,b,-\ell_3)$ のとき、
+\begin{equation}
+R_4\T\bp_3=\Rx(-\theta_4)\vc{0}{b}{-\ell_3}=\vc{0}{b\cs4-\ell_3\sn4}{-b\sn4-\ell_3\cs4}.
+\end{equation}
+$\ell_3':=\sqrt{\ell_3^2+b^2}$、$\varphi:=\operatorname{atan2}(b,\ell_3)$ と置くと $(0,b,-\ell_3)=\Rx(\varphi)(0,0,-\ell_3')$ なので
+$R_4\T\bp_3=\Rx(-(\theta_4-\varphi))(0,0,-\ell_3')$。
+すなわち $\ell_3\to\ell_3'$、$\theta_4\to\theta_4':=\theta_4-\varphi$ と読み替えれば \eqref{eq:a} 以降がそのまま成り立つ。
+IK では $\ell_3'$ で $\theta_4'$ を解いてから $\theta_4=\theta_4'+\varphi$ とし、股 3 角の抽出 \eqref{eq:ik11} には本来の $\theta_4$ を使う。
+
+\paragraph{$\bo_3$ の $x$ オフセット（A2 の破れ、吸収できない）}
+$\bp_3=(a_3,0,-\ell_3)$ で $a_3\ne0$ のとき $\ba=(a_3,-B,-A)$、$R_5\T\ba=(a_3\cs5+A\sn5,\ -B,\ a_3\sn5-A\cs5)$ となり、
+\eqref{eq:ik2} が $r_x=a_3\cs5+A\sn5$ に変わって $X,Y$ の分離が崩れる。$a_3$ を J6 軸方向（$\Sigma_5$ の $x$）に足先側へ滑らせて吸収することもできない（$\Ry(\theta_5)$ が $x$ と $z$ を混ぜるため）。
+
+\paragraph{足首オフセットの $y$ 成分（A3 の破れ、吸収できない）}
+$\bp_5=(0,\delta,-\ell_5)$ のとき \eqref{eq:w} の $y$ 成分が $-B+\delta$ になり、\eqref{eq:AB-linear} の $A$ についての 1 次の関係が $\sqrt{\ell_3^2-(A-\ell_4)^2}$ を含む形に崩れる。
+
+\paragraph{股 3 軸の非交差（A1 の破れ）}
+$\bo_3$ が関節角に依存して動くため \eqref{eq:ik1} の $\br$ が既知でなくなる。
+
+いずれの場合も、オフセットが数 mm なら「オフセットを 0 と置いた本文書の閉形式解を初期値に、真の FK でニュートン法を 1〜2 回」で十分収束する見込みで、
+これがタスク起票時に決めたハイブリッド方針である。CAD の実測値でオフセットの有無を確定してから判断する。
+
+\section{数値検算}\label{sec:numeric}
+\texttt{scripts/leg\_ik.py} に FK（\eqref{eq:fk1} そのもの）と IK（手順のまとめ）を実装し、仮置き寸法 $\ell_3=\ell_4=80$、$\ell_5=6$、$\ell_6=25$、$\bp_0=(0,0,-30)$ で次を確認した。
+\begin{itemize}
+\item ゼロ姿勢で $\bp=\bp_0+(0,0,-191)$。
+\item 可動域内（股 $\pm60^\circ$、膝 $0$〜$150^\circ$、足首 $\pm60^\circ$）の一様乱数 $20\,000$ 姿勢で $\mathrm{FK}(\mathrm{IK}(\mathrm{FK}(\theta)))$ と $\mathrm{FK}(\theta)$ を比較：位置の最大誤差 $1.1\times10^{-13}\,\mathrm{mm}$、姿勢行列の最大誤差 $6.7\times10^{-16}$、関節角の最大誤差 $2.2\times10^{-10}$ 度。到達不能判定は 0 件。
+\item $\ell_5=0$ で IK の $\cos\theta_4$ が余弦定理 $(|\br|^2-\ell_3^2-\ell_4^2)/(2\ell_3\ell_4)$ と一致。
+\item 汎用数値ソルバ（\texttt{scipy.optimize.least\_squares}、解析解に摂動を加えた初期値）と 200 姿勢で比較：両者の FK の差は最大 $5\times10^{-14}$。1 件だけ膝伸展近傍（$\theta_4=-2.8^\circ$）で数値ソルバが反対側の膝の枝に落ちた。
+\end{itemize}
+本文の途中式は \texttt{scripts/verify\_symbolic.py} で \texttt{sympy} により機械照合した：\eqref{eq:R123}、\eqref{eq:q}、\eqref{eq:R456}、\eqref{eq:a}--\eqref{eq:r}、$\br$ が連鎖から出る $R\T(\bo_6-\bo_3)$ に一致すること、\eqref{eq:rnorm}、\eqref{eq:AB-linear}、\eqref{eq:ik7} とその判別式、\eqref{eq:ik10} の $\sin,\cos$、股角抽出に使う $M$ の成分、大腿オフセットの吸収。
+
+\section{サーボ角への変換層との接続}
+本文書の出力は関節角 $\theta_1,\dots,\theta_6$ で、サーボの指令値ではない。
+J1〜J3 はサーボ直結なので関節角がそのまま指令角（オフセットと符号を除く）。
+J4 は 4 節リンクの出力角なので、サーボ角 $\phi_4=f_4(\theta_4)$ の写像を別途導出する。平行四辺形なら恒等写像、非平行なら 4 節リンクの閉形式または LUT。
+J5・J6 はパラレルリンクで、2 本のロッドの長さ（または 2 つのクランク角）が $(\theta_5,\theta_6)$ の関数として決まる。
+こちらも $(\phi_5,\phi_6)=f_{56}(\theta_5,\theta_6)$ を別途導出し、motion ノードでは IK $\to f_4, f_{56}\to$ サーボ指令の順に呼ぶ。
+
+\end{document}
