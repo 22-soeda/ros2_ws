@@ -106,6 +106,15 @@ public:
   int read_byte(uint8_t id, uint8_t addr);
   int read_word(uint8_t id, uint8_t addr);
 
+  // --- 生レジスタ書き（設定の修正用。EEPROM 領域は unlock_eeprom で挟むこと）---
+  // EEPROM(addr < 40) は書き込み回数に上限があるので、ループの中で呼ばないこと。
+  bool write_byte(uint8_t id, uint8_t addr, uint8_t value);
+  bool write_word(uint8_t id, uint8_t addr, uint16_t value);
+
+  // EEPROM のロック解除/再ロック（LOCK レジスタ 55）。unlock=true で書き込み可になる。
+  // 設定変更後は必ず false に戻すこと（意図しない書き換えを防ぐ）。
+  bool unlock_eeprom(uint8_t id, bool unlock);
+
   // --- 統計（通信品質の把握用）---
   uint64_t tx_count() const { return tx_count_; }
   uint64_t rx_fail() const { return rx_fail_; }

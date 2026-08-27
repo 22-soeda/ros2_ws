@@ -290,4 +290,37 @@ int FeetechBus::read_word(uint8_t id, uint8_t addr)
   return v;
 }
 
+bool FeetechBus::write_byte(uint8_t id, uint8_t addr, uint8_t value)
+{
+  std::lock_guard<std::mutex> lk(mtx_);
+  ++tx_count_;
+  const bool ok = sm_->writeByte(id, addr, value) == 1;
+  if (!ok) {
+    ++rx_fail_;
+  }
+  return ok;
+}
+
+bool FeetechBus::write_word(uint8_t id, uint8_t addr, uint16_t value)
+{
+  std::lock_guard<std::mutex> lk(mtx_);
+  ++tx_count_;
+  const bool ok = sm_->writeWord(id, addr, value) == 1;
+  if (!ok) {
+    ++rx_fail_;
+  }
+  return ok;
+}
+
+bool FeetechBus::unlock_eeprom(uint8_t id, bool unlock)
+{
+  std::lock_guard<std::mutex> lk(mtx_);
+  ++tx_count_;
+  const bool ok = (unlock ? sm_->unLockEeprom(id) : sm_->LockEeprom(id)) == 1;
+  if (!ok) {
+    ++rx_fail_;
+  }
+  return ok;
+}
+
 }  // namespace feetech_servo
