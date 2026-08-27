@@ -73,7 +73,8 @@ class SCS
 	SCS();
 	SCS(u8 End);
 	SCS(u8 End, u8 Level);
-	virtual ~SCS() {} // Virtual destructor for proper cleanup in derived classes
+	// NOTE(feetech_servo): 元は空実装で syncReadRxBuff がリークしていた。
+	virtual ~SCS() { delete[] syncReadRxBuff; syncReadRxBuff = nullptr; }
 
 	// Disable copying (Rule of Three/Five) - class owns dynamic memory (syncReadRxBuff)
 	SCS(const SCS&) = delete;
@@ -142,15 +143,19 @@ class SCS
 	void syncReadBegin(u8 IDN, u8 rxLen);      // Begin sync-read
 	void syncReadEnd();                        // End sync-read
   public:
-	u8 Level; // Servo status return level
-	u8 End;   // Processor endianness structure
-	u8 Error; // Servo status
-	u8 syncReadRxPacketIndex;
-	u8 syncReadRxPacketLen;
-	u8* syncReadRxPacket;
-	u8* syncReadRxBuff;
-	u16 syncReadRxBuffLen;
-	u16 syncReadRxBuffMax;
+	// NOTE(feetech_servo): 元の SDK はこれらをコンストラクタで初期化していなかった。
+	// 特に syncReadRxBuff が不定値のまま syncReadBegin() に入ると
+	// `if (syncReadRxBuff) delete[] syncReadRxBuff;` がゴミを delete して落ちる
+	// （free(): invalid pointer / SIGSEGV）。既定値をここで与えて塞ぐ。
+	u8 Level = 1; // Servo status return level
+	u8 End = 0;   // Processor endianness structure
+	u8 Error = 0; // Servo status
+	u8 syncReadRxPacketIndex = 0;
+	u8 syncReadRxPacketLen = 0;
+	u8* syncReadRxPacket = nullptr;
+	u8* syncReadRxBuff = nullptr;
+	u16 syncReadRxBuffLen = 0;
+	u16 syncReadRxBuffMax = 0;
 
   protected:
 	virtual int writeSCS(unsigned char* nDat, int nLen) = 0;
