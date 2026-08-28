@@ -14,6 +14,9 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <exec_depend>roboone_teleop</exec_depend>
+  <exec_depend>roboone_motion_node</exec_depend>
+  <exec_depend>roboone_perception</exec_depend>
+  <exec_depend>roboone_behavior</exec_depend>
   <exec_depend>roboone_ui</exec_depend>
   <exec_depend>realsense_bringup</exec_depend>
   <exec_depend>rosbag2_transport</exec_depend>

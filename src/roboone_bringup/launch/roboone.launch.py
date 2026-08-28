@@ -10,8 +10,14 @@
 
     ui:=true|false        ui ノード（OLED / RGB LED / ブザー）
     teleop:=true|false    joy + teleop ノード
+    motion:=true|false    motion ノード（歩行 / 技 / IK / サーボ送信）
+    allow_torque:=true|false  ★既定 true（機体が動く）。false で「読むだけ」の通し確認
     camera:=false|true    RealSense。既定 OFF（USB 帯域と CPU を食うので、要るときだけ）
-    record:=false|true    ros2 bag 記録（config/record_topics.yaml のトピック）
+    detector:=false|true  opponent_detector（敵機検出）。camera:=true と対で使う
+    behavior:=false|true  behavior（自律の行動判断）。detector:=true と対で使う
+    record:=true|false    ros2 bag 記録（config/record_topics.yaml のトピック）。
+                          **既定 true。** 走らせた記録が残っていないと、あとから
+                          「なぜそうなったか」を追えない。切るなら record:=false
     log_dir:=<path>       記録の置き場。既定 ~/roboone_logs
 
     joy_backend:=game_controller|joy    teleop へそのまま渡す
@@ -30,7 +36,10 @@
   * teleop が死ぬと OLED は最後の RELAX 表示のまま固まり、LED は赤の点滅で残る。
     ターミナルには "process has died" が出る。この 3 つで気付ける前提。
 
-motion ノードができたら、teleop の下に 1 ブロック足す（README「motion を足すとき」）。
+★既定でサーボにトルクが入る（allow_torque:=true）。起動前に機体を支えておくこと。
+allow_torque:=false にすると、/cmd_walk → 歩行計画 → IK → 生カウント までは全部回って
+/joint_states と /motion/state に出るが、トルクも位置指令も送らないので機体は動かない。
+操縦系だけを確かめたいときはこちら。
 """
 
 import os
@@ -75,10 +84,19 @@ def generate_launch_description():
                               description='ui ノード（OLED / RGB LED / ブザー）'),
         DeclareLaunchArgument('teleop', default_value='true',
                               description='joy + teleop ノード'),
+        DeclareLaunchArgument('motion', default_value='true',
+                              description='motion ノード（歩行 / 技 / IK / サーボ送信）'),
+        DeclareLaunchArgument('allow_torque', default_value='true',
+                              description='★サーボにトルクを入れる。false で「読むだけ」の通し確認になる'),
         DeclareLaunchArgument('camera', default_value='false',
                               description='RealSense。USB 帯域と CPU を食うので既定 OFF'),
-        DeclareLaunchArgument('record', default_value='false',
-                              description='ros2 bag 記録（config/record_topics.yaml）'),
+        DeclareLaunchArgument('detector', default_value='false',
+                              description='opponent_detector。camera:=true と対で使う'),
+        DeclareLaunchArgument('behavior', default_value='false',
+                              description='behavior（自律の行動判断）。detector:=true と対で使う'),
+        DeclareLaunchArgument('record', default_value='true',
+                              description='ros2 bag 記録（config/record_topics.yaml）。'
+                                          '既定 true。切るなら record:=false'),
         DeclareLaunchArgument('log_dir',
                               default_value=os.path.expanduser('~/roboone_logs'),
                               description='記録の置き場'),
@@ -105,10 +123,22 @@ def generate_launch_description():
                 'config': LaunchConfiguration('teleop_config'),
             }.items()),
 
-        # --- 3) motion（未実装）---------------------------------------------
-        # ここに roboone_motion のノードが入る。/cmd_walk・/cmd_motion・/estop の
-        # 受け手なので、teleop より後で構わない（/estop は latched なので、後から
-        # 上げても直前の脱力状態が届く）。
+        # --- 3) motion -------------------------------------------------------
+        # /cmd_walk・/cmd_motion・/estop の受け手。teleop より後で構わない
+        # （/estop は latched なので、後から上げても直前の脱力状態が届く）。
+        #
+        # ★allow_torque は既定 true。**機体が動く。** 起動前に支えておくこと。
+        #   ただし起動しただけでは動かず、/cmd_motion を 1 回受けるまで脱力で待つ
+        #   （teleop の Options 長押しが home → /estop false の順に送る）。
+        #   機体を動かさずに通し確認したいときは allow_torque:=false。
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(get_package_share_directory('roboone_motion_node'),
+                             'launch', 'motion.launch.py')),
+            condition=IfCondition(LaunchConfiguration('motion')),
+            launch_arguments={
+                'allow_torque': LaunchConfiguration('allow_torque'),
+            }.items()),
 
         # --- 4) カメラ（要るときだけ）----------------------------------------
         IncludeLaunchDescription(
@@ -117,6 +147,30 @@ def generate_launch_description():
                              'launch', 'realsense.launch.py')),
             condition=IfCondition(LaunchConfiguration('camera'))),
 
-        # --- 5) 記録 ---------------------------------------------------------
+        # --- 5) 知覚（カメラを上げているときだけ意味がある）--------------------
+        # 検出器は点群ではなく深度画像を直接読む（理由は
+        # roboone_perception/opponent_detector_node.py 冒頭）。camera:=true の
+        # 既定構成では点群も出るが、検出器はそれを購読しない。
+        Node(package='roboone_perception', executable='opponent_detector',
+             name='opponent_detector', output='screen',
+             parameters=[os.path.join(
+                 get_package_share_directory('roboone_perception'),
+                 'config', 'opponent_detector.yaml')],
+             condition=IfCondition(LaunchConfiguration('detector'))),
+
+        # --- 6) 判断（自律動作）------------------------------------------------
+        # /opponent と /ring_edge の受け手なので detector より後で構わない。
+        # **上げただけでは機体は動かない。** behavior は /autonomy が true の間しか
+        # /cmd_walk を出さず、それを立てるのは teleop の長押しである（規則 5.1.2 の
+        # 無線始動機構）。既定を false にしてあるのは、検出器の試走で行動層まで
+        # 上がってしまうと、うっかり /autonomy を立てたときに歩き出すため。
+        Node(package='roboone_behavior', executable='behavior',
+             name='behavior', output='screen',
+             parameters=[os.path.join(
+                 get_package_share_directory('roboone_behavior'),
+                 'config', 'behavior.yaml')],
+             condition=IfCondition(LaunchConfiguration('behavior'))),
+
+        # --- 7) 記録 ---------------------------------------------------------
         OpaqueFunction(function=_recorder),
     ])
