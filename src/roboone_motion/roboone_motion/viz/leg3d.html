@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>脚 3D ビジュアライザ</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --page: #f7f7f5;
+  --panel: #ffffff;
+  --ink: #101010;
+  --ink-2: #55534f;
+  --muted: #8b8984;
+  --border: rgba(0,0,0,0.12);
+  --grid: #dedcd4;
+  --right: #e2703a;
+  --left: #2f7fd1;
+  --ok: #1a9d6e;
+  --warn: #d9534f;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #0e0e0d; --panel: #171716; --ink: #f2f1ee; --ink-2: #bdbbb5;
+    --muted: #8b8984; --border: rgba(255,255,255,0.12); --grid: #2b2b28;
+    --right: #eb8452; --left: #4f9ae8; --ok: #33b98a; --warn: #e8635f;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  font: 13px/1.5 system-ui, -apple-system, "Noto Sans JP", sans-serif;
+  color: var(--ink); background: var(--page);
+  display: flex; overflow: hidden;
+}
+#stage { flex: 1 1 auto; position: relative; min-width: 0; }
+#view { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+#view.drag { cursor: grabbing; }
+#hud {
+  position: absolute; left: 12px; top: 12px; pointer-events: none;
+  font-size: 12px; color: var(--ink-2); line-height: 1.7;
+  text-shadow: 0 1px 2px var(--page);
+}
+#hud b { color: var(--ink); }
+#panel {
+  flex: 0 0 340px; background: var(--panel); border-left: 1px solid var(--border);
+  overflow-y: auto; padding: 14px 14px 40px;
+}
+h1 { font-size: 14px; margin: 0 0 2px; }
+.sub { color: var(--muted); font-size: 11px; margin-bottom: 14px; }
+fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 0 0 12px; padding: 10px 12px 12px; }
+legend { font-size: 11px; color: var(--muted); padding: 0 4px; }
+.tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+.tabs button {
+  flex: 1; padding: 7px 4px; font: inherit; font-size: 12px; cursor: pointer;
+  background: transparent; color: var(--ink-2);
+  border: 1px solid var(--border); border-radius: 7px;
+}
+.tabs button.on { background: var(--ink); color: var(--page); border-color: var(--ink); }
+.row { display: grid; grid-template-columns: 66px 1fr 54px; align-items: center; gap: 8px; margin: 5px 0; }
+.row label { font-size: 11px; color: var(--ink-2); }
+.row output { font-size: 11px; color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; }
+input[type=range] { width: 100%; accent-color: var(--ink); }
+input[type=number] { width: 100%; padding: 3px 5px; font: inherit; font-size: 11px;
+  background: transparent; color: var(--ink); border: 1px solid var(--border); border-radius: 5px; }
+button.act {
+  font: inherit; font-size: 12px; padding: 6px 10px; cursor: pointer; border-radius: 7px;
+  border: 1px solid var(--border); background: transparent; color: var(--ink);
+}
+button.act.primary { background: var(--ink); color: var(--page); border-color: var(--ink); }
+.btnrow { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.chip { font-size: 11px; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--border); }
+.chip.ok { color: var(--ok); border-color: var(--ok); }
+.chip.ng { color: var(--warn); border-color: var(--warn); }
+table.ang { width: 100%; border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; }
+table.ang th { text-align: right; font-weight: 500; color: var(--muted); padding: 1px 4px; }
+table.ang td { text-align: right; padding: 1px 4px; }
+td.r { color: var(--right); } td.l { color: var(--left); }
+.note { font-size: 11px; color: var(--muted); margin-top: 8px; }
+.legend { display: flex; gap: 12px; font-size: 11px; margin-bottom: 8px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; }
+label.ck { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--ink-2); margin: 3px 0; }
+@media (max-width: 780px) {
+  body { flex-direction: column; }
+  #panel { flex: 0 0 auto; max-height: 45vh; border-left: none; border-top: 1px solid var(--border); }
+}
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="view"></canvas>
+  <div id="hud"></div>
+</div>
+
+<div id="panel">
+  <h1>脚 3D ビジュアライザ</h1>
+  <div class="sub">関節位置は C++ の <code>leg_kinematics.hpp</code> が計算した値。
+    座標系は Σ_B（x 前 / y 左 / z 上）。</div>
+
+  <div class="tabs">
+    <button data-mode="joint" class="on">関節</button>
+    <button data-mode="ik">足先 IK</button>
+    <button data-mode="walk">歩行</button>
+  </div>
+
+  <div class="legend">
+    <span><i style="background:var(--right)"></i>右脚</span>
+    <span><i style="background:var(--left)"></i>左脚</span>
+    <span><i style="background:#d0342c"></i>x 前</span>
+    <span><i style="background:#2f9e44"></i>y 左</span>
+    <span><i style="background:#1971c2"></i>z 上</span>
+  </div>
+
+  <fieldset id="fs-joint">
+    <legend>関節角 [deg]</legend>
+    <label class="ck"><input type="checkbox" id="mirror" checked>左脚を鏡像で追従（J1/J3/J5 反転）</label>
+    <div id="jointRows"></div>
+    <div class="btnrow"><button class="act" id="jzero">ゼロ姿勢</button>
+      <button class="act" id="jcrouch">屈む</button></div>
+  </fieldset>
+
+  <fieldset id="fs-ik" style="display:none">
+    <legend>足裏中心の目標（骨盤基準 Σ_B）[mm / deg]</legend>
+    <label class="ck"><input type="checkbox" id="ikmirror" checked>左右対称に動かす</label>
+    <div id="ikRows"></div>
+    <div class="btnrow"><button class="act" id="ikreset">立位に戻す</button></div>
+    <div id="ikstat" class="note"></div>
+  </fieldset>
+
+  <fieldset id="fs-walk" style="display:none">
+    <legend>歩行（walk_core → IK）</legend>
+    <div id="walkRows"></div>
+    <div class="btnrow">
+      <button class="act primary" id="wrun">計算して再生</button>
+      <button class="act" id="wplay">一時停止</button>
+    </div>
+    <div class="row" style="grid-template-columns:66px 1fr 54px">
+      <label>時刻</label><input type="range" id="wseek" min="0" max="0" value="0" step="1">
+      <output id="wtime">0.00 s</output>
+    </div>
+    <div id="wstat" class="note"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>寸法・姿勢</legend>
+    <div id="dimRows"></div>
+    <div class="note" id="dimnote"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>関節角の出力 [deg]</legend>
+    <table class="ang" id="angTable"></table>
+  </fieldset>
+
+  <fieldset>
+    <legend>表示</legend>
+    <label class="ck"><input type="checkbox" id="showGrid" checked>床グリッド</label>
+    <label class="ck"><input type="checkbox" id="showTrace" checked>足先の軌跡（歩行）</label>
+    <label class="ck"><input type="checkbox" id="showLabels" checked>関節ラベル</label>
+    <label class="ck"><input type="checkbox" id="follow" checked>歩行中はカメラを追従</label>
+    <div class="btnrow">
+      <button class="act" id="vFront">正面</button>
+      <button class="act" id="vSide">側面</button>
+      <button class="act" id="vTop">上面</button>
+      <button class="act" id="vIso">斜め</button>
+    </div>
+    <div class="note">ドラッグ=回転 / ホイール=ズーム / Shift+ドラッグ=平行移動</div>
+  </fieldset>
+</div>
+
+<script>
+"use strict";
+// ---------------------------------------------------------------------------
+// 3D の下ごしらえ（外部ライブラリなし。canvas 2D に自前で投影する）
+// ---------------------------------------------------------------------------
+const V = {
+  sub: (a, b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]],
+  add: (a, b) => [a[0]+b[0], a[1]+b[1], a[2]+b[2]],
+  mul: (a, k) => [a[0]*k, a[1]*k, a[2]*k],
+  dot: (a, b) => a[0]*b[0] + a[1]*b[1] + a[2]*b[2],
+  cross: (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]],
+  norm: a => { const n = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0]/n, a[1]/n, a[2]/n]; },
+};
+
+const cam = { yaw: -0.9, pitch: 0.30, dist: 900, target: [0, 0, 200] };
+const canvas = document.getElementById('view');
+const ctx = canvas.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = canvas.clientWidth; H = canvas.clientHeight;
+  canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  draw();
+}
+new ResizeObserver(resize).observe(canvas);
+
+/// 視点行列。世界は x 前 / y 左 / z 上 の右手系。
+function camBasis() {
+  const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+  const eye = V.add(cam.target,
+    [cam.dist * cp * Math.cos(cam.yaw), cam.dist * cp * Math.sin(cam.yaw), cam.dist * sp]);
+  const fwd = V.norm(V.sub(cam.target, eye));
+  const right = V.norm(V.cross(fwd, [0, 0, 1]));
+  const up = V.cross(right, fwd);
+  return { eye, fwd, right, up };
+}
+let B = camBasis();
+const FOV = 0.85;
+
+function project(p) {
+  const d = V.sub(p, B.eye);
+  const z = V.dot(d, B.fwd);
+  if (z < 1) return null;
+  const s = (H / 2) / Math.tan(FOV / 2);
+  return { x: W / 2 + s * V.dot(d, B.right) / z, y: H / 2 - s * V.dot(d, B.up) / z, z };
+}
+
+// 奥から手前へ描くための一時バッファ
+let items = [];
+function push(depth, fn) { items.push({ depth, fn }); }
+function flush() {
+  items.sort((a, b) => b.depth - a.depth);
+  for (const it of items) it.fn();
+  items = [];
+}
+function seg(a, b, color, width, alpha) {
+  const pa = project(a), pb = project(b);
+  if (!pa || !pb) return;
+  push((pa.z + pb.z) / 2, () => {
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.globalAlpha = alpha === undefined ? 1 : alpha;
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y); ctx.stroke();
+    ctx.globalAlpha = 1;
+  });
+}
+function dot3(p, color, r, label) {
+  const q = project(p);
+  if (!q) return;
+  push(q.z - 1, () => {
+    ctx.fillStyle = color; ctx.beginPath(); ctx.arc(q.x, q.y, r, 0, 7); ctx.fill();
+    if (label && ui.showLabels) {
+      ctx.fillStyle = css('--ink-2'); ctx.font = '10px system-ui';
+      ctx.fillText(label, q.x + 7, q.y - 6);
+    }
+  });
+}
+function poly3(pts, fill, stroke) {
+  const ps = pts.map(project);
+  if (ps.some(p => !p)) return;
+  const depth = ps.reduce((s, p) => s + p.z, 0) / ps.length;
+  push(depth, () => {
+    ctx.beginPath(); ctx.moveTo(ps[0].x, ps[0].y);
+    for (let i = 1; i < ps.length; i++) ctx.lineTo(ps[i].x, ps[i].y);
+    ctx.closePath();
+    if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+    if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1.2; ctx.stroke(); }
+  });
+}
+const cssCache = {};
+function css(name) {
+  if (!cssCache[name]) cssCache[name] = getComputedStyle(document.body).getPropertyValue(name).trim();
+  return cssCache[name];
+}
+
+// ---------------------------------------------------------------------------
+// 状態
+// ---------------------------------------------------------------------------
+const ui = { mode: 'joint', showGrid: true, showTrace: true, showLabels: true, follow: true };
+const JOINTS = ['J1 股ピッチ', 'J2 股ロール', 'J3 股ヨー', 'J4 膝', 'J5 足首ピッチ', 'J6 足首ロール'];
+const st = {
+  params: null,
+  jointR: [0, 0, 0, 0, 0, 0],
+  jointL: [0, 0, 0, 0, 0, 0],
+  ikR: { x: 0, y: -40, z: -280, roll: 0, pitch: 0, yaw: 0 },
+  ikL: { x: 0, y: 40, z: -280, roll: 0, pitch: 0, yaw: 0 },
+  poseR: null, poseL: null,          // {origins, foot, R, theta, status}
+  walk: null, wi: 0, playing: false, lastT: 0,
+};
+
+// ---------------------------------------------------------------------------
+// 通信
+// ---------------------------------------------------------------------------
+async function getJSON(url) {
+  const r = await fetch(url, { cache: 'no-store' });
+  return await r.json();
+}
+let pending = false, dirty = false;
+function requestPose() { dirty = true; pump(); }
+async function pump() {
+  if (pending || !dirty) return;
+  pending = true; dirty = false;
+  try {
+    if (ui.mode === 'joint') {
+      const q = s => 'th=' + s.map(v => v.toFixed(4)).join(',');
+      const [r, l] = await Promise.all([
+        getJSON('/api/fk?side=R&' + q(st.jointR)),
+        getJSON('/api/fk?side=L&' + q(st.jointL))]);
+      st.poseR = r; st.poseL = l;
+    } else if (ui.mode === 'ik') {
+      const q = o => `x=${o.x}&y=${o.y}&z=${o.z}&roll=${o.roll}&pitch=${o.pitch}&yaw=${o.yaw}`;
+      const [r, l] = await Promise.all([
+        getJSON('/api/ik?side=R&' + q(st.ikR)),
+        getJSON('/api/ik?side=L&' + q(st.ikL))]);
+      st.poseR = r; st.poseL = l;
+      document.getElementById('ikstat').innerHTML =
+        chip('右', r.status) + ' ' + chip('左', l.status);
+    }
+  } catch (e) {
+    document.getElementById('hud').textContent = '通信エラー: ' + e;
+  }
+  pending = false;
+  updateAngleTable();
+  draw();
+  if (dirty) pump();
+}
+function chip(name, status) {
+  const ok = status === 'ok';
+  return `<span class="chip ${ok ? 'ok' : 'ng'}">${name} ${status || '-'}</span>`;
+}
+
+// ---------------------------------------------------------------------------
+// 描画
+// ---------------------------------------------------------------------------
+function groundZ() {
+  // 骨盤基準の座標を、低いほうの足裏が床 (z=0) に載るように持ち上げる
+  let lo = 0;
+  for (const p of [st.poseR, st.poseL]) if (p && p.foot) lo = Math.min(lo, p.foot[2]);
+  return -lo;
+}
+
+function drawGrid(z0) {
+  if (!ui.showGrid) return;
+  const R = 600, step = 50, c = css('--grid');
+  for (let v = -R; v <= R; v += step) {
+    const major = (v % 200 === 0);
+    seg([v, -R, z0], [v, R, z0], c, major ? 1.1 : 0.6, major ? 0.9 : 0.5);
+    seg([-R, v, z0], [R, v, z0], c, major ? 1.1 : 0.6, major ? 0.9 : 0.5);
+  }
+  seg([0, 0, z0], [200, 0, z0], '#d0342c', 2.4, 1);      // x 前
+  seg([0, 0, z0], [0, 200, z0], '#2f9e44', 2.4, 1);      // y 左
+  seg([0, 0, z0], [0, 0, z0 + 200], '#1971c2', 2.4, 1);  // z 上
+}
+
+/// 1 本の脚。origins = [o3, o4, o5, o6, 足裏中心]（骨盤基準）。
+function drawLeg(pose, color, off) {
+  if (!pose || !pose.origins) return;
+  const P = pose.origins.map(p => V.add(p, off));
+  const names = ['o3 股', 'o4 膝', 'o5 足首1', 'o6 足首2', '足裏'];
+  for (let i = 0; i < 4; i++) seg(P[i], P[i + 1], color, i === 3 ? 3.5 : 6, 1);
+  for (let i = 0; i < 5; i++) dot3(P[i], color, i === 4 ? 3 : 4.5, names[i]);
+  // 足板（足姿勢 R の x=前 / y=左 に沿った長方形）
+  if (pose.R) {
+    const R = pose.R, c = P[4];
+    const ex = [R[0], R[3], R[6]], ey = [R[1], R[4], R[7]];
+    const corner = (a, b) => V.add(c, V.add(V.mul(ex, a), V.mul(ey, b)));
+    poly3([corner(55, 32), corner(55, -32), corner(-45, -32), corner(-45, 32)],
+      color + '33', color);
+    seg(c, V.add(c, V.mul(ex, 45)), '#d0342c', 1.6, 0.9);
+  }
+}
+
+function drawPelvis(off) {
+  const a = st.poseR && st.poseR.origins ? V.add(st.poseR.origins[0], off) : null;
+  const b = st.poseL && st.poseL.origins ? V.add(st.poseL.origins[0], off) : null;
+  if (!a || !b) return;
+  const top = [off[0], off[1], off[2]];
+  seg(a, b, css('--ink-2'), 5, 0.85);
+  seg(top, a, css('--ink-2'), 3, 0.5);
+  seg(top, b, css('--ink-2'), 3, 0.5);
+  dot3(top, css('--ink'), 4, '骨盤原点');
+  // 胴体の当たりを示す薄い箱
+  const h = 120, w = 60, d = 42;
+  const c = [[d, w, 0], [d, -w, 0], [-d, -w, 0], [-d, w, 0]];
+  const bot = c.map(p => V.add(top, p)), topp = c.map(p => V.add(top, [p[0], p[1], h]));
+  for (let i = 0; i < 4; i++) seg(bot[i], topp[i], css('--ink-2'), 1.2, 0.35);
+  poly3(topp, css('--ink-2') + '18', null);
+}
+
+function drawTrace(off) {
+  if (!ui.showTrace || !st.walk || ui.mode !== 'walk') return;
+  const f = st.walk.frames;
+  for (const [key, color] of [['right', css('--right')], ['left', css('--left')]]) {
+    for (let i = 1; i < f.length; i++) {
+      const a = f[i - 1][key], b = f[i][key];
+      if (!a || !b) continue;
+      const oa = worldOffset(f[i - 1]), ob = worldOffset(f[i]);
+      seg(V.add(a[4], oa), V.add(b[4], ob), color, 1.2, 0.35);
+    }
+  }
+}
+function worldOffset(fr) { return [fr.pelvis[0], fr.pelvis[1], fr.pelvis[2]]; }
+
+function draw() {
+  if (!W) return;
+  B = camBasis();
+  ctx.clearRect(0, 0, W, H);
+
+  let off = [0, 0, groundZ()];
+  if (ui.mode === 'walk' && st.walk && st.walk.frames.length) {
+    const fr = st.walk.frames[st.wi];
+    off = worldOffset(fr);
+    st.poseR = { origins: fr.right, foot: fr.right ? fr.right[4] : null,
+                 theta: fr.thR, status: fr.stR, R: fr.RR };
+    st.poseL = { origins: fr.left, foot: fr.left ? fr.left[4] : null,
+                 theta: fr.thL, status: fr.stL, R: fr.RL };
+    if (ui.follow) cam.target = [off[0], off[1], 200];
+  }
+  drawGrid(0);
+  drawTrace(off);
+  drawPelvis(off);
+  drawLeg(st.poseR, css('--right'), off);
+  drawLeg(st.poseL, css('--left'), off);
+  flush();
+  hud(off);
+}
+
+function hud(off) {
+  const el = document.getElementById('hud');
+  const f = (v) => (v === undefined || v === null) ? '-' : v.toFixed(1);
+  let s = `<b>Σ_B</b> x 前 / y 左 / z 上 &nbsp; [mm]<br>`;
+  s += `骨盤高さ <b>${f(off[2])}</b> mm`;
+  if (ui.mode === 'walk' && st.walk && st.walk.frames.length) {
+    const fr = st.walk.frames[st.wi];
+    s += `<br>t = <b>${fr.t.toFixed(2)}</b> s &nbsp; ${fr.state}` +
+         ` &nbsp; 支持足 ${fr.support > 0 ? '左' : fr.support < 0 ? '右' : '両'}`;
+  } else if (st.poseR && st.poseR.foot) {
+    s += `<br>右足裏 (${st.poseR.foot.map(v => v.toFixed(1)).join(', ')})`;
+  }
+  el.innerHTML = s;
+}
+
+function updateAngleTable() {
+  const t = document.getElementById('angTable');
+  const r = st.poseR && st.poseR.theta, l = st.poseL && st.poseL.theta;
+  let h = '<tr><th></th><th>右</th><th>左</th></tr>';
+  for (let k = 0; k < 6; k++) {
+    h += `<tr><th>${JOINTS[k]}</th>` +
+      `<td class="r">${r ? r[k].toFixed(2) : '-'}</td>` +
+      `<td class="l">${l ? l[k].toFixed(2) : '-'}</td></tr>`;
+  }
+  t.innerHTML = h;
+}
+
+// ---------------------------------------------------------------------------
+// 入力（カメラ）
+// ---------------------------------------------------------------------------
+let drag = null;
+canvas.addEventListener('pointerdown', e => {
+  drag = { x: e.clientX, y: e.clientY, pan: e.shiftKey };
+  canvas.setPointerCapture(e.pointerId); canvas.classList.add('drag');
+});
+canvas.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  drag.x = e.clientX; drag.y = e.clientY;
+  if (drag.pan) {
+    cam.target = V.add(cam.target, V.add(V.mul(B.right, -dx * cam.dist / 900),
+                                         V.mul(B.up, dy * cam.dist / 900)));
+  } else {
+    cam.yaw -= dx * 0.008;
+    cam.pitch = Math.max(-1.45, Math.min(1.45, cam.pitch + dy * 0.008));
+  }
+  draw();
+});
+for (const ev of ['pointerup', 'pointercancel'])
+  canvas.addEventListener(ev, () => { drag = null; canvas.classList.remove('drag'); });
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  cam.dist = Math.max(200, Math.min(3000, cam.dist * Math.exp(e.deltaY * 0.001)));
+  draw();
+}, { passive: false });
+
+// ---------------------------------------------------------------------------
+// パネル
+// ---------------------------------------------------------------------------
+function slider(parent, label, min, max, step, value, onInput, unit) {
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.innerHTML = `<label>${label}</label><input type="range" min="${min}" max="${max}"
+    step="${step}" value="${value}"><output>${value}${unit || ''}</output>`;
+  const inp = row.querySelector('input'), out = row.querySelector('output');
+  inp.addEventListener('input', () => {
+    out.textContent = (+inp.value).toFixed(step < 1 ? 2 : 0) + (unit || '');
+    onInput(+inp.value);
+  });
+  parent.appendChild(row);
+  return { set: v => { inp.value = v; out.textContent = (+v).toFixed(step < 1 ? 2 : 0) + (unit || ''); } };
+}
+
+const jointSliders = [];
+{
+  const p = document.getElementById('jointRows');
+  for (let k = 0; k < 6; k++) {
+    jointSliders.push(slider(p, JOINTS[k], -90, 150, 0.5, 0, v => {
+      st.jointR[k] = v;
+      if (document.getElementById('mirror').checked) {
+        const sgn = (k === 0 || k === 2 || k === 4) ? -1 : 1;
+        st.jointL[k] = sgn * v;
+      }
+      requestPose();
+    }, '°'));
+  }
+}
+document.getElementById('jzero').onclick = () => setJoints([0, 0, 0, 0, 0, 0]);
+document.getElementById('jcrouch').onclick = () => setJoints([0, -35, 0, 68, 0, -33]);
+function setJoints(v) {
+  for (let k = 0; k < 6; k++) { jointSliders[k].set(v[k]); st.jointR[k] = v[k]; }
+  const mir = document.getElementById('mirror').checked;
+  st.jointL = v.map((x, k) => (mir && (k === 0 || k === 2 || k === 4)) ? -x : x);
+  requestPose();
+}
+
+const ikSliders = {};
+{
+  const p = document.getElementById('ikRows');
+  const defs = [['x', '前後 x', -140, 140, 1], ['y', '左右 y', -160, 160, 1],
+                ['z', '上下 z', -390, -120, 1], ['roll', 'ロール', -35, 35, 0.5],
+                ['pitch', 'ピッチ', -35, 35, 0.5], ['yaw', 'ヨー', -35, 35, 0.5]];
+  for (const [key, label, mn, mx, sp] of defs) {
+    ikSliders[key] = slider(p, label, mn, mx, sp, st.ikR[key], v => {
+      st.ikR[key] = v;
+      if (document.getElementById('ikmirror').checked) {
+        st.ikL[key] = (key === 'y' || key === 'roll' || key === 'yaw') ? -v : v;
+      }
+      requestPose();
+    }, (key === 'x' || key === 'y' || key === 'z') ? ' mm' : '°');
+  }
+}
+document.getElementById('ikreset').onclick = () => {
+  const v = { x: 0, y: -40, z: -280, roll: 0, pitch: 0, yaw: 0 };
+  for (const k in v) { st.ikR[k] = v[k]; ikSliders[k].set(v[k]); }
+  st.ikL = { x: 0, y: 40, z: -280, roll: 0, pitch: 0, yaw: 0 };
+  requestPose();
+};
+
+const walkOpt = { vx: 0.10, vy: 0.0, zc: 0.27, dur: 6.0, w: 0.08 };
+{
+  const p = document.getElementById('walkRows');
+  slider(p, 'vx [m/s]', -0.15, 0.15, 0.01, walkOpt.vx, v => walkOpt.vx = v);
+  slider(p, 'vy [m/s]', -0.08, 0.08, 0.01, walkOpt.vy, v => walkOpt.vy = v);
+  slider(p, '骨盤高 z_c', 0.12, 0.30, 0.005, walkOpt.zc, v => walkOpt.zc = v, ' m');
+  slider(p, '足間隔 W', 0.05, 0.22, 0.005, walkOpt.w, v => walkOpt.w = v, ' m');
+  slider(p, '長さ [s]', 2, 20, 1, walkOpt.dur, v => walkOpt.dur = v);
+}
+document.getElementById('wrun').onclick = async () => {
+  const btn = document.getElementById('wrun');
+  btn.textContent = '計算中…'; btn.disabled = true;
+  try {
+    const d = await getJSON(`/api/walk?vx=${walkOpt.vx}&vy=${walkOpt.vy}` +
+      `&zc=${walkOpt.zc}&dur=${walkOpt.dur}&w=${walkOpt.w}`);
+    if (!d.ok) throw new Error(d.error || '失敗');
+    st.walk = d; st.wi = 0; st.playing = true; st.lastT = performance.now();
+    const sk = document.getElementById('wseek');
+    sk.max = d.frames.length - 1; sk.value = 0;
+    document.getElementById('wstat').innerHTML =
+      d.unreachable ? `<span class="chip ng">IK 未到達 ${d.unreachable} / ${d.frames.length} フレーム` +
+        ` (最初 t=${d.first_bad}s)</span><br>z_c を上げるか脚寸法を確認`
+        : `<span class="chip ok">全 ${d.frames.length} フレームで IK 解あり</span>`;
+    document.getElementById('wplay').textContent = '一時停止';
+    draw();
+  } catch (e) {
+    document.getElementById('wstat').textContent = 'エラー: ' + e;
+  }
+  btn.textContent = '計算して再生'; btn.disabled = false;
+};
+document.getElementById('wplay').onclick = () => {
+  st.playing = !st.playing; st.lastT = performance.now();
+  document.getElementById('wplay').textContent = st.playing ? '一時停止' : '再生';
+};
+document.getElementById('wseek').addEventListener('input', e => {
+  st.wi = +e.target.value; st.playing = false;
+  document.getElementById('wplay').textContent = '再生';
+  updateWalkLabel(); draw(); updateAngleTable();
+});
+function updateWalkLabel() {
+  if (!st.walk) return;
+  const fr = st.walk.frames[st.wi];
+  document.getElementById('wtime').textContent = fr.t.toFixed(2) + ' s';
+}
+
+// 寸法
+{
+  const p = document.getElementById('dimRows');
+  const mk = (key, label, mn, mx, sp) => slider(p, label, mn, mx, sp, 0, async v => {
+    await getJSON(`/api/set?key=${key}&value=${v}`);
+    requestPose();
+    document.getElementById('dimnote').textContent =
+      '※ この場での上書き。恒久的に変えるなら leg_config.hpp を編集して再ビルド。';
+  }, ' mm');
+  window._dimHipY = mk('hipy', '股間隔 y', -80, 80, 1);
+  window._dimHipZ = mk('hipz', '股中心 z', -160, 0, 1);
+}
+
+for (const b of document.querySelectorAll('.tabs button')) {
+  b.onclick = () => {
+    for (const o of document.querySelectorAll('.tabs button')) o.classList.remove('on');
+    b.classList.add('on');
+    ui.mode = b.dataset.mode;
+    document.getElementById('fs-joint').style.display = ui.mode === 'joint' ? '' : 'none';
+    document.getElementById('fs-ik').style.display = ui.mode === 'ik' ? '' : 'none';
+    document.getElementById('fs-walk').style.display = ui.mode === 'walk' ? '' : 'none';
+    if (ui.mode !== 'walk') requestPose(); else draw();
+  };
+}
+for (const [id, key] of [['showGrid', 'showGrid'], ['showTrace', 'showTrace'],
+                         ['showLabels', 'showLabels'], ['follow', 'follow']]) {
+  document.getElementById(id).addEventListener('change', e => {
+    ui[key] = e.target.checked; draw();
+  });
+}
+const views = { vFront: [-Math.PI, 0.12], vSide: [-Math.PI / 2, 0.12],
+                vTop: [-Math.PI, 1.40], vIso: [-0.9, 0.30] };
+for (const id in views) document.getElementById(id).onclick = () => {
+  cam.yaw = views[id][0]; cam.pitch = views[id][1]; draw();
+};
+
+// ---------------------------------------------------------------------------
+// アニメーション
+// ---------------------------------------------------------------------------
+function tick(now) {
+  if (ui.mode === 'walk' && st.walk && st.playing) {
+    const dt = (now - st.lastT) / 1000;
+    const adv = Math.floor(dt / st.walk.dt);
+    if (adv > 0) {
+      st.lastT += adv * st.walk.dt * 1000;
+      st.wi = (st.wi + adv) % st.walk.frames.length;
+      document.getElementById('wseek').value = st.wi;
+      updateWalkLabel();
+      draw(); updateAngleTable();
+    }
+  }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+(async () => {
+  st.params = await getJSON('/api/params');
+  if (st.params && st.params.hipy !== undefined) {
+    window._dimHipY.set(st.params.hipy);
+    window._dimHipZ.set(st.params.hipz);
+  }
+  document.getElementById('dimnote').textContent =
+    `脚の全長 ${st.params.reach} mm（股中心から足裏まで）／股中心 z = ${st.params.hipz} mm`;
+  resize();
+  requestPose();
+})();
+</script>
+</body>
+</html>

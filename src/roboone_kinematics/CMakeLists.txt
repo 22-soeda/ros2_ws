@@ -30,6 +30,11 @@ add_executable(leg_dump src/leg_dump.cpp)
 target_link_libraries(leg_dump roboone_kinematics)
 target_compile_options(leg_dump PRIVATE -O2)
 
+# 可視化 (roboone_motion/viz/serve_leg3d.py) が起動する FK/IK サービス
+add_executable(leg_service src/leg_service.cpp)
+target_link_libraries(leg_service roboone_kinematics)
+target_compile_options(leg_service PRIVATE -O2)
+
 # ---------------------------------------------------------------------------
 # 足首パラレルリンク（docs/足首パラレルリンク導出.pdf）
 #   ankle_selftest : §8 の検算 + 文書が本文で挙げている数値との照合
@@ -44,7 +49,7 @@ target_link_libraries(ankle_dump roboone_kinematics)
 target_compile_options(ankle_dump PRIVATE -O2)
 
 install(DIRECTORY include/ DESTINATION include)
-install(TARGETS leg_selftest leg_dump ankle_selftest ankle_dump
+install(TARGETS leg_selftest leg_dump leg_service ankle_selftest ankle_dump
   DESTINATION lib/${PROJECT_NAME})
 
 install(TARGETS roboone_kinematics EXPORT export_roboone_kinematics)
