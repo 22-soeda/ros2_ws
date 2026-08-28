@@ -4,14 +4,22 @@
 // 遠位 3 関節の解き方を組み直してある（下の「x 成分を入れた導出」を参照）。
 // (FK-n) / (IK-n) は文書の式番号、(X-n) はこのファイルで導き直した式。
 //
-// 座標系（文書 §2）
-//   x : ロール軸 (J2/J4/J6) の方向。膝が x まわりに曲がるので x は機体の左右。
-//   y : ピッチ軸 (J1/J5) の方向。脚の屈曲面が y-z なので y は機体の前後。
-//   z : 上向き。ゼロ姿勢で脚は真下、足裏は水平、全 Σ_k は Σ_0 と同じ向き。
+// 座標系（2 つある。境界は 1 か所だけ）
+//   公開 API（fk / ik / jointOrigins と leg_config.hpp の値）は **機体座標 Σ_B**
+//     x = 前, y = 左, z = 上   … walk_core / REP-103 と同じ取り方
+//     ゼロ姿勢で脚は真下、足裏は水平、全 Σ_k は Σ_B と同じ向き。
+//   解析解そのものは文書 §2 の座標系 **Σ_S** のまま置いてある
+//     x = 右, y = 前, z = 上   … 膝軸が x、脚の屈曲面が y-z
+//   両者は z まわりの 90° 回転で結ばれる（下の「Σ_B <-> Σ_S」節）。文書との
+//   突き合わせができるよう (FK-n)/(IK-n)/(X-n) は Σ_S のままにし、読み替えは
+//   solver 名前空間の外側 1 か所に閉じ込めてある。
 //
-// 関節
-//   θ1 股ピッチ Ry / θ2 股ロール Rx / θ3 股ヨー Rz … 3 軸は股中心 o3 で交わる (A1)
-//   θ4 膝ロール Rx  θ5 足首ピッチ Ry  θ6 足首ロール Rx
+// 関節（括弧内は Σ_B での回転軸。名前は実機のサーボ名から引き継いだもので、
+//       Σ_B で見た「ピッチ / ロール」とは J1/J2 と J5/J6 で入れ替わっている）
+//   θ1 股ピッチ (Rx) / θ2 股ロール (Ry) / θ3 股ヨー (Rz)
+//                                       … 3 軸は股中心 o3 で交わる (A1)
+//   θ4 膝 (Ry)  θ5 足首ピッチ (Rx)  θ6 足首ロール (Ry)
+//   膝は θ4 > 0 で足先が後ろへ振れる（人型の曲げ。KNEE_FORWARD = +1）。
 //   出力は「関節角」でサーボ指令角ではない。4 節リンク・パラレルリンクの
 //   変換 f4, f56 は別レイヤ（文書 §7）。
 //
@@ -161,18 +169,51 @@ inline Mat3 rotY(double t) { return rotYsc(std::cos(t), std::sin(t)); }
 inline Mat3 rotZ(double t) { return rotZsc(std::cos(t), std::sin(t)); }
 
 // ---------------------------------------------------------------------------
+// Σ_B <-> Σ_S
+// ---------------------------------------------------------------------------
+// Σ_B (x 前, y 左, z 上) と、解析解が使う文書の Σ_S (x 右, y 前, z 上)。
+// x̂_S = -ŷ_B、ŷ_S = x̂_B、ẑ_S = ẑ_B なので、成分の読み替えは
+//
+//   v_B = C v_S = ( v_S.y, -v_S.x, v_S.z),   C = Rz(-90°)
+//   v_S = Cᵀv_B = (-v_B.y,  v_B.x, v_B.z)
+//   R_B = C R_S Cᵀ,   R_S = Cᵀ R_B C
+//
+// 関節角は「Σ_B の正軸まわりの右ねじ」を正とする。Σ_S で Rx だった J2/J4/J6 は
+// Σ_B では -ŷ_B まわりになるので符号が反転する:
+//
+//   θ_S = (θ1, -θ2, θ3, -θ4, θ5, -θ6)_B                              (X-swap)
+//
+// 掛けるのは ±1 なので往復とも同じ式でよい。
+inline constexpr Mat3 kBfromS{{{0, 1, 0}, {-1, 0, 0}, {0, 0, 1}}};
+inline constexpr Mat3 kSfromB{{{0, -1, 0}, {1, 0, 0}, {0, 0, 1}}};
+
+/// (X-swap) の関節符号。J2/J4/J6 が反転する。
+inline constexpr double kAxisSwapSign[6] = {1.0, -1.0, 1.0, -1.0, 1.0, -1.0};
+
+constexpr Vec3 toSolver(const Vec3 & v) { return {-v.y, v.x, v.z}; }
+constexpr Vec3 fromSolver(const Vec3 & v) { return {v.y, -v.x, v.z}; }
+constexpr Mat3 toSolver(const Mat3 & R) { return kSfromB * R * kBfromS; }
+constexpr Mat3 fromSolver(const Mat3 & R) { return kBfromS * R * kSfromB; }
+
+// ---------------------------------------------------------------------------
 // パラメータ
 // ---------------------------------------------------------------------------
-/// 片脚の定数。値は leg_config.hpp から来る。make() で派生量まで埋める。
+/// 片脚の定数。
+///
+/// **ベクトルとスカラは Σ_S（文書の座標系）の成分**。leg_config.hpp の値は Σ_B
+/// なので、makeLegParams() が (X-swap) を通してここへ入れる。直接いじるときも
+/// Σ_S で考える（そのほうが (X-n) の式と 1 対 1 で読める）。
 struct LegParams
 {
-  // ---- 入力（leg_config.hpp の値） ----
+  // ---- 入力（leg_config.hpp の値を Σ_S に直したもの） ----
   double l3{config::L3}, l4{config::L4}, l5{config::L5}, l6{config::L6};
-  double a3{config::A3_X}, a4{config::A4_X};   //!< p3, p4 の x 成分
-  double b{config::B_THIGH};                   //!< p3 の y 成分
-  Vec3 p0{config::HIP_X, config::HIP_Y, config::HIP_Z};
-  Vec3 p6{config::P6_X, config::P6_Y, config::P6_Z};
-  int sigma{config::SIGMA};
+  //! p3, p4 の x_S 成分（= 膝軸方向。Σ_B の y を反転したもの）
+  double a3{-config::P3_Y}, a4{-config::P4_Y};
+  double b{config::P3_X};                      //!< p3 の y_S 成分（= 前後）
+  Vec3 p0{-config::HIP_Y, config::HIP_X, config::HIP_Z};
+  Vec3 p6{-config::P6_Y, config::P6_X, config::P6_Z};
+  //! 膝の分岐 σ（文書 §5.6）。Σ_B の KNEE_FORWARD とは符号が逆になる
+  int sigma{-config::KNEE_FORWARD};
   double sign[kNumJoints]{1, 1, 1, 1, 1, 1};   //!< AXIS_FLIP を ±1 にしたもの
 
   // ---- 派生量（make() が埋める） ----
@@ -201,11 +242,19 @@ struct LegParams
 };
 
 /// leg_config.hpp から左右脚のパラメータを組み立てる。
+///
+/// leg_config.hpp の値は右脚の Σ_B 成分。左右対称なので左脚は y_B を反転する
+/// = Σ_S では x_S（= 膝軸方向）を反転する。b（前後）と σ は左右で同じ。
+/// 関節角の定義は左右とも Σ_B 共通なので、鏡像になるのはサーボの回り方だけで、
+/// それは AXIS_FLIP_LEFT が受け持つ。
 inline LegParams makeLegParams(Side side)
 {
   LegParams prm;
   const double lat = (side == Side::RIGHT) ? 1.0 : -1.0;
-  prm.p0 = {lat * config::HIP_X, config::HIP_Y, config::HIP_Z};
+  prm.a3 *= lat;
+  prm.a4 *= lat;
+  prm.p0.x *= lat;
+  prm.p6.x *= lat;
 
   const int * flip = config::AXIS_FLIP;
   if (side == Side::LEFT && config::AXIS_FLIP_LEFT_SEPARATE) {
@@ -219,25 +268,35 @@ inline LegParams makeLegParams(Side side)
 }
 
 // ---------------------------------------------------------------------------
-// 外部の関節角 <-> 文書の符号
+// 関節角の符号
 // ---------------------------------------------------------------------------
-// 符号は ±1 なのでどちら向きの変換も同じ掛け算。幾何は文書の符号で解き、
-// 境界でだけ掛け直す。in と out が同じ配列を指してもよい。
+// 掛けるのは ±1 だけなので、どちら向きの変換も同じ式でよい。
+// in と out が同じ配列を指してもよい。
+
+/// AXIS_FLIP の掛け直し（どちらも Σ_B の角）。
 inline void applyFlip(const LegParams & prm, const double in[kNumJoints], double out[kNumJoints])
 {
   for (std::size_t k = 0; k < kNumJoints; ++k) {out[k] = in[k] * prm.sign[k];}
 }
 
-// ---------------------------------------------------------------------------
-// 順運動学
-// ---------------------------------------------------------------------------
-/// 関節角 -> 足先位置 p と足姿勢 R（いずれも Σ_0）。式 (FK-1)。
-/// theta は AXIS_FLIP を適用した符号。
-inline void fk(const LegParams & prm, const double theta[kNumJoints], Vec3 & p, Mat3 & R)
+/// 公開角（Σ_B・AXIS_FLIP 適用後）<-> 解析解の角（Σ_S・文書の符号）。
+/// AXIS_FLIP と (X-swap) の符号をまとめて掛ける。
+inline void toSolverAngles(
+  const LegParams & prm, const double in[kNumJoints], double out[kNumJoints])
 {
-  double t[kNumJoints];
-  applyFlip(prm, theta, t);
+  for (std::size_t k = 0; k < kNumJoints; ++k) {out[k] = in[k] * prm.sign[k] * kAxisSwapSign[k];}
+}
 
+// ---------------------------------------------------------------------------
+// 解析解の層（すべて Σ_S・文書の符号。フレームの読み替えはこの外側で行う）
+// ---------------------------------------------------------------------------
+namespace solver
+{
+
+/// 関節角 -> 足先位置 p と足姿勢 R（いずれも Σ_S）。式 (FK-1)。
+/// t は文書の符号（AXIS_FLIP も (X-swap) も適用済みの内部角）。
+inline void fk(const LegParams & prm, const double t[kNumJoints], Vec3 & p, Mat3 & R)
+{
   const Mat3 R1 = rotY(t[HIP_PITCH]);
   const Mat3 R2 = rotX(t[HIP_ROLL]);
   const Mat3 R3 = rotZ(t[HIP_YAW]);
@@ -255,12 +314,9 @@ inline void fk(const LegParams & prm, const double theta[kNumJoints], Vec3 & p, 
   R = R123 * R456;
 }
 
-/// 各関節の回転中心 [o3, o4, o5, o6, 足先] を Σ_0 で返す。描画・検証用。
-inline void jointOrigins(const LegParams & prm, const double theta[kNumJoints], Vec3 out[5])
+/// 各関節の回転中心 [o3, o4, o5, o6, 足先] を Σ_S で返す。
+inline void jointOrigins(const LegParams & prm, const double t[kNumJoints], Vec3 out[5])
 {
-  double t[kNumJoints];
-  applyFlip(prm, theta, t);
-
   const Mat3 R123 = rotY(t[HIP_PITCH]) * rotX(t[HIP_ROLL]) * rotZ(t[HIP_YAW]);
   const Mat3 R1234 = R123 * rotX(t[KNEE]);
   const Mat3 R12345 = R1234 * rotY(t[ANKLE_PITCH]);
@@ -272,6 +328,8 @@ inline void jointOrigins(const LegParams & prm, const double theta[kNumJoints], 
   out[3] = out[2] + R12345 * prm.p5;
   out[4] = out[3] + R * prm.p6;
 }
+
+}  // namespace solver
 
 // ---------------------------------------------------------------------------
 // 逆運動学
@@ -309,15 +367,14 @@ inline LinearTrigRoots solveLinearTrig(double P, double Q, double C)
 
 }  // namespace detail
 
-/// (足先位置 p, 足姿勢 R) -> 関節角 θ1..θ6。反復なしの閉形式解。
-///
-/// theta   出力。AXIS_FLIP を適用した符号（fk が受け取るのと同じ）。
-/// clamp   true なら到達不能を最寄り姿勢に丸めて書き戻す。false なら theta は触らない。
-///
-/// 戻り値が Ok 以外でも、NoBranch 以外なら clamp=true で theta は埋まる。
+namespace solver
+{
+
+/// (足先位置 p, 足姿勢 R) -> 関節角 θ1..θ6。すべて Σ_S・文書の符号。
+/// 反復なしの閉形式解。契約は公開版の ik() と同じ。
 inline IkStatus ik(
   const LegParams & prm, const Vec3 & p, const Mat3 & R,
-  double theta[kNumJoints], bool clamp = true)
+  double t[kNumJoints], bool clamp = true)
 {
   const double l3 = prm.l3e;      // 有効大腿長（y オフセット吸収後）
   const double l4 = prm.l4;
@@ -386,10 +443,56 @@ inline IkStatus ik(
   const double t1 = std::atan2(M(0, 2), M(2, 2));
 
   const double sol[kNumJoints] = {t1, t2, t3, t4, bestT5, t6};
-  applyFlip(prm, sol, theta);                    // 文書の符号 -> 外部の符号
+  for (std::size_t k = 0; k < kNumJoints; ++k) {t[k] = sol[k];}
 
   if (!roots.exact) {return IkStatus::AnkleOutOfRange;}
   return kneeOver ? IkStatus::KneeOutOfRange : IkStatus::Ok;
+}
+
+}  // namespace solver
+
+// ---------------------------------------------------------------------------
+// 公開 API（すべて機体座標 Σ_B）
+// ---------------------------------------------------------------------------
+/// 関節角 -> 足先位置 p と足姿勢 R（いずれも Σ_B）。
+/// theta は Σ_B の関節角で、AXIS_FLIP を適用した符号。
+inline void fk(const LegParams & prm, const double theta[kNumJoints], Vec3 & p, Mat3 & R)
+{
+  double t[kNumJoints];
+  toSolverAngles(prm, theta, t);
+  Vec3 ps;
+  Mat3 Rs;
+  solver::fk(prm, t, ps, Rs);
+  p = fromSolver(ps);
+  R = fromSolver(Rs);
+}
+
+/// 各関節の回転中心 [o3, o4, o5, o6, 足先] を Σ_B で返す。描画・検証用。
+inline void jointOrigins(const LegParams & prm, const double theta[kNumJoints], Vec3 out[5])
+{
+  double t[kNumJoints];
+  toSolverAngles(prm, theta, t);
+  solver::jointOrigins(prm, t, out);
+  for (int k = 0; k < 5; ++k) {out[k] = fromSolver(out[k]);}
+}
+
+/// (足先位置 p, 足姿勢 R) -> 関節角 θ1..θ6。反復なしの閉形式解。
+///
+/// p, R    Σ_B（x 前・y 左・z 上、原点はボディ原点）。
+/// theta   出力。Σ_B の関節角で、AXIS_FLIP を適用した符号（fk と同じ）。
+/// clamp   true なら到達不能を最寄り姿勢に丸めて書き戻す。false なら theta は触らない。
+///
+/// 戻り値が Ok 以外でも、NoBranch 以外なら clamp=true で theta は埋まる。
+inline IkStatus ik(
+  const LegParams & prm, const Vec3 & p, const Mat3 & R,
+  double theta[kNumJoints], bool clamp = true)
+{
+  double t[kNumJoints];
+  const IkStatus st = solver::ik(prm, toSolver(p), toSolver(R), t, clamp);
+  // solver::ik が t を書かなかったケース（契約は上の doc コメントのとおり）
+  if (st == IkStatus::NoBranch || (!clamp && st != IkStatus::Ok)) {return st;}
+  toSolverAngles(prm, t, theta);                 // 文書の符号 -> Σ_B の外部符号
+  return st;
 }
 
 }  // namespace roboone_kinematics

@@ -5,6 +5,10 @@
 同じパラメータ・同じ姿勢に対して両者の FK と IK が一致することを確認する。
 独立に書いた 2 つの実装を比べるので、片方だけの取り違えを拾える。
 
+C++ 側の公開 API は機体座標 Σ_B（x 前 / y 左 / z 上）、Python 参照実装は文書の
+Σ_0（x 右 / y 前 / z 上）なので、C++ の出力を Σ_0 に戻してから比べる。
+つまりこの突き合わせは leg_kinematics.hpp の (X-swap) 自体の検算にもなっている。
+
   python3 scripts/crosscheck_cpp.py [-n 姿勢数]
 
 C++ 側は build/roboone_kinematics/leg_dump を使う (colcon build 済みであること)。
@@ -27,6 +31,23 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _WS = os.path.dirname(_HERE)
 
 _STATUS = {0: "Ok", 1: "AnkleOutOfRange", 2: "KneeOutOfRange", 3: "NoBranch"}
+
+#: Σ_B -> Σ_0（文書）。v_doc = C^T v_B、R_doc = C^T R_B C、C = Rz(-90°)
+_C = np.array([[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+#: (X-swap) の関節符号。Σ_S で Rx だった J2/J4/J6 が反転する
+_SWAP = np.array([1.0, -1.0, 1.0, -1.0, 1.0, -1.0])
+
+
+def to_doc_vec(v):
+    return _C.T @ np.asarray(v, dtype=float)
+
+
+def to_doc_rot(R):
+    return _C.T @ np.asarray(R, dtype=float) @ _C
+
+
+def to_doc_theta(th):
+    return np.asarray(th, dtype=float) * _SWAP
 
 #: (a3, a4, b, sigma, flipmask) の組。x 成分・膝の分岐・回転方向を混ぜる
 CASES = [
@@ -78,10 +99,11 @@ def main() -> int:
         rows = 0
         for line in raw.strip().splitlines():
             v = [float(x) for x in line.split(",")]
-            th = np.array(v[0:6])
-            p_cpp = np.array(v[6:9])
-            R_cpp = np.array(v[9:18]).reshape(3, 3)
-            ik_cpp = np.array(v[18:24])
+            # leg_dump の出力は Σ_B なので、文書の座標系に戻してから比べる
+            th = to_doc_theta(v[0:6])
+            p_cpp = to_doc_vec(v[6:9])
+            R_cpp = to_doc_rot(np.array(v[9:18]).reshape(3, 3))
+            ik_cpp = to_doc_theta(v[18:24])
             st = int(v[24])
             rows += 1
 

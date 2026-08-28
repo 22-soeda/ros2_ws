@@ -53,8 +53,8 @@ double angleDiff(double x, double y)
   return std::fabs(std::atan2(std::sin(x - y), std::cos(x - y)));
 }
 
-/// 可動域内の一様乱数姿勢。JOINT_LIMITS は文書の符号なので、内部符号で作ってから
-/// AXIS_FLIP を適用した外部符号（fk/ik が受け取る形）に直して返す。
+/// 可動域内の一様乱数姿勢。いったん文書の符号（Σ_S）で作ってから、
+/// (X-swap) と AXIS_FLIP を適用した公開符号（Σ_B。fk/ik が受け取る形）に直す。
 void randomTheta(const LegParams & prm, std::mt19937_64 & rng, double th[kNumJoints])
 {
   double internal[kNumJoints];
@@ -64,7 +64,7 @@ void randomTheta(const LegParams & prm, std::mt19937_64 & rng, double th[kNumJoi
     internal[k] = d(rng);
   }
   internal[KNEE] = prm.sigma * internal[KNEE] + prm.phi;
-  applyFlip(prm, internal, th);
+  toSolverAngles(prm, internal, th);
 }
 
 // ---------------------------------------------------------------------------
@@ -73,8 +73,8 @@ void checkZeroPose(const LegParams & prm)
   const double zero[kNumJoints] = {0, 0, 0, 0, 0, 0};
   Vec3 p; Mat3 R;
   fk(prm, zero, p, R);
-  // 全ての回転が I なのでリンクベクトルの単純和になる
-  const Vec3 want = prm.p0 + prm.p3 + prm.p4 + prm.p5 + prm.p6;
+  // 全ての回転が I なのでリンクベクトルの単純和になる（Σ_S の和を Σ_B へ）
+  const Vec3 want = fromSolver(prm.p0 + prm.p3 + prm.p4 + prm.p5 + prm.p6);
   const double ep = maxAbsDiff(p, want);
   const double eR = maxAbsDiff(R, Mat3{});
   std::printf("  ゼロ姿勢: p = (%.3f, %.3f, %.3f)  期待 p0+Σp_k = (%.3f, %.3f, %.3f)\n",
@@ -124,7 +124,7 @@ void checkClosedForms(LegParams prm, int n, std::uint64_t seed)
     double th[kNumJoints];
     randomTheta(prm, rng, th);
     double t[kNumJoints];
-    applyFlip(prm, th, t);   // 文書の成分式は内部符号
+    toSolverAngles(prm, th, t);   // 文書の成分式は Σ_S・内部符号
 
     const double c1 = std::cos(t[0]), s1 = std::sin(t[0]);
     const double c2 = std::cos(t[1]), s2 = std::sin(t[1]);
@@ -153,7 +153,7 @@ void checkClosedForms(LegParams prm, int n, std::uint64_t seed)
     const Vec3 rdoc{prm.a * c5 + A * s5, -B * c6 + V * s6, B * s6 + V * c6};
 
     Vec3 p; Mat3 Rm;
-    fk(prm, th, p, Rm);
+    solver::fk(prm, t, p, Rm);
     const Vec3 rimpl = Rm.mulT(p - prm.p0) - prm.p6;
     wR = std::max(wR, maxAbsDiff(rdoc, rimpl));
 
@@ -223,10 +223,10 @@ void checkReduceToDoc(int n, std::uint64_t seed)
     double th[kNumJoints];
     randomTheta(prm, rng, th);
     double t[kNumJoints];
-    applyFlip(prm, th, t);
+    toSolverAngles(prm, th, t);
 
     Vec3 p; Mat3 Rm;
-    fk(prm, th, p, Rm);
+    solver::fk(prm, t, p, Rm);
     const Vec3 r = Rm.mulT(p - prm.p0) - prm.p6;
 
     const double A = prm.l3 * std::cos(t[3]) + prm.l4;
@@ -246,15 +246,15 @@ void checkReduceToDoc(int n, std::uint64_t seed)
     // ℓ5 = 0 なら cosθ4 が余弦定理そのもの（文書 §5.7）
     double th0[kNumJoints];
     randomTheta(noL5, rng, th0);
+    double t0[kNumJoints];
+    toSolverAngles(noL5, th0, t0);
     Vec3 p0v; Mat3 R0v;
-    fk(noL5, th0, p0v, R0v);
+    solver::fk(noL5, t0, p0v, R0v);
     const Vec3 r0 = R0v.mulT(p0v - noL5.p0) - noL5.p6;
     const double law = (r0.normSq() - noL5.l3e * noL5.l3e - noL5.l4 * noL5.l4) /
       (2.0 * noL5.l3e * noL5.l4);
-    double sol[kNumJoints];
-    check(ik(noL5, p0v, R0v, sol, false) == IkStatus::Ok, "ℓ5=0 の IK");
     double soli[kNumJoints];
-    applyFlip(noL5, sol, soli);
+    check(solver::ik(noL5, p0v, R0v, soli, false) == IkStatus::Ok, "ℓ5=0 の IK");
     wCos = std::max(wCos, std::fabs(law - std::cos(soli[KNEE] - noL5.phi)));
   }
   std::printf("  a=0 で (IK-2) r_x = A·sinθ5 : 最大差 %.2e mm\n", wIk2);
@@ -310,10 +310,12 @@ void checkUnreachable(const LegParams & prm)
   const double rxCrit = std::sqrt(std::max(
     0.0, prm.l3e * prm.l3e - prm.l4 * prm.l4 + prm.l5 * prm.l5 + prm.a * prm.a));
   struct Case { const char * label; Vec3 p; IkStatus want; };
+  const Vec3 hip = fromSolver(prm.p0);
   const Case cases[] = {
-    {"遠すぎる", prm.p0 + Vec3{0, 0, -(reach + prm.l6 + 50.0)}, IkStatus::KneeOutOfRange},
-    {"近すぎる", prm.p0 + Vec3{0, 0, -(prm.l6 + 1.0)}, IkStatus::NoBranch},
-    {"x 方向に遠い", prm.p0 + prm.p6 + Vec3{rxCrit, 0, 0}, IkStatus::AnkleOutOfRange},
+    {"遠すぎる", hip + Vec3{0, 0, -(reach + prm.l6 + 50.0)}, IkStatus::KneeOutOfRange},
+    {"近すぎる", hip + Vec3{0, 0, -(prm.l6 + 1.0)}, IkStatus::NoBranch},
+    // x_S 方向 = Σ_B の -y（右）へ遠ざける
+    {"左右に遠い", hip + fromSolver(prm.p6) + Vec3{0, -rxCrit, 0}, IkStatus::AnkleOutOfRange},
   };
   const Mat3 I{};
   for (const auto & c : cases) {
@@ -337,6 +339,69 @@ void checkUnreachable(const LegParams & prm)
       check(finite, "clamp で有限でない角が出た");
     }
   }
+}
+
+/// 座標系の取り決めを数値で確かめる。
+///   * ゼロ姿勢で o3 / o5 / o6 / 足裏中心が鉛直に並ぶ（実機の申告どおりか）
+///   * 屈むと膝が前に出る（人型。KNEE_FORWARD = +1）
+///   * 左右が y = 0 面の鏡像になっている
+void checkBodyFrame(int n, std::uint64_t seed)
+{
+  const LegParams right = makeLegParams(Side::RIGHT);
+  const LegParams left = makeLegParams(Side::LEFT);
+
+  // --- ゼロ姿勢の関節位置（Σ_B） ---
+  const double zero[kNumJoints] = {0, 0, 0, 0, 0, 0};
+  Vec3 o[5];
+  jointOrigins(right, zero, o);
+  const char * nm[5] = {"o3 股中心", "o4 膝", "o5 足首 1", "o6 足首 2", "足裏中心"};
+  std::printf("  ゼロ姿勢の関節位置 (Σ_B = x 前 / y 左 / z 上、右脚):\n");
+  for (int k = 0; k < 5; ++k) {
+    std::printf("           %-10s (%9.3f, %9.3f, %9.3f)\n", nm[k], o[k].x, o[k].y, o[k].z);
+  }
+  const double vx = std::max({std::fabs(o[0].x - o[2].x), std::fabs(o[0].x - o[3].x),
+      std::fabs(o[0].x - o[4].x)});
+  const double vy = std::max({std::fabs(o[0].y - o[2].y), std::fabs(o[0].y - o[3].y),
+      std::fabs(o[0].y - o[4].y)});
+  std::printf("           o3 / o5・o6 / 足裏中心 の水平ずれ %.2e mm\n", std::max(vx, vy));
+  check(vx < 1e-9 && vy < 1e-9, "股中心・足首リンク・足裏中心が鉛直に並んでいない");
+
+  // --- 膝の向き: 50 mm 屈んで膝が前に出るか ---
+  const Vec3 hip = fromSolver(right.p0);
+  const double stand = right.l3 + right.l4 + right.l5 + right.l6;
+  const Vec3 target = hip + Vec3{0.0, 0.0, -(stand - 50.0)};
+  const Mat3 I{};
+  double th[kNumJoints];
+  check(ik(right, target, I, th, /*clamp=*/false) == IkStatus::Ok, "屈み姿勢が解けない");
+  jointOrigins(right, th, o);
+  std::printf("  50 mm 屈む: θ2 = %+.2f deg, θ4 = %+.2f deg, 膝の前後位置 %+.2f mm\n",
+    th[HIP_ROLL] * kDeg, th[KNEE] * kDeg, o[1].x - hip.x);
+  check(th[KNEE] * config::KNEE_FORWARD > 0.0, "膝の符号が KNEE_FORWARD と合わない");
+  check((o[1].x - hip.x) * config::KNEE_FORWARD > 0.0, "膝が前に出ない（逆関節になっている）");
+
+  // --- 左右の鏡像 ---
+  // y = 0 面の鏡映では Rx / Rz まわりの角（J1, J3, J5）が反転し、Ry まわり
+  // （J2, J4, J6）はそのまま。幾何だけを見たいので AXIS_FLIP は落としておく。
+  LegParams r2 = right, l2 = left;
+  for (std::size_t k = 0; k < kNumJoints; ++k) {r2.sign[k] = 1.0; l2.sign[k] = 1.0;}
+  std::mt19937_64 rng(seed);
+  double wp = 0.0, wR = 0.0;
+  for (int i = 0; i < n; ++i) {
+    double thr[kNumJoints];
+    randomTheta(r2, rng, thr);
+    const double thl[kNumJoints] = {-thr[0], thr[1], -thr[2], thr[3], -thr[4], thr[5]};
+    Vec3 pr, pl;
+    Mat3 Rr, Rl;
+    fk(r2, thr, pr, Rr);
+    fk(l2, thl, pl, Rl);
+    Mat3 want = Rr;                       // M R M,  M = diag(1, -1, 1)
+    want(0, 1) = -want(0, 1); want(1, 0) = -want(1, 0);
+    want(1, 2) = -want(1, 2); want(2, 1) = -want(2, 1);
+    wp = std::max(wp, maxAbsDiff(pl, Vec3{pr.x, -pr.y, pr.z}));
+    wR = std::max(wR, maxAbsDiff(Rl, want));
+  }
+  std::printf("  左右の鏡像 x %d 姿勢: 位置 %.2e mm / 姿勢 %.2e  (0 であるべき)\n", n, wp, wR);
+  check(wp < 1e-9 && wR < 1e-12, "左右が鏡像になっていない");
 }
 
 void benchmark(const LegParams & prm, int n)
@@ -392,11 +457,12 @@ int main(int argc, char ** argv)
   for (const auto side : {Side::RIGHT, Side::LEFT}) {
     LegParams prm = makeLegParams(side);
     check(prm.valid(), "パラメータが前提を満たしていない");
-    std::printf("\n[%s] ℓ3=%g ℓ4=%g ℓ5=%g ℓ6=%g  a3=%g a4=%g (a=%g) b=%g σ=%+d\n",
+    std::printf("\n[%s] ℓ3=%g ℓ4=%g ℓ5=%g ℓ6=%g  a3=%g a4=%g (a=%g) b=%g σ=%+d [Σ_S]\n",
       side == Side::RIGHT ? "right" : "left",
       prm.l3, prm.l4, prm.l5, prm.l6, prm.a3, prm.a4, prm.a, prm.b, prm.sigma);
-    std::printf("       p0=(%g, %g, %g)  flip={%d,%d,%d,%d,%d,%d}\n",
-      prm.p0.x, prm.p0.y, prm.p0.z,
+    const Vec3 hipB = fromSolver(prm.p0);
+    std::printf("       p0=(%g, %g, %g) [Σ_B]  flip={%d,%d,%d,%d,%d,%d}\n",
+      hipB.x, hipB.y, hipB.z,
       prm.sign[0] < 0, prm.sign[1] < 0, prm.sign[2] < 0,
       prm.sign[3] < 0, prm.sign[4] < 0, prm.sign[5] < 0);
     checkZeroPose(prm);
@@ -426,6 +492,9 @@ int main(int argc, char ** argv)
     prm.a3 = -6.0; prm.a4 = 2.5; prm.b = -3.0; prm.sigma = -1; prm.finalize();
     checkRoundtrip(prm, std::min(n, 5000), seed + 5, "");
   }
+
+  std::printf("\n[座標系 Σ_B と左右対称]\n");
+  checkBodyFrame(std::min(n, 2000), seed + 7);
 
   std::printf("\n[軸の回転方向 AXIS_FLIP]\n");
   checkAxisFlip(std::min(n, 200), seed + 6);

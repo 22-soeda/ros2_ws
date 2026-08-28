@@ -40,8 +40,9 @@ int main(int argc, char ** argv)
       internal[k] = d(rng);
     }
     internal[KNEE] = prm.sigma * internal[KNEE] + prm.phi;
+    // 乱数は文書の符号 (Σ_S) で作り、公開符号 (Σ_B) に直して fk/ik に渡す
     double th[kNumJoints];
-    applyFlip(prm, internal, th);
+    toSolverAngles(prm, internal, th);
 
     Vec3 p; Mat3 R;
     fk(prm, th, p, R);
