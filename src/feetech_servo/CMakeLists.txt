@@ -90,6 +90,11 @@ add_executable(feetech_knee_stream test/feetech_knee_stream.cpp)
 target_link_libraries(feetech_knee_stream feetech_servo)
 target_compile_options(feetech_knee_stream PRIVATE -O2)
 
+# 両脚 12 軸を読むだけのストリーマ（両脚 3D ビジュアライザ用）
+add_executable(feetech_leg_stream test/feetech_leg_stream.cpp)
+target_link_libraries(feetech_leg_stream feetech_servo)
+target_compile_options(feetech_leg_stream PRIVATE -O2)
+
 add_executable(feetech_calibrate_home test/feetech_calibrate_home.cpp)
 target_link_libraries(feetech_calibrate_home feetech_servo scservo yaml-cpp::yaml-cpp)
 ament_target_dependencies(feetech_calibrate_home ament_index_cpp)
@@ -107,7 +112,8 @@ install(TARGETS feetech_servo scservo
   INCLUDES DESTINATION include)
 
 install(TARGETS feetech_demo_node feetech_scan_test feetech_goto_test feetech_shell
-  feetech_set_limits feetech_calibrate_home feetech_knee_stream leg_live_test
+  feetech_set_limits feetech_calibrate_home feetech_knee_stream feetech_leg_stream
+  leg_live_test
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch config viz

@@ -18,12 +18,14 @@
   --left: #2f7fd1;
   --ok: #1a9d6e;
   --warn: #d9534f;
+  --mech: #b07d1f;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --page: #0e0e0d; --panel: #171716; --ink: #f2f1ee; --ink-2: #bdbbb5;
     --muted: #8b8984; --border: rgba(255,255,255,0.12); --grid: #2b2b28;
     --right: #eb8452; --left: #4f9ae8; --ok: #33b98a; --warn: #e8635f;
+    --mech: #d9ac4a;
   }
 }
 * { box-sizing: border-box; }
@@ -76,6 +78,7 @@ table.ang { width: 100%; border-collapse: collapse; font-size: 11px; font-varian
 table.ang th { text-align: right; font-weight: 500; color: var(--muted); padding: 1px 4px; }
 table.ang td { text-align: right; padding: 1px 4px; }
 td.r { color: var(--right); } td.l { color: var(--left); }
+td.over { color: var(--warn); font-weight: 600; }
 .note { font-size: 11px; color: var(--muted); margin-top: 8px; }
 .legend { display: flex; gap: 12px; font-size: 11px; margin-bottom: 8px; }
 .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; }
@@ -94,8 +97,9 @@ label.ck { display: flex; align-items: center; gap: 6px; font-size: 11px; color:
 
 <div id="panel">
   <h1>脚 3D ビジュアライザ</h1>
-  <div class="sub">関節位置は C++ の <code>leg_kinematics.hpp</code> が計算した値。
-    座標系は Σ_B（x 前 / y 左 / z 上）。</div>
+  <div class="sub">関節位置は C++ の <code>leg_kinematics.hpp</code>、膝 4 節リンクと
+    足首パラレルは <code>knee_fourbar.hpp</code> / <code>ankle_parallel.hpp</code> が
+    計算した値。座標系は Σ_B（x 前 / y 左 / z 上）。サーボには書かない。</div>
 
   <div class="tabs">
     <button data-mode="joint" class="on">関節</button>
@@ -109,6 +113,7 @@ label.ck { display: flex; align-items: center; gap: 6px; font-size: 11px; color:
     <span><i style="background:#d0342c"></i>x 前</span>
     <span><i style="background:#2f9e44"></i>y 左</span>
     <span><i style="background:#1971c2"></i>z 上</span>
+    <span><i style="background:var(--mech)"></i>機構</span>
   </div>
 
   <fieldset id="fs-joint">
@@ -153,10 +158,25 @@ label.ck { display: flex; align-items: center; gap: 6px; font-size: 11px; color:
   </fieldset>
 
   <fieldset>
+    <legend>機構層（サーボ指令 / リンク）</legend>
+    <div id="mechstat" class="note" style="margin:0 0 6px"></div>
+    <table class="ang" id="mechTable"></table>
+    <div class="note">サーボ角は T ポーズ（<code>servo_home.yaml</code> の原点）からの差分で、
+      並びは実機の ID 順。<code>leg_service</code> の <code>servo</code> コマンドに
+      そのまま渡せる値。<br>
+      リンクが<span style="color:var(--warn)">赤</span>のときは、その姿勢をサーボに
+      落とせない（膝の三角形が閉じない・ロッドが届かない・足首の窓で丸めた）。
+      丸めたときは足板と足首ロッドが繋がって見えないが、それは丸めた姿勢のほうを
+      描いているため。</div>
+  </fieldset>
+
+  <fieldset>
     <legend>表示</legend>
     <label class="ck"><input type="checkbox" id="showGrid" checked>床グリッド</label>
     <label class="ck"><input type="checkbox" id="showTrace" checked>足先の軌跡（歩行）</label>
     <label class="ck"><input type="checkbox" id="showLabels" checked>関節ラベル</label>
+    <label class="ck"><input type="checkbox" id="showKnee" checked>膝 4 節リンク</label>
+    <label class="ck"><input type="checkbox" id="showAnkle" checked>足首パラレルリンク</label>
     <label class="ck"><input type="checkbox" id="follow" checked>歩行中はカメラを追従</label>
     <div class="btnrow">
       <button class="act" id="vFront">正面</button>
@@ -267,7 +287,11 @@ function css(name) {
 // ---------------------------------------------------------------------------
 // 状態
 // ---------------------------------------------------------------------------
-const ui = { mode: 'joint', showGrid: true, showTrace: true, showLabels: true, follow: true };
+const ui = { mode: 'joint', showGrid: true, showTrace: true, showLabels: true,
+             follow: true, showKnee: true, showAnkle: true };
+// サーボの ID 並び（実機のバス上の順）。dservo はこの順で来る
+const SERVO_IDS = ['ID1 股ピッチ', 'ID2 股ロール', 'ID3 股ヨー', 'ID4 膝',
+                   'ID6 足首(鎖1)', 'ID5 足首(鎖2)'];
 const JOINTS = ['J1 股ピッチ', 'J2 股ロール', 'J3 股ヨー', 'J4 膝', 'J5 足首ピッチ', 'J6 足首ロール'];
 const st = {
   params: null,
@@ -361,6 +385,43 @@ function drawLeg(pose, color, off) {
   }
 }
 
+/// 膝 4 節リンクと足首パラレルリンク。点はすべて C++ から来た組み方そのもの。
+/// pts = [O4 膝, O2 クランク軸, A クランク先端, B ロッカー先端]（Σ_B）。
+function drawMech(pose, off) {
+  const m = pose && pose.mech;
+  if (!m) return;
+  const mc = css('--mech'), ng = css('--warn');
+  if (ui.showKnee && m.knee && m.knee.pts) {
+    const P = m.knee.pts.map(p => V.add(p, off));
+    const c = (m.knee.status === 'ok') ? mc : ng;
+    seg(P[0], P[1], css('--ink-2'), 1.2, 0.45);   // 地節 r1（大腿に固定）
+    seg(P[1], P[2], c, 3.2, 1);                   // クランク r2（サーボ側）
+    seg(P[2], P[3], c, 2.4, 1);                   // カプラ r3
+    seg(P[0], P[3], c, 3.2, 1);                   // ロッカー r4（下腿に固定）
+    dot3(P[1], c, 3, 'O2 膝サーボ');
+    dot3(P[2], c, 2.5, 'A'); dot3(P[3], c, 2.5, 'B');
+  }
+  if (ui.showAnkle && m.ankle && m.ankle.chains) {
+    const u = m.ankle.u, v = m.ankle.v;
+    const c = (m.ankle.status === 'ok' && !m.ankle.clamped) ? mc : ng;
+    m.ankle.chains.forEach((ch, i) => {
+      const O = V.add(ch.O, off), K = V.add(ch.K, off), Bp = V.add(ch.B, off);
+      // クランクが回れる範囲（servo_limits と同じ CRANK_LIMIT_DEG）を弧で出す
+      let prev = null;
+      for (let a = ch.qlim[0]; a <= ch.qlim[1] + 1e-6; a += 5) {
+        const r = a * Math.PI / 180;
+        const q = V.add(O, V.add(V.mul(u, ch.r * Math.cos(r)), V.mul(v, ch.r * Math.sin(r))));
+        if (prev) seg(prev, q, mc, 1, 0.3);
+        prev = q;
+      }
+      seg(O, K, c, 3.2, 1);                       // クランク r_i1
+      seg(K, Bp, c, 2, 1);                        // ロッド r_i2（長さ拘束だけ）
+      dot3(O, c, 3, i ? 'ID5 上' : 'ID6 下');
+      dot3(K, c, 2.5); dot3(Bp, c, 2.5);
+    });
+  }
+}
+
 function drawPelvis(off) {
   const a = st.poseR && st.poseR.origins ? V.add(st.poseR.origins[0], off) : null;
   const b = st.poseL && st.poseL.origins ? V.add(st.poseL.origins[0], off) : null;
@@ -402,9 +463,9 @@ function draw() {
     const fr = st.walk.frames[st.wi];
     off = worldOffset(fr);
     st.poseR = { origins: fr.right, foot: fr.right ? fr.right[4] : null,
-                 theta: fr.thR, status: fr.stR, R: fr.RR };
+                 theta: fr.thR, status: fr.stR, R: fr.RR, mech: fr.mR };
     st.poseL = { origins: fr.left, foot: fr.left ? fr.left[4] : null,
-                 theta: fr.thL, status: fr.stL, R: fr.RL };
+                 theta: fr.thL, status: fr.stL, R: fr.RL, mech: fr.mL };
     if (ui.follow) cam.target = [off[0], off[1], 200];
   }
   drawGrid(0);
@@ -412,6 +473,8 @@ function draw() {
   drawPelvis(off);
   drawLeg(st.poseR, css('--right'), off);
   drawLeg(st.poseL, css('--left'), off);
+  drawMech(st.poseR, off);
+  drawMech(st.poseL, off);
   flush();
   hud(off);
 }
@@ -431,14 +494,59 @@ function hud(off) {
   el.innerHTML = s;
 }
 
+function overLimit(k, v) {
+  const lim = st.params && st.params.limit && st.params.limit[k];
+  return (lim && (v < lim[0] || v > lim[1])) ? ' over' : '';
+}
+
 function updateAngleTable() {
   const t = document.getElementById('angTable');
   const r = st.poseR && st.poseR.theta, l = st.poseL && st.poseL.theta;
   let h = '<tr><th></th><th>右</th><th>左</th></tr>';
   for (let k = 0; k < 6; k++) {
     h += `<tr><th>${JOINTS[k]}</th>` +
-      `<td class="r">${r ? r[k].toFixed(2) : '-'}</td>` +
-      `<td class="l">${l ? l[k].toFixed(2) : '-'}</td></tr>`;
+      `<td class="r${r ? overLimit(k, r[k]) : ''}">${r ? r[k].toFixed(2) : '-'}</td>` +
+      `<td class="l${l ? overLimit(k, l[k]) : ''}">${l ? l[k].toFixed(2) : '-'}</td></tr>`;
+  }
+  t.innerHTML = h;
+  updateMechTable();
+}
+
+/// サーボ指令角と、膝 4 節・足首パラレルの中間量。
+/// 「IK は解けたのにサーボに落とせない姿勢」はここに出る。
+function updateMechTable() {
+  const mr = st.poseR && st.poseR.mech, ml = st.poseL && st.poseL.mech;
+  const stat = document.getElementById('mechstat');
+  stat.innerHTML = (mr || ml)
+    ? chip('右', mr && mr.status) + ' ' + chip('左', ml && ml.status)
+    : '<span class="chip">機構層なし（歩行を機構層オフで計算した）</span>';
+
+  const t = document.getElementById('mechTable');
+  const num = (m, f, d) => m ? f(m).toFixed(d === undefined ? 2 : d) : '-';
+  const qOver = (m, i) => {
+    if (!m || !m.ankle || !m.ankle.chains[i]) return '';
+    const c = m.ankle.chains[i];
+    return (c.q < c.qlim[0] || c.q > c.qlim[1]) ? ' over' : '';
+  };
+  let h = '<tr><th></th><th>右</th><th>左</th></tr>';
+  for (let k = 0; k < 6; k++) {
+    h += `<tr><th>${SERVO_IDS[k]}</th>` +
+      `<td class="r">${num(mr, m => m.dservo[k])}</td>` +
+      `<td class="l">${num(ml, m => m.dservo[k])}</td></tr>`;
+  }
+  const rows = [
+    ['膝 曲げ量', m => m.knee.bend], ['膝 クランク θ2', m => m.knee.theta2],
+    ['膝 伝達角 γ', m => m.knee.gamma],
+    ['足首 θ5 ロール', m => m.ankle.th5], ['足首 θ6 ピッチ', m => m.ankle.th6],
+  ];
+  for (const [name, f] of rows) {
+    h += `<tr><th>${name}</th><td class="r">${num(mr, f)}</td>` +
+      `<td class="l">${num(ml, f)}</td></tr>`;
+  }
+  for (let i = 0; i < 2; i++) {
+    h += `<tr><th>クランク q${i + 1}</th>` +
+      `<td class="r${qOver(mr, i)}">${num(mr, m => m.ankle.chains[i].q)}</td>` +
+      `<td class="l${qOver(ml, i)}">${num(ml, m => m.ankle.chains[i].q)}</td></tr>`;
   }
   t.innerHTML = h;
 }
@@ -548,16 +656,24 @@ document.getElementById('wrun').onclick = async () => {
   const btn = document.getElementById('wrun');
   btn.textContent = '計算中…'; btn.disabled = true;
   try {
+    const mech = (ui.showKnee || ui.showAnkle) ? 1 : 0;
     const d = await getJSON(`/api/walk?vx=${walkOpt.vx}&vy=${walkOpt.vy}` +
-      `&zc=${walkOpt.zc}&dur=${walkOpt.dur}&w=${walkOpt.w}`);
+      `&zc=${walkOpt.zc}&dur=${walkOpt.dur}&w=${walkOpt.w}&mech=${mech}`);
     if (!d.ok) throw new Error(d.error || '失敗');
     st.walk = d; st.wi = 0; st.playing = true; st.lastT = performance.now();
     const sk = document.getElementById('wseek');
     sk.max = d.frames.length - 1; sk.value = 0;
-    document.getElementById('wstat').innerHTML =
-      d.unreachable ? `<span class="chip ng">IK 未到達 ${d.unreachable} / ${d.frames.length} フレーム` +
+    let msg = d.unreachable
+      ? `<span class="chip ng">IK 未到達 ${d.unreachable} / ${d.frames.length} フレーム` +
         ` (最初 t=${d.first_bad}s)</span><br>z_c を上げるか脚寸法を確認`
-        : `<span class="chip ok">全 ${d.frames.length} フレームで IK 解あり</span>`;
+      : `<span class="chip ok">全 ${d.frames.length} フレームで IK 解あり</span>`;
+    if (d.mech) {
+      msg += '<br>' + (d.mech_bad
+        ? `<span class="chip ng">機構層で不可 ${d.mech_bad} フレーム (最初 t=${d.first_mech_bad}s)</span>` +
+          '<br>膝か足首が可動域の外。歩幅・足首の傾きを見直す'
+        : '<span class="chip ok">全フレームでサーボ指令に落とせる</span>');
+    }
+    document.getElementById('wstat').innerHTML = msg;
     document.getElementById('wplay').textContent = '一時停止';
     draw();
   } catch (e) {
@@ -605,7 +721,8 @@ for (const b of document.querySelectorAll('.tabs button')) {
   };
 }
 for (const [id, key] of [['showGrid', 'showGrid'], ['showTrace', 'showTrace'],
-                         ['showLabels', 'showLabels'], ['follow', 'follow']]) {
+                         ['showLabels', 'showLabels'], ['follow', 'follow'],
+                         ['showKnee', 'showKnee'], ['showAnkle', 'showAnkle']]) {
   document.getElementById(id).addEventListener('change', e => {
     ui[key] = e.target.checked; draw();
   });

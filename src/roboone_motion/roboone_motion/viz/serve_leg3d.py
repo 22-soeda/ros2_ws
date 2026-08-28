@@ -13,6 +13,16 @@
 可視化のために書き直した別実装ではない。roboone_kinematics の leg_service を
 子プロセスとして起動し、1 行 1 リクエストの JSON でやりとりしている。
 歩行モードは walk_core (Python 版) の出力をそのまま足先目標に流し込む。
+
+脚 IK だけでなく、その下の機構層（膝 4 節リンク・足首パラレルリンク）まで出す。
+つまり 1 つの姿勢について
+
+    足先目標 -> ik() -> θ1..θ6 -> legServoFromJoints() -> サーボ指令角
+
+の全段が同時に見える。膝の O4/O2/A/B と足首のクランク・ロッドは
+knee_fourbar.hpp / ankle_parallel.hpp が計算した組み方そのもので、可動域を
+外れたところ（膝の三角形が閉じない・ロッドが届かない・足首の窓で丸めた）は
+status に出る。**このツールはサーボに一切書かない**（実機に繋がらない）。
 """
 
 from __future__ import annotations
@@ -100,6 +110,8 @@ def api_walk(q) -> dict:
     ramp = _f(q, 'ramp', 0.6)          # 指令を立ち上げる時間 [s]
     hold = _f(q, 'hold', 1.5)          # 最後に指令を 0 に落として止める前の保持
     every = max(int(_f(q, 'every', 4)), 1)
+    # 機構層まで出すか。フレーム数ぶん膨らむので、画面で消しているときは落とす
+    mech = _f(q, 'mech', 1.0) != 0.0
 
     p = GaitParams()
     p.z_c = zc
@@ -136,7 +148,11 @@ def api_walk(q) -> dict:
             'zmp': [round(o.zmp[0] * 1000, 1), round(o.zmp[1] * 1000, 1)],
             'target': [[round(v, 2) for v in lf], [round(v, 2) for v in rf]]})
 
-    res = SVC.calls(reqs)
+    # mech の切り替えは同じロックの中で挟む（他の要求が間に入らない）
+    res = SVC.calls((['mech 0'] if not mech else []) + reqs +
+                    (['mech 1'] if not mech else []))
+    if not mech:
+        res = res[1:-1]
     for k, m in enumerate(meta):
         l, r = res[2 * k], res[2 * k + 1]
         m['left'] = l.get('origins')
@@ -147,11 +163,23 @@ def api_walk(q) -> dict:
         m['stR'] = r.get('status')
         m['RL'] = [round(v, 5) for v in (l.get('R') or [])]
         m['RR'] = [round(v, 5) for v in (r.get('R') or [])]
+        if mech:
+            m['mL'] = l.get('mech')
+            m['mR'] = r.get('mech')
         frames.append(m)
 
     bad = [f['t'] for f in frames if f['stL'] != 'ok' or f['stR'] != 'ok']
-    return {'ok': 1, 'dt': ENGINE_DT * every, 'frames': frames,
+    # 機構層で弾かれたフレーム（IK は解けてもサーボに落とせない姿勢）
+    def mech_bad(f):
+        for key in ('mL', 'mR'):
+            m = f.get(key)
+            if m and m.get('status') != 'ok':
+                return True
+        return False
+    mbad = [f['t'] for f in frames if mech_bad(f)]
+    return {'ok': 1, 'dt': ENGINE_DT * every, 'frames': frames, 'mech': int(mech),
             'unreachable': len(bad), 'first_bad': (bad[0] if bad else None),
+            'mech_bad': len(mbad), 'first_mech_bad': (mbad[0] if mbad else None),
             'params': {'vx': vx, 'vy': vy, 'zc': zc, 'dur': dur, 'w': w}}
 
 
