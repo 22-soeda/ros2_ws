@@ -1,0 +1,89 @@
+# motion ノードのパラメータ。
+#
+#   ros2 launch roboone_motion_node motion.launch.py
+#   ros2 run roboone_motion_node motion_node --ros-args --params-file <このファイル>
+#
+# 姿勢の定義そのものはここに無い。原本は
+#   ホーム姿勢   roboone_motion/config/home_pose.yaml   (関節角)
+#   歩行の設定   roboone_motion/config/gait.yaml        (LIPM のパラメータ)
+#   技           roboone_motion_node/config/motions.yaml (キーフレーム)
+#   原点 / リミット feetech_servo/config/servo_home.yaml, servo_limits.yaml
+
+/**:
+  ros__parameters:
+
+    # --- バス -------------------------------------------------------------
+    # ttyACM の番号は入れ替わるので udev の固定名を使う（ID7 がある側が右半身）。
+    port_right: "/dev/feetech_right"
+    port_left: "/dev/feetech_left"
+    baud: 1000000
+
+    # HLS 系は位置指令パケットの 44/45 が GOAL_TORQUE。**0 だと全軸まったく動かない。**
+    # SMS/STS 系ではここは GOAL_TIME になるので、繋ぎ替えたら feetech_bus 側の
+    # Family を直すこと。
+    goal_torque: 1000
+
+    # 位置指令パケットに載せる速度 (reg46/47) と加速度 (reg41)。
+    #
+    # ★0 にしないこと。この実機 (HLS 系) は速度 0 だと目標位置を受け取っても動かない。
+    #   同じパケットの 44/45 = GOAL_TORQUE に 0 を書くと全軸まったく動かないのと同じ
+    #   性質で、0 は「無制限」ではない。2026-08-28 に 0 のまま実機で
+    #   「トルクは入るが動かない」を踏んでいる。
+    #   200Hz で目標を流すので、軌道が速度で頭打ちにならない値にしておく。
+    move_speed: 2000
+    move_acc: 50
+
+    # --- 周期 -------------------------------------------------------------
+    loop_hz: 200.0          # 制御ループ。ros-architecture §3 の 200Hz
+    read_hz: 50.0           # サーボ状態の読み出し。1 往復かかるので書き込みより遅くする
+    joint_state_hz: 10.0    # /joint_states
+
+    # --- 安全 -------------------------------------------------------------
+    # サーボにトルクを入れてよいか。**通常運用の既定は true**（機体は動く）。
+    #
+    # false にすると、バスは開いて読むが enable_torque(true) と位置指令の送信だけを
+    # 行わない。歩行計画・IK・モーション再生・/joint_states は実測値を使って全部回るので、
+    # 機体を動かさずに操縦系・config・軌道の通し確認ができる。
+    # 実装中の検証で走らせるときはこれを落とす（CLAUDE.md「実装中の検証では
+    # トルクを入れない」）。バスも開きたくないときは下の dry_run。
+    allow_torque: true
+
+    # /cmd_walk がこれだけ途切れたら指令ゼロとみなす（最後の指令を保持しない）。
+    # teleop は静止中も 20Hz でゼロを送り続けるので、途切れ = 送り手が消えた。
+    cmd_timeout: 0.5
+
+    # トルクを入れてから保持姿勢へ移るまでの時間。**実測姿勢が起点**なので、
+    # 転がっている機体にトルクを入れてもいきなり跳ねない。短くしないこと。
+    torque_on_time: 2.0
+
+    # /cmd_motion "home" でホーム姿勢へ移る時間。
+    home_move_time: 1.5
+
+    # 起動直後の latched な /estop false では武装しない。teleop は起動時に
+    # estop=false を撒くので、これが false だと launch しただけでサーボに電気が
+    # 入ってホーム姿勢へ動き出す。/cmd_motion を 1 回受けるまで脱力のままにする
+    # （teleop の Options 長押しは home -> estop false の順に来るので操作は変わらない）。
+    require_home_before_arm: true
+
+    # --- 腕（ID7-10。運動学を持たない軸）---------------------------------
+    # 実機のサーボが Σ_B の正方向と逆に回る軸をここに並べる。脚は
+    # leg_config.hpp の AXIS_FLIP が同じ役目を持つが、腕は運動学が無いのでここ。
+    # 左右対称に組んだぶん出力軸の向きが反転する軸がある（膝・足首と同じ事情）。
+    # 2026-08-28 実機で R8 / L9 / R10 が逆に回るのを確認。
+    arm_invert: ["R8", "L9", "R10"]
+
+    # --- 歩行 -------------------------------------------------------------
+    walk_enable: true
+
+    # 歩行計画の足位置に足す左右方向のオフセット [mm]。gait.yaml の foot_spacing が
+    # 実機の股間隔 (±89.3mm) と揃っている今は 0 でよい。foot_spacing を実機と違う
+    # 値で回したいときだけ使う（ただし横方向の力学は foot_spacing の値で計画される）。
+    stance_y_offset: 0.0
+
+    # 歩行中に技の指令が来たら、歩行を打ち切って技に入る。false にすると無視する。
+    # 転んだ機体を起こす指令が「歩行中だから」で捨てられると詰むので既定 true。
+    motion_interrupts_walk: true
+
+    # --- 開発用 -----------------------------------------------------------
+    # true にするとバスを開かない。config と IK の通し確認だけしたいときに使う。
+    dry_run: false

@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>roboone_motion_node</name>
+  <version>0.1.0</version>
+  <description>
+    motion ノード。ros-architecture §3 の「200Hz ループ」の実体で、
+    /cmd_walk・/cmd_motion・/estop を受けて歩行計画 (roboone_walk_core) と
+    キーフレームモーションを走らせ、IK (roboone_kinematics) を通して
+    Feetech サーボ (feetech_servo) へ送る。
+
+    歩行計画の仕様原本は roboone_motion (Python) 側にある。こちらはその C++ 版
+    (roboone_walk_core) をプロセス内で呼ぶだけで、計画の式は持たない。
+  </description>
+  <maintainer email="soedayu.030622@gmail.com">soedayu</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>diagnostic_msgs</depend>
+  <depend>ament_index_cpp</depend>
+  <depend>yaml-cpp</depend>
+  <depend>feetech_servo</depend>
+  <depend>roboone_kinematics</depend>
+  <depend>roboone_walk_core</depend>
+  <!-- 歩行設定 (gait.yaml) とホーム姿勢 (home_pose.yaml) の置き場。share を読むだけ -->
+  <exec_depend>roboone_motion</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_cmake_uncrustify</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
