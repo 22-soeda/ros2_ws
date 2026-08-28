@@ -24,7 +24,8 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from knee_fourbar import (              # noqa: E402,I100
+import knee_config                          # noqa: E402,I100
+from knee_fourbar import (                  # noqa: E402,I100
     DeadPoint, Unreachable, branches_from_pose, knee_fourbar,
 )
 
@@ -581,7 +582,10 @@ def test_ankle_is_not_silently_passed_through():
     ls = leg_servo("right")
     tpose = np.zeros(6)                       # 伸び切り姿勢の関節角
     servo = ls.servo_from_joints(tpose)       # ankle 抜きなら素通しで通る
-    assert D(servo[3]) == pytest.approx(185.7067, abs=1e-3)
+    # 伸び切りでの指令サーボ角は、記録された初期位置（servo_home.yaml の ID4）に一致する。
+    # φ0 をそこから作っているので、これは往復が閉じていることの確認になる。
+    want = knee_config.SERVO_HOME_COUNT["right"] * 360.0 / knee_config.SERVO_COUNTS
+    assert dtheta(D(servo[3]), want) == pytest.approx(0.0, abs=1e-6)
     with pytest.raises(AnkleNotImplemented):
         ls.servo_from_joints(tpose, ankle=True)
     with pytest.raises(AnkleNotImplemented):

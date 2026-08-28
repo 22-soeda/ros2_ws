@@ -16,11 +16,14 @@ SSH のポートフォワード (ssh -L 8102:localhost:8102 <pi>) でも同じ�
 * サーボは **角度を読むだけ**。トルクは入れない。子プロセスの
   ``feetech_knee_stream`` が起動時に 1 回だけトルク OFF（脱力）を書き、
   それ以外の書き込み経路を持たない。膝は手で動かす。
-* **起動した瞬間の姿勢を「膝が伸び切った状態」とみなす**（T ポーズ）。
-  そのときのサーボ生角を θ2 = 185.71°（曲げ量 0 のクランク角）に対応づける。
-  これはそのまま knee_config の φ0（サーボ原点）の原点出しになっていて、
-  画面に「knee_config.py に書く値」として出る。
-  ずれていたら脚を伸ばし直して「ゼロ取り直し」を押す。
+* **伸び切り（曲げ量 0）の基準は、過去に各サーボへ対応づけた初期位置**を使う。
+  出どころは ``feetech_servo/config/servo_home.yaml`` の ID4 で、
+  ``feetech_calibrate_home`` が書いたファイル。その生カウントを
+  θ2 = 185.71°（曲げ量 0 のクランク角）に対応づける。起動時の姿勢は基準にしない
+  ので、脚が曲がったまま起動しても基準はずれない。
+* 起動直後に出る曲げ量は「記録された伸び切りから今どれだけ曲がっているか」なので、
+  脚を伸ばしてあれば 0 付近になる。ここが大きくずれていたら home の取り直しを疑う。
+  今の姿勢を一時的に基準にしたいときだけ「今を伸び切りに」を押す。
 
 ===========================================================================
 表示している量の出どころ
@@ -83,6 +86,37 @@ def find_stream() -> Path:
         'を実行する。探した場所:\n  ' + '\n  '.join(str(c) for c in cands))
 
 
+def read_home_count(port: str, sid: int) -> tuple[float | None, str]:
+    """servo_home.yaml から、そのバス・その ID の初期位置（生カウント）を読む。
+
+    feetech_calibrate_home が書くファイルが一次資料。読めなければ
+    knee_config.SERVO_HOME_COUNT に落とし、食い違ったら警告を返す。
+    """
+    path = _WS / 'src' / 'feetech_servo' / 'config' / 'servo_home.yaml'
+    fallback = None
+    for side, p in kcfg.SERVO_PORT.items():
+        if p == port:
+            fallback = float(kcfg.SERVO_HOME_COUNT[side])
+    try:
+        import yaml
+        doc = yaml.safe_load(path.read_text())
+        for bus in doc.get('buses', []):
+            if bus.get('port') != port:
+                continue
+            ent = (bus.get('servos') or {}).get(sid)
+            if ent is None:
+                return fallback, f'{path.name} に {port} の ID{sid} が無い'
+            home = float(ent['home'])
+            if fallback is not None and abs(home - fallback) > 0.5:
+                return home, (f'警告: servo_home.yaml の {home:.0f} と '
+                              f'knee_config.SERVO_HOME_COUNT の {fallback:.0f} が食い違う。'
+                              f'yaml の方を使う（knee_config を写し直すこと）')
+            return home, ''
+        return fallback, f'{path.name} に {port} が無い'
+    except Exception as exc:                                   # noqa: BLE001
+        return fallback, f'{path.name} が読めない（{exc}）'
+
+
 def to_body(p) -> list[float]:
     """文書の Σ_0（x 右 / y 前 / z 上）-> 機体座標 Σ_B（x 前 / y 左 / z 上）。
 
@@ -103,9 +137,11 @@ def wrap180(a: float) -> float:
 class ServoSource:
     """feetech_knee_stream の JSON 行を読み続けて、最新サンプルを持つ。"""
 
-    def __init__(self, exe: Path, port: str, sid: int, rate: float):
+    def __init__(self, exe: Path, port: str, sid: int, rate: float,
+                 keep_torque: bool = False):
         self.proc = subprocess.Popen(
-            [str(exe), '--port', port, '--id', str(sid), '--rate', str(rate)],
+            [str(exe), '--port', port, '--id', str(sid), '--rate', str(rate)]
+            + (['--keep-torque'] if keep_torque else []),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
         self.latest: dict = {'ok': False, 'n': 0, 'miss': 0}
         self.err: list[str] = []
@@ -193,7 +229,9 @@ class KneeModel:
         # 既定は knee_config の左右別の値。引数が来たらそちらを優先する
         self.sigma_m = int(kcfg.SIGMA_MOTOR[side]) if sigma_m is None else sigma_m
         self.gear = float(kcfg.GEAR[side]) if gear is None else gear
-        self.raw0: float | None = None
+        self.raw0: float | None = None      # 伸び切りに対応する生カウント
+        self.raw_home: float | None = None  # servo_home.yaml から読んだ値（基準）
+        self.zero_src = 'なし'
         self.lock = threading.Lock()
         self.last_good: dict | None = None
         # 表示用: 4 節リンクの平面基底の向き。ロッカーと下腿が同じ向きに回るように取る
@@ -243,9 +281,17 @@ class KneeModel:
         d_rocker = self.link.sigma_joint * R(30.0)         # θ4 の変化
         return 1.0 if d_shank * d_rocker > 0.0 else -1.0
 
-    def zero_to(self, raw: float) -> None:
+    def set_home(self, raw: float, src: str = 'servo_home.yaml') -> None:
+        """伸び切りの基準を設定する。"""
         with self.lock:
             self.raw0 = float(raw)
+            if src == 'servo_home.yaml':
+                self.raw_home = float(raw)
+            self.zero_src = src
+
+    def zero_to(self, raw: float) -> None:
+        """今の姿勢を一時的に伸び切りとみなす（記録は書き換えない）。"""
+        self.set_home(raw, src='今の姿勢（一時）')
 
     def phi0_deg(self) -> float | None:
         """求まったサーボ原点 φ0 = φ(raw0) − σ_m·n·θ2_ext [deg]。"""
@@ -260,9 +306,9 @@ class KneeModel:
         if raw is None:
             return {'status': 'NoData'}
         with self.lock:
-            if self.raw0 is None:
-                self.raw0 = float(raw)
             raw0 = self.raw0
+        if raw0 is None:
+            return {'status': 'NoHome'}      # 基準が無いうちは変換しない
 
         dphi = wrap180((float(raw) - raw0) * 360.0 / COUNTS)
         theta2 = self.theta2_ext + R(dphi) / (self.sigma_m * self.gear)
@@ -323,6 +369,7 @@ class KneeModel:
 SRC = None
 MODEL: KneeModel | None = None
 ARGS = None
+HOME_NOTE = ''
 
 
 def api_state() -> dict:
@@ -343,6 +390,9 @@ def api_state() -> dict:
             'theta4_zero': round(D(MODEL.link.theta4_zero), 4),
             'theta2_ext': round(D(MODEL.theta2_ext), 4),
             'raw0': MODEL.raw0,
+            'raw_home': MODEL.raw_home,
+            'zero_src': MODEL.zero_src,
+            'home_note': HOME_NOTE,
             'phi0_deg': None if MODEL.phi0_deg() is None else round(MODEL.phi0_deg(), 4),
         },
     }
@@ -407,15 +457,26 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == '/api/state':
                 self._send(200, json.dumps(api_state()).encode(), 'application/json')
             elif u.path == '/api/zero':
-                s = SRC.read()
-                if s.get('raw') is None:
+                # mode=home … 記録された初期位置に戻す（既定）
+                # mode=now  … 今の姿勢を一時的に伸び切りとみなす
+                mode = (q.get('mode', ['home'])[0] or 'home').lower()
+                if mode == 'now':
+                    s = SRC.read()
+                    if s.get('raw') is None:
+                        self._send(200, json.dumps(
+                            {'ok': False, 'msg': 'サーボがまだ読めていない'}).encode(),
+                            'application/json')
+                        return
+                    MODEL.zero_to(s['raw'])
+                elif MODEL.raw_home is not None:
+                    MODEL.set_home(MODEL.raw_home)
+                else:
                     self._send(200, json.dumps(
-                        {'ok': False, 'msg': 'サーボがまだ読めていない'}).encode(),
+                        {'ok': False, 'msg': 'servo_home.yaml の値が無い'}).encode(),
                         'application/json')
                     return
-                MODEL.zero_to(s['raw'])
                 self._send(200, json.dumps(
-                    {'ok': True, 'raw0': MODEL.raw0,
+                    {'ok': True, 'raw0': MODEL.raw0, 'src': MODEL.zero_src,
                      'phi0_deg': round(MODEL.phi0_deg(), 4)}).encode(), 'application/json')
             elif u.path == '/api/set':
                 self._send(200, json.dumps(api_set(q)).encode(), 'application/json')
@@ -427,19 +488,42 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, json.dumps({'error': str(exc)}).encode(), 'application/json')
 
 
-def lan_addr() -> str:
+def lan_addrs() -> list[tuple[str, str]]:
+    """このホストの (インタフェース名, IPv4) を全部返す。
+
+    既定経路のアドレスだけ出すと、SSH が別の口（有線 eth0）から来ているときに
+    使えない URL を案内してしまう。getaddrinfo はホスト名に紐づく 1 つしか返さない
+    ことがあるので、/sys/class/net を舐めて SIOCGIFADDR で各口のアドレスを引く。
+    """
+    import fcntl
+    import struct
+
+    out: list[tuple[str, str]] = []
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(('10.255.255.255', 1))
-        a = s.getsockname()[0]
-        s.close()
-        return a
+        names = sorted(os.listdir('/sys/class/net'))
     except OSError:
-        return '127.0.0.1'
+        names = []
+    sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        for name in names:
+            if name == 'lo':
+                continue
+            try:
+                packed = fcntl.ioctl(
+                    sk.fileno(), 0x8915,                       # SIOCGIFADDR
+                    struct.pack('256s', name.encode()[:15]))
+                out.append((name, socket.inet_ntoa(packed[20:24])))
+            except OSError:
+                continue                                       # アドレス未設定の口
+    finally:
+        sk.close()
+    if not out:
+        out.append(('?', '127.0.0.1'))
+    return out
 
 
 def main() -> int:
-    global SRC, MODEL, ARGS
+    global SRC, MODEL, ARGS, HOME_NOTE
     ap = argparse.ArgumentParser(description='膝 4 節リンクの動作確認ビジュアライザ')
     ap.add_argument('--side', default='right', choices=('right', 'left'),
                     help='どちらの膝か。**膝サーボは左右とも ID 4** なので、'
@@ -454,25 +538,50 @@ def main() -> int:
                     help='サーボの回転方向 σ_m（既定は knee_config の左右別の値。'
                          '画面でも切り替えられる）')
     ap.add_argument('--gear', type=float, default=None, help='ギア比 n')
+    ap.add_argument('--home', type=float, default=None,
+                    help='伸び切りのサーボ生カウント（既定は servo_home.yaml の ID4）')
+    ap.add_argument('--keep-torque', action='store_true',
+                    help='起動時のトルク OFF も行わない。すでに脱力しているなら'
+                         'これを付けるとバスへの書き込みが完全に 0 になる')
     ap.add_argument('--demo', action='store_true', help='実機なしで表示だけ確かめる')
     ARGS = ap.parse_args()
 
     port = ARGS.port or kcfg.SERVO_PORT[ARGS.side]
     sid = kcfg.SERVO_ID if ARGS.id is None else ARGS.id
     MODEL = KneeModel(side=ARGS.side, sigma_m=ARGS.sigma_m, gear=ARGS.gear)
+
+    # 伸び切りの基準は「過去に各サーボへ対応づけた初期位置」= servo_home.yaml の ID4。
+    # 起動時の姿勢は基準にしない。
+    home, HOME_NOTE = read_home_count(port, sid)
+    if ARGS.home is not None:
+        home, HOME_NOTE = float(ARGS.home), '--home で指定'
+    if home is None:
+        print('*** 伸び切りの基準が無い。--home で生カウントを渡すこと')
+        return 2
+    MODEL.set_home(home, src=('--home' if ARGS.home is not None else 'servo_home.yaml'))
+    print(f'伸び切りの基準: raw = {home:.0f}  ({home * 360.0 / COUNTS:.2f} deg)'
+          f'  <- {MODEL.zero_src}')
+    if HOME_NOTE:
+        print(f'  {HOME_NOTE}')
+    print(f'  そこから決まる φ0 = {MODEL.phi0_deg():.3f} deg'
+          f'（σ_m = {MODEL.sigma_m:+d}, n = {MODEL.gear:g} のとき）')
     if ARGS.demo:
         SRC = DemoSource(MODEL.link, raw0=2048, gear=MODEL.gear, sigma_m=MODEL.sigma_m)
         MODEL.zero_to(2048)      # 模擬の伸び切り姿勢。実機では最初のサンプルで取る
         print('*** DEMO モード: サーボは読んでいない。表示の確認用。')
     else:
-        SRC = ServoSource(find_stream(), port, sid, ARGS.rate)
-        print(f'{ARGS.side} 膝  サーボ: {SRC.label}  トルクは入れない（読むだけ）')
+        SRC = ServoSource(find_stream(), port, sid, ARGS.rate, ARGS.keep_torque)
+        print(f'{ARGS.side} 膝  サーボ: {SRC.label}  '
+              + ('書き込み一切なし（--keep-torque）' if ARGS.keep_torque
+                 else 'トルクは入れない（起動時に OFF を 1 回だけ書く）'))
 
     srv = ThreadingHTTPServer(('0.0.0.0', ARGS.http_port), Handler)
-    print(f'\n  http://{lan_addr()}:{ARGS.http_port}/   をブラウザで開く')
-    print(f'  http://localhost:{ARGS.http_port}/        （SSH -L で転送した場合）\n')
-    print('起動時の姿勢を「膝が伸び切った状態」として扱う。')
-    print('脚を伸ばしてから開き、ずれていたら画面の「ゼロ取り直し」を押す。')
+    print('\n  ブラウザで開く（SSH で入っている口のアドレスを選ぶ）:')
+    for name, a in lan_addrs():
+        print(f'    http://{a}:{ARGS.http_port}/   ({name})')
+    print(f'    http://localhost:{ARGS.http_port}/   （SSH -L で転送した場合）\n')
+    print('伸び切りの基準は servo_home.yaml の記録。起動時の姿勢は基準にしない。')
+    print('脚を伸ばした状態で曲げ量が 0 付近にならなければ、home の取り直しを疑う。')
     print('Ctrl-C で終了。')
     try:
         srv.serve_forever()

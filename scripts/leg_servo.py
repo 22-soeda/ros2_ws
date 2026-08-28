@@ -124,8 +124,14 @@ class LegServo:
 
 
 def leg_servo(side: str = "right", **overrides) -> LegServo:
-    """左右脚の変換層。膝の平面幾何は左右共通（文書 §11）。"""
-    return LegServo(leg=leg_ik.leg_params(side), knee=knee_fourbar.KneeFourBar(**overrides))
+    """左右脚の変換層。
+
+    膝の平面幾何・枝・θ4_zero は左右共通（文書 §11）で、左右で違うのはサーボの
+    回転方向 σ_m と、そこから決まる原点 φ0 だけ。**左右別の値を拾うために
+    dataclass を直に作らず knee_fourbar(side) を通すこと**。
+    """
+    return LegServo(leg=leg_ik.leg_params(side),
+                    knee=knee_fourbar.knee_fourbar(side, **overrides))
 
 
 # --------------------------------------------------------------------------

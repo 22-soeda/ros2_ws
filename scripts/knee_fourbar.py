@@ -57,7 +57,7 @@ except ModuleNotFoundError:          # 別ディレクトリから import され
 
 __all__ = [
     "KneeFourBar", "KneePose", "Unreachable", "DeadPoint",
-    "knee_fourbar", "branches_from_pose", "cfg",
+    "knee_fourbar", "branches_from_pose", "phi0_from_home", "cfg",
 ]
 
 #: arccos の引数がこの分だけ 1 を超えるのは丸めとみなしてクランプする。
@@ -408,6 +408,33 @@ class KneeFourBar:
         return r[0] + r[3], r[1] + r[2], (r[0] + r[3]) <= (r[1] + r[2])
 
 
+def phi0_from_home(side: str = "right", home_count: float | None = None,
+                   sigma_motor: int | None = None, gear: float | None = None) -> float:
+    """伸び切り姿勢のサーボ生カウントから、サーボ原点 φ0 を出す [rad]。
+
+    伸び切り（曲げ量 0）でクランクは θ2_ext = ik(θ4_zero) を向いているので、
+    φ(home) = φ0 + σ_m·n·θ2_ext から
+
+        φ0 = φ(home) − σ_m·n·θ2_ext
+
+    home_count の既定は knee_config.SERVO_HOME_COUNT（= servo_home.yaml の ID4）。
+    φ0 を定数で持たずここで作るのは、σ_m と n を変えたら φ0 も変わるため。
+    """
+    side = side.lower()
+    if side not in cfg.SIDES:
+        raise ValueError(f"side は {cfg.SIDES} のどれか")
+    if home_count is None:
+        home_count = cfg.SERVO_HOME_COUNT[side]
+    if sigma_motor is None:
+        sigma_motor = cfg.SIGMA_MOTOR[side]
+    if gear is None:
+        gear = cfg.GEAR[side]
+    link = KneeFourBar(sigma_motor=sigma_motor, gear=gear)
+    theta2_ext = link.ik(link.rocker_from_joint(0.0)).theta2
+    phi_home = float(home_count) * 2.0 * math.pi / cfg.SERVO_COUNTS
+    return _wrap_pi(phi_home - sigma_motor * gear * theta2_ext)
+
+
 def knee_fourbar(side: str = "right", **overrides) -> KneeFourBar:
     """左右脚の膝リンク。``leg_ik.leg_params`` と同じ流儀。
 
@@ -417,10 +444,12 @@ def knee_fourbar(side: str = "right", **overrides) -> KneeFourBar:
     side = side.lower()
     if side not in cfg.SIDES:
         raise ValueError(f"side は {cfg.SIDES} のどれか")
-    kw = dict(phi0=math.radians(cfg.PHI0_DEG[side]),
-              sigma_motor=cfg.SIGMA_MOTOR[side],
-              gear=cfg.GEAR[side])
+    kw = dict(sigma_motor=cfg.SIGMA_MOTOR[side], gear=cfg.GEAR[side])
     kw.update(overrides)
+    # φ0 は伸び切りのサーボ生カウントから作る（明示指定があればそちらを優先）。
+    if "phi0" not in kw:
+        kw["phi0"] = phi0_from_home(
+            side, sigma_motor=kw["sigma_motor"], gear=kw["gear"])
     return KneeFourBar(**kw)
 
 

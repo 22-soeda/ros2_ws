@@ -50,8 +50,12 @@ inline constexpr double R4 = 20.0;   // ロッカー（出力・膝ジョイン�
 // 本機の寸法は作動域に死点が無い（arccos の引数の最大が 0.812）ので、
 // 姿勢ごとに選び直す必要もない。
 //
-// 実機で 1 姿勢だけ (θ2, θ4) を実測して kneeBranchesFromPose() に通せば確定する。
-// TODO(実機): 下は既存 MATLAB 実装と同じ側という暫定値。
+// **左右とも実機確認済み（2026-08-28）**。roboone_motion/viz/serve_knee3d.py で膝を
+// 手で曲げ、3D 表示が実機に追従することを左右それぞれ目視で確認した。
+// 既存 MATLAB 実装と同じ側。
+//
+// 左右で同じ値なので配列にしていない（枝は組み方で決まるが、左右同じ組み方だった）。
+// 左右で違ったのはサーボの回転方向 SERVO_SIGN だけ。
 inline constexpr int BETA = -1;
 inline constexpr int EPS = +1;
 
@@ -91,14 +95,18 @@ inline constexpr int SIGMA_JOINT = +1;
 // SERVO_SIGN     : サーボの回転方向。θ2 と逆向きなら -1。
 // GEAR_RATIO     : ギア比（サーボ 1 回転あたりクランク何回転か）。直結なら 1。
 //
-// TODO(実機): 3 つとも暫定値。roboone_motion/viz/serve_knee3d.py を「脚を伸ばした
-//             状態」で起動すると、画面にここへ書く値が出る。
+// SERVO_SIGN: **左右とも実機確認済み（2026-08-28）**。右 -1 / 左 +1。
+//             右脚は ID4 の回転方向が左と逆に組まれている（左右で鏡像になる取り付け）。
+//             **左右で違うのはこれだけ**で、枝 BETA/EPS も THETA4_ZERO_DEG も左右共通。
+// GEAR_RATIO: 直結とみなした暫定値。実機で振り幅が合わなければ見直す。
+// SERVO_ZERO_DEG: 伸び切りのサーボ生カウント（servo_home.yaml の ID4）から作るのが本筋で、
+//                 ここは home 以外で原点を決めたいときの上書き用。
 
 //! 膝サーボの ID。左右とも同じで、バスが左右を決める。
 inline constexpr int SERVO_ID = 4;
 
 inline constexpr double SERVO_ZERO_DEG[2] = {0.0, 0.0};
-inline constexpr int SERVO_SIGN[2] = {+1, +1};
+inline constexpr int SERVO_SIGN[2] = {-1, +1};   // {RIGHT, LEFT}
 inline constexpr double GEAR_RATIO[2] = {1.0, 1.0};
 
 // ---------------------------------------------------------------------------

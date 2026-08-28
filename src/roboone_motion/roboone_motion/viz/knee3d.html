@@ -127,16 +127,25 @@ pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11
   </fieldset>
 
   <fieldset>
-    <legend>原点（起動時の姿勢＝伸び切り）</legend>
-    <div class="note" style="margin-top:0">
-      起動した瞬間の姿勢を曲げ量 0 とみなしている。脚を伸ばした状態で
-      「ゼロ取り直し」を押すと、そこが伸び切りになる。</div>
+    <legend>伸び切りの基準</legend>
+    <table>
+      <tr><td class="k">基準の生カウント</td><td class="v" id="raw0">—</td></tr>
+      <tr><td class="k">出どころ</td><td class="v" id="zsrc">—</td></tr>
+      <tr><td class="k">今との差</td><td class="v" id="fromhome">—</td></tr>
+    </table>
+    <div class="note" style="margin-top:6px">
+      基準は <code>servo_home.yaml</code> に記録された初期位置（ID 4）。
+      起動時の姿勢は基準にしていないので、曲がったまま起動しても基準はずれない。
+      脚を伸ばして曲げ量が 0 付近にならなければ home の取り直しを疑う。</div>
     <div class="btnrow">
-      <button class="primary" id="zero">ゼロ取り直し</button>
+      <button class="primary" id="zeroHome">記録の値に戻す</button>
+      <button id="zeroNow">今を伸び切りに（一時）</button>
       <button id="flipSm">σ_m 反転</button>
     </div>
-    <div class="note">膝を曲げたのに表示が逆に動くなら σ_m を反転する。</div>
+    <div class="note">膝を曲げたのに表示が逆に動くなら σ_m を反転する。<br>
+      「今を伸び切りに」は一時的な上書きで、<code>servo_home.yaml</code> は書き換えない。</div>
     <pre id="calib">—</pre>
+    <div class="note" id="homenote"></div>
   </fieldset>
 
   <fieldset>
@@ -382,12 +391,22 @@ function apply(s) {
   $('branch').textContent = (p.beta > 0 ? '+1' : '−1') + ' / ' + (p.eps > 0 ? '+1' : '−1');
   $('smgear').textContent = (p.sigma_m > 0 ? '+1' : '−1') + ' / ' + p.gear;
   $('zeroparams').textContent = f(p.theta4_zero, 1, '°') + ' / ' + (p.sigma_knee > 0 ? '+1' : '−1');
+  $('raw0').textContent = p.raw0 === null || p.raw0 === undefined ? '—'
+    : Math.round(p.raw0) + '（' + (p.raw0 * 360 / 4096).toFixed(2) + '°）';
+  $('zsrc').textContent = p.zero_src || '—';
+  if (sv.raw !== null && sv.raw !== undefined && p.raw0 !== null && p.raw0 !== undefined) {
+    const dc = sv.raw - p.raw0;
+    $('fromhome').textContent = (dc >= 0 ? '+' : '') + dc.toFixed(0) + ' count（'
+      + (dc >= 0 ? '+' : '') + (dc * 360 / 4096).toFixed(2) + '°）';
+  } else { $('fromhome').textContent = '—'; }
+  $('homenote').textContent = p.home_note || '';
   $('calib').textContent =
-    'raw0 = ' + (p.raw0 === null ? '—' : Math.round(p.raw0)) + '\n' +
-    '# knee_config.py に書く値\n' +
-    'PHI0_DEG    = ' + (p.phi0_deg === null ? '—' : p.phi0_deg.toFixed(3)) + '\n' +
-    'SERVO_SIGN  = ' + (p.sigma_m > 0 ? '+1' : '-1') + '\n' +
-    'GEAR        = ' + p.gear;
+    '# knee_config.py（伸び切りの生カウント。φ0 はここから作る）\n' +
+    'SERVO_HOME_COUNT["' + (p.side || '?') + '"] = ' +
+      (p.raw0 === null ? '—' : Math.round(p.raw0)) + '\n' +
+    'SIGMA_MOTOR["' + (p.side || '?') + '"] = ' + (p.sigma_m > 0 ? '+1' : '-1') + '\n' +
+    'GEAR["' + (p.side || '?') + '"] = ' + p.gear + '\n' +
+    '# -> φ0 = ' + (p.phi0_deg === null ? '—' : p.phi0_deg.toFixed(3)) + ' deg';
 
   const b = $('banner');
   let msg = '', cls = '';
@@ -427,7 +446,8 @@ async function hit(url) {
   try { await fetch(url, { cache: 'no-store' }); } catch (e) { /* 無視 */ }
 }
 
-$('zero').onclick = () => hit('/api/zero');
+$('zeroHome').onclick = () => hit('/api/zero?mode=home');
+$('zeroNow').onclick = () => hit('/api/zero?mode=now');
 $('flipSm').onclick = () => hit('/api/set?sigma_m=' + (-(S && S.params ? S.params.sigma_m : 1)));
 $('flipB').onclick = () => hit('/api/set?beta=' + (-(S && S.params ? S.params.beta : -1)));
 $('flipE').onclick = () => hit('/api/set?eps=' + (-(S && S.params ? S.params.eps : 1)));
