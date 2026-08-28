@@ -95,6 +95,10 @@ add_executable(feetech_leg_stream test/feetech_leg_stream.cpp)
 target_link_libraries(feetech_leg_stream feetech_servo)
 target_compile_options(feetech_leg_stream PRIVATE -O2)
 
+# 位置制御のゲイン / トルク上限を読む（--write を付けたときだけ EEPROM へ書く）
+add_executable(feetech_gains test/feetech_gains.cpp)
+target_link_libraries(feetech_gains feetech_servo scservo)
+
 add_executable(feetech_calibrate_home test/feetech_calibrate_home.cpp)
 target_link_libraries(feetech_calibrate_home feetech_servo scservo yaml-cpp::yaml-cpp)
 ament_target_dependencies(feetech_calibrate_home ament_index_cpp)
@@ -113,7 +117,7 @@ install(TARGETS feetech_servo scservo
 
 install(TARGETS feetech_demo_node feetech_scan_test feetech_goto_test feetech_shell
   feetech_set_limits feetech_calibrate_home feetech_knee_stream feetech_leg_stream
-  leg_live_test
+  leg_live_test feetech_gains
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch config viz
