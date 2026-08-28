@@ -1,0 +1,52 @@
+# opponent_detector のパラメータ。
+#
+# docs/opponent_detection.pdf §11 の分け方をそのまま使う。
+#
+#   body.*   機体から決まる … 起動時に固定。ros2 param set では変えられない
+#   match.*  競技から決まる … 規定の寸法から取る。bag の数字から取らない (§8.3)
+#   tune.*   実装から決まる … depth のノイズと計算量から決まる。実測で追い込む
+#
+# 既定値は roboone_perception/detect/params.py にあり、ここに書くのは
+# 「この機体での選択」だけにする。値の意味と根拠は params.py の注記を見ること。
+/**:
+  ros__parameters:
+
+    # ---- 機体から決まる ------------------------------------------------
+    body:
+      # リング面からカメラ原点までの高さ。高さヒストグラムの窓の中心になるので、
+      # ここがずれると窓が場外の床を掴む方向にずれる。実測して入れること。
+      cam_height: 0.35
+      # 光軸の俯角。姿勢の初期値にだけ使う（以降は面法線が毎フレーム決める）
+      cam_pitch_deg: 30.0
+      # 機体原点からカメラ原点までのオフセット。/opponent を機体座標に直すのに使う
+      cam_offset_x: 0.0
+      cam_offset_y: 0.0
+
+    # ---- 競技から決まる ------------------------------------------------
+    # !! 暫定値 !! docs/opponent_detection.pdf §8.3/§12 のとおり、上限は
+    # ROBO-ONE Auto の規定を当たって置き直す。桜木町の bag のミニロボット
+    # （上端 26.8 cm・幅 23.2 cm）は「この値でミニロボも取れるか」の確認にだけ使う。
+    match:
+      obj_top_min: 0.10
+      obj_top_max: 0.70
+      obj_width_min: 0.05
+      obj_width_max: 0.60
+      range_max: 3.0
+
+    # ---- 実装から決まる ------------------------------------------------
+    tune:
+      # 間引き幅。§4 表 2 より d=2 で検出率は変わらず 3.3 倍速い。
+      # Pi 5 が 33 ms に収まらないときはまず 3 にする（§10 の 1 番目の手）
+      stride: 2
+      cell: 0.05
+      floor_band: 0.030
+      # リング面の高さヒストグラムの窓。段差 34 cm に対して場外の床が入らない幅
+      hist_window: 0.25
+
+    # ---- ノードの入出力 ------------------------------------------------
+    depth_topic: /camera/depth/image_rect_raw
+    camera_info_topic: /camera/depth/camera_info
+    imu_topic: /camera/imu
+    # realsense2_camera は画像を RELIABLE で出す。取り違えると 1 枚も来ない
+    depth_qos: reliable
+    frame_id: base_link

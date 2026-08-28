@@ -25,8 +25,8 @@ ros2 launch realsense_bringup realsense.launch.py enable_pointcloud:=false
 | トピック | 型 | 周期 | 受け側 |
 |---|---|---|---|
 | `/camera/imu` | sensor_msgs/Imu | 200Hz | imu_filter |
-| `/camera/depth/color/points` | sensor_msgs/PointCloud2 | 30Hz | opponent_detector |
-| `/camera/depth/image_rect_raw` | sensor_msgs/Image (16UC1) | 30Hz | — |
+| `/camera/depth/color/points` | sensor_msgs/PointCloud2 | 30Hz | —（rviz 用）|
+| `/camera/depth/image_rect_raw` | sensor_msgs/Image (16UC1) | 30Hz | opponent_detector |
 | `/camera/color/image_raw` | sensor_msgs/Image (rgb8) | 30Hz | `enable_color:=true` のときだけ |
 
 主な launch 引数（全部は `ros2 launch realsense_bringup realsense.launch.py --show-args`）:
@@ -48,7 +48,7 @@ ros2 launch realsense_bringup realsense.launch.py enable_pointcloud:=false
 - **IMU 200Hz**（gyro 200Hz + accel 200Hz、`unite_imu_method=2`）— `docs/ros-architecture.md`
   の `/camera/imu` 目安周期に合わせた。accel を gyro の時刻へ線形補間して 1 本にまとめるので、
   imu_filter 側は gyro/accel を自分で同期しなくてよい。
-- **RGB OFF** — opponent_detector は点群しか使わない。ON にすると depth の遅延が
+- **RGB OFF** — opponent_detector は depth しか使わない。ON にすると depth の遅延が
   約 18ms → 約 57ms に増える（下の実測表）。必要になったら `enable_color:=true`。
 - **点群は XYZ のみ** — RGB OFF のときは自動でテクスチャなしになる（`stream_filter=0`）。
   `enable_color:=true` にすると自動で色付き（`stream_filter=2`, `point_step` 16→20）になる。

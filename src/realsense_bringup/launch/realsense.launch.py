@@ -11,8 +11,8 @@
 
 出るトピック（docs/ros-architecture.md のトピック表に合わせてある）:
     /camera/imu                        sensor_msgs/Imu          200Hz  → imu_filter
-    /camera/depth/color/points         sensor_msgs/PointCloud2   30Hz  → opponent_detector
-    /camera/depth/image_rect_raw       sensor_msgs/Image         30Hz
+    /camera/depth/color/points         sensor_msgs/PointCloud2   30Hz  → rviz など
+    /camera/depth/image_rect_raw       sensor_msgs/Image         30Hz  → opponent_detector
     /camera/color/image_raw            sensor_msgs/Image         30Hz  (enable_color:=true のとき)
 
 パラメータの中身は config/realsense.yaml。この launch はストリームの ON/OFF と、
@@ -95,8 +95,9 @@ def launch_setup(context, *args, **kwargs):
         pc + ".stream_filter": (
             _PC_TEXTURE_COLOR if (enable_pointcloud and enable_color) else _PC_TEXTURE_NONE
         ),
-        # ordered_pc=false: 無効画素を落とした 1行 N点の非順序点群。
-        # opponent_detector は画素の並びを使わないので、点数が減る分こちらが軽い。
+        # ordered_pc=false: 無効画素を落とした 1行 N点の非順序点群。点群を使うのは
+        # 可視化だけなので、点数が減る分こちらが軽い。opponent_detector は点群では
+        # なく深度画像を読む（画素の並びが要るため。roboone_perception/README.md）。
         pc + ".ordered_pc": False,
         # texture が取れない画素も点として残すか。RGB OFF 時は texture 自体を
         # 使わないので影響しない。
