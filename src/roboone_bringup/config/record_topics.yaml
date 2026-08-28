@@ -17,10 +17,22 @@ topics:
   - /autonomy           # 手動 / 自律の切り替え履歴
   # --- 機体の状態 ---
   - /motion/state
-  - /joint_states
+  - /joint_states           # 実測の関節角 [rad]
+  # 「荷重で沈んだ」を後から追うには **指令と実測の差** が要る。/joint_states だけだと
+  # 実測しか残らず、沈んだのか指令がそもそもそこだったのか区別が付かない。
+  - /motion/joint_commands  # 指令の関節角 [rad]。/joint_states と同じ並び・同じ名前
+  # サーボ空間の生カウント。膝 4 節リンクの変換を挟む前の値なので、
+  #   関節空間だけに差 -> リンクのたわみ / 両方に差 -> サーボの追従不足
+  # の切り分けができる。★velocity は速度ではなく **目標カウント**（JointState に
+  #   「目標」の場所が無いので借りている）。effort は負荷 (-1..1)。
+  - /motion/servo_states
+  - /motion/diagnostics     # バスごとの電圧・最高温度・応答軸数・エラービット（低電圧の追跡用）
   - /imu/data
   # --- 判断層 ---
-  - /opponent
+  - /opponent           # 敵機の位置・上端高さ・状態（roboone_interfaces/Opponent）
+  - /ring_edge          # 方位ごとの床の切れ目。64 個の float なので軽い
+  - /behavior/state     # 状態と、そこへ入った理由。「なぜそう動いたか」の一次資料
+  - /behavior/debug     # ρ, β, z_top, d_edge, d_cliff(0), λ, 各タイマ（20Hz）
   # --- 表示（何が出ていたか。操作者の見ていたものを再現できる）---
   - /ui/led/pattern
   - /ui/oled/text
