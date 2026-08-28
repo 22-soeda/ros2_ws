@@ -36,6 +36,19 @@ target_link_libraries(leg_service roboone_kinematics)
 target_compile_options(leg_service PRIVATE -O2)
 
 # ---------------------------------------------------------------------------
+# 膝 4 節リンク（docs/膝4節リンク導出.pdf）
+#   knee_selftest : 受け入れ基準 1〜8 + σ の一意性 + 脚 IK との繋ぎこみ
+#   knee_dump     : Python 参照実装との突き合わせ用（scripts/crosscheck_knee.py）
+# ---------------------------------------------------------------------------
+add_executable(knee_selftest src/knee_selftest.cpp)
+target_link_libraries(knee_selftest roboone_kinematics)
+target_compile_options(knee_selftest PRIVATE -O2)
+
+add_executable(knee_dump src/knee_dump.cpp)
+target_link_libraries(knee_dump roboone_kinematics)
+target_compile_options(knee_dump PRIVATE -O2)
+
+# ---------------------------------------------------------------------------
 # 足首パラレルリンク（docs/足首パラレルリンク導出.pdf）
 #   ankle_selftest : §8 の検算 + 文書が本文で挙げている数値との照合
 #   ankle_dump     : 中間量を出す確認用（CAD の値を入れたあとの点検に使う）
@@ -49,7 +62,8 @@ target_link_libraries(ankle_dump roboone_kinematics)
 target_compile_options(ankle_dump PRIVATE -O2)
 
 install(DIRECTORY include/ DESTINATION include)
-install(TARGETS leg_selftest leg_dump leg_service ankle_selftest ankle_dump
+install(TARGETS leg_selftest leg_dump leg_service knee_selftest knee_dump
+  ankle_selftest ankle_dump
   DESTINATION lib/${PROJECT_NAME})
 
 install(TARGETS roboone_kinematics EXPORT export_roboone_kinematics)
@@ -60,6 +74,7 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   # 自己検算をそのまま ctest に載せる (姿勢数を減らして高速に)
   add_test(NAME leg_selftest COMMAND leg_selftest -n 3000)
+  add_test(NAME knee_selftest COMMAND knee_selftest)
   add_test(NAME ankle_selftest COMMAND ankle_selftest -n 2000)
 endif()
 
