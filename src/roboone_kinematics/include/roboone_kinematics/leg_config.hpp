@@ -92,8 +92,12 @@ inline constexpr int AXIS_FLIP[6]      = {0, 0, 0, 0, 0, 0};
 // 左脚。左右でサーボの向きが鏡像ならここに別の表を書き、SEPARATE を true に。
 // ※ 関節角そのものは左右とも Σ_B（機体共通）で定義してあるので、鏡像に
 //    なるのはサーボの回り方だけ。幾何の左右対称は makeLegParams が扱う。
-inline constexpr bool AXIS_FLIP_LEFT_SEPARATE = false;
-inline constexpr int AXIS_FLIP_LEFT[6] = {0, 0, 0, 0, 0, 0};
+//
+// J1（ID1 股ピッチ）: 左脚は実機のサーボが右脚と逆に回る（2026-08-28 実機で確認）。
+// 膝の SERVO_SIGN・足首の SERVO_SIGN が左右で入れ替わっているのと同じ事情で、
+// 左右対称に組んだぶんサーボの出力軸の向きが反転する。
+inline constexpr bool AXIS_FLIP_LEFT_SEPARATE = true;
+inline constexpr int AXIS_FLIP_LEFT[6] = {1, 0, 0, 0, 0, 0};
 
 // ---------------------------------------------------------------------------
 // 可動域（仮置き。自己検算で使う範囲）                                 [deg]
