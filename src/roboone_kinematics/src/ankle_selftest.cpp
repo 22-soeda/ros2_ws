@@ -222,7 +222,7 @@ void testMirror(int n)
 // -------------------------------------------------------------------- 起動時
 void testScan(const AnkleParams & prm)
 {
-  std::printf("\n§5.2 前周期の値が無いときの粗探し\n");
+  std::printf("\n§5.2 前周期の値が無いとき（粗探しは窓ソルバに統合済み）\n");
   const double t5 = 9.0 / kDeg, t6 = -11.0 / kDeg;
   const AnkleIkResult ik = ankleIk(prm, t5, t6);
   const AnkleFkResult fk = ankleFkScan(prm, ik.q);
@@ -230,7 +230,7 @@ void testScan(const AnkleParams & prm)
     fk.th5 * kDeg, fk.th6 * kDeg, t5 * kDeg, t6 * kDeg);
   check(fk.status == AnkleFkStatus::Ok, "種なしでも解が見つかる");
   check(angleDiff(fk.th5, t5) * kDeg < 1e-9 && angleDiff(fk.th6, t6) * kDeg < 1e-9,
-    "粗探しの解が正しい");
+    "種なしの解が正しい");
 }
 
 // -------------------------------------------------------------------- 異常系
@@ -255,21 +255,181 @@ void testErrors(const AnkleParams & prm)
   std::printf("    壊した幾何の順変換 → status=%d\n", static_cast<int>(fkBad.status));
   check(fkBad.status != AnkleFkStatus::Ok, "解の無い (q1,q2) は Ok を返さない");
 
-  // 逆に、Ok を返したときは必ず閉ループ拘束を満たしていること。
-  // (2.5, -2.5) rad は「でたらめ」ではなく θ5 ≈ 24 deg の実在する姿勢なので、
-  // 到達不能の例には使えない。不変条件はこちらで見る。
+  // クランクリミットの外を渡したら、丸めたことを申告すること。
+  // (2.5, -2.5) rad = (143, -143) deg はサーボが出せない角度なので、
+  // 通信化けや原点ずれで読めてしまったときにここで切る。
   const double qFar[kAnkleChains] = {2.5, -2.5};
-  const AnkleFkResult fkFar = ankleFkScan(prm, qFar);
-  if (fkFar.status == AnkleFkStatus::Ok) {
+  const AnkleFkResult fkFar = ankleFk(prm, qFar, 0.0);
+  std::printf("    q = (%+.0f, %+.0f) deg（リミット外）→ (%+.2f, %+.2f) deg"
+    "  crankClamped=%d\n", qFar[0] * kDeg, qFar[1] * kDeg,
+    fkFar.th5 * kDeg, fkFar.th6 * kDeg, static_cast<int>(fkFar.crankClamped));
+  check(fkFar.crankClamped, "クランクリミット外の入力は丸めたと申告する");
+  check(std::fabs(fkFar.th6) * kDeg <= ankle_config::FK_WINDOW_DEG[1] + 1e-9,
+    "リミット外の入力でも出力は窓の中に収まる");
+
+  // 逆に、リミットの中で Ok を返したときは必ず閉ループ拘束を満たしていること。
+  const double qIn[kAnkleChains] = {prm.qMax[0] * 0.9, prm.qMin[1] * 0.9};
+  const AnkleFkResult fkIn = ankleFk(prm, qIn, 0.0);
+  if (fkIn.status == AnkleFkStatus::Ok) {
     double res = 0.0;
     for (int i = 0; i < kAnkleChains; ++i) {
       res = std::max(res,
-        std::fabs(ankleConstraint(prm, i, fkFar.th5, fkFar.th6, qFar[i])));
+        std::fabs(ankleConstraint(prm, i, fkIn.th5, fkIn.th6, qIn[i])));
     }
-    std::printf("    q = (2.5, -2.5) rad → (%+.2f, %+.2f) deg  拘束残差 %.2e mm²\n",
-      fkFar.th5 * kDeg, fkFar.th6 * kDeg, res);
+    std::printf("    q = (%+.0f, %+.0f) deg → (%+.2f, %+.2f) deg  拘束残差 %.2e mm²\n",
+      qIn[0] * kDeg, qIn[1] * kDeg, fkIn.th5 * kDeg, fkIn.th6 * kDeg, res);
     check(res < 1e-6, "Ok を返した順変換は閉ループ拘束を満たす");
   }
+}
+
+// -------------------------------------------- 特異点まわり（2026-08-28 に追加）
+/// 「足裏を前後に傾けすぎると姿勢が暴れる」の再発防止。ここが本体。
+///
+/// 押さえるのは 4 つ。どれか 1 つでも落ちたら実機で姿勢が飛ぶ。
+///   [S1] 特異点が config に書いてある場所にある
+///   [S2] 窓の中で Φ(θ6) が狭義単調（クランク ±90 deg の全域で）
+///   [S3] サーボリミットの箱の全域で、順変換が有界な姿勢を返す（発散しない）
+///   [S4] その出力が連続（クランクを少し動かして姿勢が跳ばない）
+void testSingularity(const AnkleParams & prm)
+{
+  using namespace ankle_config;
+  std::printf("\n型 2 特異点と順変換の頑健性\n");
+
+  // ---- [S1] 純ピッチ経路で det Jθ が符号を変える場所 ----------------------
+  double found[2] = {0.0, 0.0};
+  int nFound = 0;
+  double prev = 0.0;
+  for (double a = -120.0; a <= 120.0; a += 0.05) {
+    const double t6 = a / kDeg;
+    const AnkleIkResult ik = ankleIk(prm, 0.0, t6);
+    const double det = ankleJacobian(prm, ik.q, 0.0, t6).det;
+    if (a > -120.0 && prev * det < 0.0 && nFound < 2) {found[nFound++] = a;}
+    prev = det;
+  }
+  std::printf("    det Jθ = 0 が θ6 = %+.2f / %+.2f deg   config %+.1f / %+.1f\n",
+    found[0], found[1], TH6_SINGULAR_DEG[0], TH6_SINGULAR_DEG[1]);
+  // 寸法に依る量なので、仕様との照合ではなく「config と実物が合っているか」を見る
+  check(nFound == 2 && std::fabs(found[0] - TH6_SINGULAR_DEG[0]) < 1.0 &&
+    std::fabs(found[1] - TH6_SINGULAR_DEG[1]) < 1.0,
+    "型 2 特異点が TH6_SINGULAR_DEG の場所にある");
+
+  // ロッドは届いたままなので、Δ の監視では捕まらないことを明示しておく
+  const AnkleIkResult atSing = ankleIk(prm, 0.0, TH6_SINGULAR_DEG[0] / kDeg, false);
+  std::printf("    その姿勢の Δ = (%.0f, %.0f) mm² … 正のまま（Δ 監視では捕まらない）\n",
+    atSing.delta[0], atSing.delta[1]);
+  check(atSing.status == AnkleIkStatus::Ok,
+    "特異点では Δ > 0（ロッド長では止まらない）");
+
+  // 窓が特異点の内側にあること
+  check(FK_WINDOW_DEG[0] > TH6_SINGULAR_DEG[0] && FK_WINDOW_DEG[1] < TH6_SINGULAR_DEG[1],
+    "順変換の窓が特異点の内側にある");
+
+  // ---- [S2] 窓の中で Φ が狭義単調か（クランク ±90 deg の全域） -------------
+  const double lo = FK_WINDOW_DEG[0] / kDeg, hi = FK_WINDOW_DEG[1] / kDeg;
+  const int nq = 40, nt = 120;
+  int nonMono = 0, noCurve = 0;
+  for (int i = 0; i <= nq; ++i) {
+    for (int j = 0; j <= nq; ++j) {
+      const double q[kAnkleChains] = {
+        (-90.0 + 180.0 * i / nq) / kDeg, (-90.0 + 180.0 * j / nq) / kDeg};
+      double f0 = 0.0;
+      int sgn = 0;
+      for (int k = 0; k <= nt; ++k) {
+        bool ok = false;
+        const double f = apdetail::phi(prm, q, lo + (hi - lo) * k / nt, ok);
+        if (!ok) {++noCurve; break;}
+        if (k > 0 && f != f0) {
+          const int t = (f > f0) ? 1 : -1;
+          if (sgn != 0 && t != sgn) {++nonMono; break;}
+          sgn = t;
+        }
+        f0 = f;
+      }
+    }
+  }
+  std::printf("    窓 [%+.0f, %+.0f] × クランク箱 ±90 deg の %d 点: "
+    "非単調 %d 件 / 曲線欠け %d 件\n",
+    FK_WINDOW_DEG[0], FK_WINDOW_DEG[1], (nq + 1) * (nq + 1), nonMono, noCurve);
+  check(nonMono == 0, "窓の中で Φ(θ6) が狭義単調（根は高々 1 個）");
+  check(noCurve == 0, "窓の中で曲線 Θ_i が途切れない");
+
+  // ---- [S3] サーボリミットの箱の全域で発散しない --------------------------
+  const int nb = 120;
+  int bad = 0, clamped = 0;
+  double max5 = 0.0, max6 = 0.0, worstRes = 0.0;
+  for (int i = 0; i <= nb; ++i) {
+    for (int j = 0; j <= nb; ++j) {
+      const double q[kAnkleChains] = {
+        prm.qMin[0] + (prm.qMax[0] - prm.qMin[0]) * i / nb,
+        prm.qMin[1] + (prm.qMax[1] - prm.qMin[1]) * j / nb};
+      const AnkleFkResult r = ankleFk(prm, q, 0.0);
+      if (r.status == AnkleFkStatus::Clamped) {
+        ++clamped;
+      } else if (r.status != AnkleFkStatus::Ok) {
+        ++bad;
+        continue;
+      }
+      max5 = std::max(max5, std::fabs(r.th5) * kDeg);
+      max6 = std::max(max6, std::fabs(r.th6) * kDeg);
+      if (r.status == AnkleFkStatus::Ok) {
+        for (int c = 0; c < kAnkleChains; ++c) {
+          worstRes = std::max(worstRes,
+            std::fabs(ankleConstraint(prm, c, r.th5, r.th6, q[c])));
+        }
+      }
+    }
+  }
+  std::printf("    サーボリミット箱 %d 点: 解けない %d 件 / 窓の縁に張り付き %d 件\n",
+    (nb + 1) * (nb + 1), bad, clamped);
+  std::printf("    出力の大きさ max|θ5| %.2f / max|θ6| %.2f deg（窓 %.0f）"
+    "   拘束残差 %.1e mm²\n", max5, max6, FK_WINDOW_DEG[1], worstRes);
+  check(bad == 0, "サーボリミットの範囲では必ず姿勢が出る（NoCurve/発散なし）");
+  check(max6 <= FK_WINDOW_DEG[1] + 1e-9, "θ6 が窓の外に出ない");
+  check(max5 <= TH5_MECH_LIMIT_DEG, "θ5 が機構限界を超えない");
+  check(worstRes < 1e-6, "Ok を返した姿勢は閉ループ拘束を満たす");
+
+  // ---- [S4] 連続性: クランクを 1 刻み動かして姿勢が跳ばないか ---------------
+  const double stepDeg = (prm.qMax[0] - prm.qMin[0]) * kDeg / nb;
+  double jump = 0.0, jq0 = 0.0, jq1 = 0.0;
+  for (int i = 0; i < nb; ++i) {
+    for (int j = 0; j <= nb; ++j) {
+      const double q0 = prm.qMin[0] + (prm.qMax[0] - prm.qMin[0]) * i / nb;
+      const double q1 = prm.qMin[1] + (prm.qMax[1] - prm.qMin[1]) * j / nb;
+      const double a[kAnkleChains] = {q0, q1};
+      const double b[kAnkleChains] = {
+        prm.qMin[0] + (prm.qMax[0] - prm.qMin[0]) * (i + 1) / nb, q1};
+      const AnkleFkResult ra = ankleFk(prm, a, 0.0), rb = ankleFk(prm, b, 0.0);
+      const double d = std::max(std::fabs(ra.th5 - rb.th5),
+        std::fabs(ra.th6 - rb.th6)) * kDeg;
+      if (d > jump) {jump = d; jq0 = q0 * kDeg; jq1 = q1 * kDeg;}
+    }
+  }
+  std::printf("    連続性: クランクを %.2f deg 動かしたときの姿勢の変化 最大 %.2f deg"
+    "  (q ≈ %+.0f, %+.0f)\n", stepDeg, jump, jq0, jq1);
+  // 中立まわりの利得は ∂θ/∂q ≈ 0.7 で、縁でも 2.5 倍を超えない
+  check(jump < 2.5 * stepDeg, "隣り合うクランク角で姿勢が跳ばない");
+
+  // ---- 種に依らないこと ----------------------------------------------------
+  const AnkleIkResult ik = ankleIk(prm, 7.0 / kDeg, -20.0 / kDeg);
+  double spread = 0.0;
+  const AnkleFkResult base = ankleFk(prm, ik.q, 0.0);
+  for (const double seed : {-55.0, -30.0, 0.0, 30.0, 55.0}) {
+    const AnkleFkResult r = ankleFk(prm, ik.q, seed / kDeg);
+    spread = std::max(spread, std::max(angleDiff(r.th5, base.th5),
+      angleDiff(r.th6, base.th6)) * kDeg);
+  }
+  std::printf("    種を窓の端から端まで振ったときの解のばらつき %.2e deg\n", spread);
+  check(spread < 1e-9, "種（前周期の θ6）が答えを選ばない");
+
+  // ---- 指令側のエンベロープ ------------------------------------------------
+  const AnkleClampResult e1 = ankleClampJoints(0.0, -80.0 / kDeg);
+  const AnkleClampResult e2 = ankleClampJoints(0.0, -10.0 / kDeg);
+  std::printf("    ankleClampJoints: θ6 -80 → %+.1f (clamped %d) / -10 → %+.1f (clamped %d)\n",
+    e1.th6 * kDeg, static_cast<int>(e1.clamped), e2.th6 * kDeg,
+    static_cast<int>(e2.clamped));
+  check(e1.clamped && std::fabs(e1.th6 * kDeg - FK_WINDOW_DEG[0]) < 1e-9,
+    "特異点の向こうへの指令は窓の縁に丸める");
+  check(!e2.clamped, "窓の中の指令はそのまま通す");
 }
 
 // ------------------------------------------------------------------ 整合確認
@@ -287,6 +447,21 @@ void testConsistency(const AnkleParams & prm)
       "寸法に依る照合は飛ばす（機構の検算は寸法に依らず走る）\n");
   }
   check(prm.valid(), "パラメータが前提条件を満たす");
+
+  // 足裏基準の実測との突き合わせ。b_i は o6 原点、実測は足裏原点なので p6 を挟む。
+  // ここが合っていないと、可視化に描く足裏とロッドの取り付け位置がずれる。
+  const double ballH = prm.b[0].z - config::P6_Z;
+  const double ballX = prm.b[0].x - config::P6_X;
+  std::printf("    足裏 -> ボール軸  高さ %.3f mm（実測 %.1f） / 前後 %.3f mm（実測 %.1f）\n",
+    ballH, ankle_config::BALL_HEIGHT_ABOVE_SOLE,
+    ballX, ankle_config::BALL_X_FROM_SOLE_CENTER);
+  check(std::fabs(ballH - ankle_config::BALL_HEIGHT_ABOVE_SOLE) < 1e-9,
+    "ボール軸の足裏からの高さが実測と合う");
+  check(std::fabs(ballX - ankle_config::BALL_X_FROM_SOLE_CENTER) < 1e-9,
+    "ボール軸の前後位置が実測と合う");
+  // 足首ピッチ軸そのものは足裏中心の真上（ずれているのはボール軸のほう）
+  check(config::P6_X == 0.0 && config::P6_Y == 0.0,
+    "足首ピッチ軸 o6 が足裏中心の真上にある");
 }
 }  // namespace
 
@@ -311,6 +486,7 @@ int main(int argc, char ** argv)
   testMirror(500);
   testScan(prm);
   testErrors(prm);
+  testSingularity(prm);
 
   std::printf("\n%s（失敗 %d 件）\n", g_fail == 0 ? "すべて通過" : "失敗あり", g_fail);
   return g_fail == 0 ? 0 : 1;

@@ -1,13 +1,19 @@
 // 足首パラレルリンクの中間量を出す確認用ツール。CAD の値を入れ替えたあとの点検に使う。
 //
 //   ros2 run roboone_kinematics ankle_dump [--th5 deg] [--th6 deg] [--right]
+//   ros2 run roboone_kinematics ankle_dump --limits [--home c0 c1] [--right]
 //
 // ankle_selftest が「合っているか」を判定するのに対し、こちらは「どうなっているか」を
 // 並べるだけ。判定はしない。
+//
+// --limits は特異点・順変換の窓・クランクリミットを並べる。--home に
+// servo_home.yaml の home カウント（鎖1 = ID6、鎖2 = ID5 の順）を渡すと、
+// servo_limits.yaml にそのまま貼れる生カウントまで出す。
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 
 #include "roboone_kinematics/ankle_parallel.hpp"
 
@@ -27,6 +33,8 @@ int main(int argc, char ** argv)
 {
   double th5 = 0.0, th6 = 0.0;
   Side side = Side::LEFT;
+  bool limits = false;
+  int home[kAnkleChains] = {-1, -1};
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--th5") == 0 && i + 1 < argc) {
       th5 = std::atof(argv[++i]) / kDeg;
@@ -34,10 +42,43 @@ int main(int argc, char ** argv)
       th6 = std::atof(argv[++i]) / kDeg;
     } else if (std::strcmp(argv[i], "--right") == 0) {
       side = Side::RIGHT;
+    } else if (std::strcmp(argv[i], "--limits") == 0) {
+      limits = true;
+    } else if (std::strcmp(argv[i], "--home") == 0 && i + 2 < argc) {
+      home[0] = std::atoi(argv[++i]);
+      home[1] = std::atoi(argv[++i]);
+      limits = true;
     }
   }
 
   const AnkleParams prm = makeAnkleParams(side);
+
+  if (limits) {
+    using namespace ankle_config;
+    std::printf("=== リミットと特異点 (%s脚) ===\n", side == Side::LEFT ? "左" : "右");
+    std::printf("  型 2 特異点（純ピッチ）  θ6 = %+.1f / %+.1f deg\n",
+      TH6_SINGULAR_DEG[0], TH6_SINGULAR_DEG[1]);
+    std::printf("  順変換の窓               θ6 ∈ [%+.1f, %+.1f] deg"
+      "  … この中で Φ は単調\n", FK_WINDOW_DEG[0], FK_WINDOW_DEG[1]);
+    std::printf("  ロールの機構限界         θ5 = ±%.1f deg (Δ = 0)\n", TH5_MECH_LIMIT_DEG);
+    std::printf("\n  鎖   クランク [deg]      サーボ角 [deg]        生カウント\n");
+    for (int i = 0; i < kAnkleChains; ++i) {
+      double a = ankleServoFromCrank(prm, i, prm.qMin[i]) * kDeg;
+      double b = ankleServoFromCrank(prm, i, prm.qMax[i]) * kDeg;
+      if (a > b) {std::swap(a, b);}
+      std::printf("  %d   %+6.1f .. %+6.1f   %+7.2f .. %+7.2f   ",
+        i + 1, prm.qMin[i] * kDeg, prm.qMax[i] * kDeg, a, b);
+      if (home[i] >= 0) {
+        std::printf("[%4d, %4d]  (home %d)\n",
+          static_cast<int>(std::lround(home[i] + a * 4096.0 / 360.0)),
+          static_cast<int>(std::lround(home[i] + b * 4096.0 / 360.0)), home[i]);
+      } else {
+        std::printf("--home を渡すと出る\n");
+      }
+    }
+    std::printf("\n  貼り先: feetech_servo/config/servo_limits.yaml"
+      "（鎖1 = ID6、鎖2 = ID5）\n\n");
+  }
 
   std::printf("=== 幾何 (%s脚, ℓ5 = %.3f mm) ===\n", side == Side::LEFT ? "左" : "右", prm.l5);
   for (int i = 0; i < kAnkleChains; ++i) {
@@ -70,10 +111,13 @@ int main(int argc, char ** argv)
 
   std::printf("\n=== 順変換 ===\n");
   const AnkleFkResult fk = ankleFk(prm, ik.q, 0.0);
-  std::printf("  種 0 から     → (%+.6f, %+.6f) deg   反復 %d 回   status %d\n",
-    fk.th5 * kDeg, fk.th6 * kDeg, fk.iters, static_cast<int>(fk.status));
-  const AnkleFkResult sc = ankleFkScan(prm, ik.q);
-  std::printf("  粗探しから    → (%+.6f, %+.6f) deg   status %d\n",
+  std::printf("  種 0 から     → (%+.6f, %+.6f) deg   反復 %d 回   status %d"
+    "  crankClamped=%d atWindow=%d\n",
+    fk.th5 * kDeg, fk.th6 * kDeg, fk.iters, static_cast<int>(fk.status),
+    static_cast<int>(fk.crankClamped), static_cast<int>(fk.atWindow));
+  const AnkleFkResult sc = ankleFk(prm, ik.q, th6 + 30.0 / kDeg);
+  std::printf("  種を 30 deg ずらして → (%+.6f, %+.6f) deg   status %d"
+    "  （窓の中で根は 1 個なので同じ解に落ちる）\n",
     sc.th5 * kDeg, sc.th6 * kDeg, static_cast<int>(sc.status));
   std::printf("  往復誤差      %.2e deg\n",
     std::max(std::fabs(fk.th5 - th5), std::fabs(fk.th6 - th6)) * kDeg);

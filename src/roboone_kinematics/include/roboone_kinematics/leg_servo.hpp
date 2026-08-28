@@ -66,6 +66,9 @@ enum class LegServoStatus
   AnkleDegenerate,    //!< 足首が退化姿勢
   AnkleNotConverged,  //!< 足首の順変換が収束しなかった
   AnkleSingular,      //!< 足首が特異姿勢
+  //! 足首を安全なエンベロープに丸めた。**姿勢としては使える**（暴れない）が、
+  //! 軌道生成が可動域を超えた合図なので記録すること
+  AnkleClamped,
 };
 
 /// 片脚ぶんの変換層のパラメータ。
@@ -145,11 +148,18 @@ inline LegServoStatus legServoFromJoints(
   servo[KNEE] = kneeServo;
 
   // J5・J6 は足首パラレルリンク (AP-8)
-  const AnkleIkResult ares = ankleIk(prm.ankle, theta[ANKLE_PITCH], theta[ANKLE_ROLL]);
+  //
+  // ★逆変換の前にエンベロープで丸める。ピッチ θ6 は **Δ が正のまま型 2 特異点に
+  //   入れてしまう**ので、Δ を見ている ankleIk() では止められない。ここで止めないと
+  //   「指令は通ったのに、その姿勢を順変換で読み戻せない」状態に持っていける。
+  const AnkleClampResult env =
+    ankleClampJoints(theta[ANKLE_PITCH], theta[ANKLE_ROLL]);
+  const AnkleIkResult ares = ankleIk(prm.ankle, env.th5, env.th6);
   servo[ANKLE_PITCH] = ankleServoFromCrank(prm.ankle, 0, ares.q[0]);
   servo[ANKLE_ROLL] = ankleServoFromCrank(prm.ankle, 1, ares.q[1]);
   if (ares.status == AnkleIkStatus::Unreachable) {return LegServoStatus::AnkleUnreachable;}
   if (ares.status == AnkleIkStatus::Degenerate) {return LegServoStatus::AnkleDegenerate;}
+  if (env.clamped) {return LegServoStatus::AnkleClamped;}
   return LegServoStatus::Ok;
 }
 
@@ -158,8 +168,8 @@ inline LegServoStatus legServoFromJoints(
 // ---------------------------------------------------------------------------
 /// servo    サーボの実測角。並びは Joint enum と同じ
 /// theta    出力。Σ_B の関節角（fk() に渡せる符号）
-/// th6Seed  足首の順変換に使う前周期の θ6。起動直後は 0 でよいが、
-///          収束しないなら ankleFkAllSolutions() で全解を出して選ぶ（文書 §10）
+/// th6Seed  足首の順変換に使う前周期の θ6。**収束を速くするだけで答えは選ばない**
+///          ので、起動直後は 0 でよい（ankle_parallel.hpp 冒頭の [1]〜[3]）
 ///
 /// 膝と股には反復も種も要らない。反復するのは足首だけ。
 inline LegServoStatus legJointsFromServo(
@@ -182,7 +192,10 @@ inline LegServoStatus legJointsFromServo(
   theta[ANKLE_PITCH] = ares.th5;
   theta[ANKLE_ROLL] = ares.th6;
   switch (ares.status) {
-    case AnkleFkStatus::Ok: return LegServoStatus::Ok;
+    // Clamped も姿勢としては使える（窓の縁で有界・連続）。次の周期の種にしてよい
+    case AnkleFkStatus::Ok: return ares.crankClamped ?
+        LegServoStatus::AnkleClamped : LegServoStatus::Ok;
+    case AnkleFkStatus::Clamped: return LegServoStatus::AnkleClamped;
     case AnkleFkStatus::NoCurve: return LegServoStatus::AnkleUnreachable;
     case AnkleFkStatus::Singular: return LegServoStatus::AnkleSingular;
     default: return LegServoStatus::AnkleNotConverged;

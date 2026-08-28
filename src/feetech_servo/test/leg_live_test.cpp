@@ -31,6 +31,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -250,23 +251,18 @@ int main(int argc, char ** argv)
       const double q[rk::kAnkleChains] = {
         rk::ankleCrankFromServo(prm.ankle, 0, servo[rk::ANKLE_PITCH]),
         rk::ankleCrankFromServo(prm.ankle, 1, servo[rk::ANKLE_ROLL])};
+      // ankleFk() は窓 ±55 deg の中だけを解くので、手で足首を振り切っても
+      // 姿勢は窓の縁で止まる（Clamped）。**粗探しへのフォールバックは持たない**。
+      // 以前はここで別の根に飛んで姿勢が跳ねていた（ankle_parallel.hpp 冒頭）。
       const rk::AnkleFkResult afk = rk::ankleFk(prm.ankle, q, th6Seed);
-      if (afk.status == rk::AnkleFkStatus::Ok) {
+      const bool usable = afk.status == rk::AnkleFkStatus::Ok ||
+        afk.status == rk::AnkleFkStatus::Clamped;
+      if (usable) {
         theta[rk::ANKLE_PITCH] = afk.th5;
         theta[rk::ANKLE_ROLL] = afk.th6;
         th6Seed = afk.th6;
-      } else {
-        // 収束しなかったときは粗探しに 1 回だけ落とす（起動直後・大きく動かした後）
-        const rk::AnkleFkResult sc = rk::ankleFkScan(prm.ankle, q);
-        if (sc.status == rk::AnkleFkStatus::Ok) {
-          theta[rk::ANKLE_PITCH] = sc.th5;
-          theta[rk::ANKLE_ROLL] = sc.th6;
-          th6Seed = sc.th6;
-        }
       }
-      const rk::AnkleFkStatus ast =
-        (afk.status == rk::AnkleFkStatus::Ok) ? afk.status
-        : rk::ankleFkScan(prm.ankle, q).status;
+      const rk::AnkleFkStatus ast = afk.status;
 
       if (json) {
         std::printf("{\"frame\":%ld,\"ok\":%s,\"status\":%d,\"ankle_status\":%d,"
@@ -301,12 +297,19 @@ int main(int argc, char ** argv)
               "\"B\":[%.3f,%.3f,%.3f]}", i ? "," : "",
               O.x, O.y, O.z, K.x, K.y, K.z, B.x, B.y, B.z);
           }
-          // 足裏の四隅。★寸法は仮置き（CAD 確定後に差し替える）。Σ_6 に置いて
-          //   足の姿勢 R5·R6 を掛ける。
+          // 足裏の四隅。Σ_6 に置いて足の姿勢 R5·R6 を掛ける。
+          //
+          // 足裏の**位置**（高さと前後・左右のオフセット）は leg_config.hpp の
+          // p6 = (P6_X, P6_Y, P6_Z) から引く。ここに数字を直接書くと、脚 IK が
+          // 使う足裏と画面の足裏が別物になり、「軸の位置が違う」ように見える。
+          // ★外形の大きさ (sx, sy) だけはまだ仮置き（CAD 確定後に差し替える）。
           std::printf("],\"sole\":[");
-          const double sx = 60.0, sy = 35.0, sz = -34.0;
-          const double corner[4][3] = {{sx, sy, sz}, {sx, -sy, sz},
-            {-sx, -sy, sz}, {-sx, sy, sz}};
+          const double sx = 60.0, sy = 35.0;
+          const double cx0 = rk::config::P6_X, cy0 = rk::config::P6_Y;
+          const double sz = rk::config::P6_Z;
+          const double corner[4][3] = {
+            {cx0 + sx, cy0 + sy, sz}, {cx0 + sx, cy0 - sy, sz},
+            {cx0 - sx, cy0 - sy, sz}, {cx0 - sx, cy0 + sy, sz}};
           for (int k = 0; k < 4; ++k) {
             const double cx = corner[k][0], cy = corner[k][1], cz = corner[k][2];
             const double rx = c6 * cx + s6 * cz;
@@ -349,9 +352,14 @@ int main(int argc, char ** argv)
           std::printf("  %s  %-4d  %+9.2f    %+9.2f\n", kName[j], jointIds[j],
             servo[j] * kDeg, theta[j] * kDeg);
         }
-        static const char * kAst[] = {"OK", "曲線なし", "収束せず", "特異姿勢"};
+        // AnkleFkStatus と同じ並び。増やしたら**ここも増やす**
+        static const char * kAst[] = {"OK", "窓の縁(±55deg)", "曲線なし", "収束せず",
+          "特異姿勢"};
+        const int astIdx = static_cast<int>(ast);
         std::printf("\n  足首クランク q = (%+.2f, %+.2f) deg   順変換 %s\n",
-          q[0] * kDeg, q[1] * kDeg, kAst[static_cast<int>(ast)]);
+          q[0] * kDeg, q[1] * kDeg,
+          (astIdx >= 0 && astIdx < static_cast<int>(std::size(kAst))) ?
+          kAst[astIdx] : "?");
         std::printf("  → 足首 θ5 ロール %+.2f   θ6 ピッチ %+.2f deg\n",
           theta[rk::ANKLE_PITCH] * kDeg, theta[rk::ANKLE_ROLL] * kDeg);
         std::fflush(stdout);
