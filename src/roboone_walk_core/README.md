@@ -10,6 +10,9 @@
 - `src/walk_selftest.cpp` — 自己検算 (colcon test で回る)
 - `src/walk_dump.cpp` — 軌道 CSV ダンプ (照合と後段への受け渡し用)
 - `tools/compare_walk_engines.py` — **Python / C++ / JS の 3 実装の数値照合**
+- `src/gait_from_kinematics.cpp` — ホーム姿勢 (脚ピッチ曲げ角) から z_c を FK で出し、
+  到達域を IK で走査して gait.yaml の目安を印字する (`--bend 30 --map`)。
+  roboone_kinematics は読むだけ (依存に追加)
 
 ## 3 実装の同期ルール
 
