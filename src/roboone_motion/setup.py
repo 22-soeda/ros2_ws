@@ -1,3 +1,5 @@
+from glob import glob
+
 from setuptools import find_packages, setup
 
 package_name = 'roboone_motion'
@@ -10,7 +12,9 @@ setup(
         ('share/ament_index/resource_index/packages',
          ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/config', ['config/gait.yaml']),
+        # motion ノード (roboone_motion_node) が share から読む。
+        # gait.yaml = 歩行の設定 / home_pose.yaml = ホーム姿勢 (足裏の位置姿勢)。
+        ('share/' + package_name + '/config', glob('config/*.yaml')),
     ],
     package_data={
         'roboone_motion.viz': ['template.html', 'walkcore.js'],

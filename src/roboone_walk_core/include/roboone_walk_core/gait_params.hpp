@@ -16,7 +16,7 @@ namespace roboone_walk_core
 struct GaitParams
 {
   // --- 力学 -----------------------------------------------------------
-  double z_c = 0.261;              // [m]   重心高さ (ホーム姿勢 脚ピッチ 30 deg 曲げ。gait_from_kinematics)
+  double z_c = 0.261;              // [m]   重心高さ (home_pose.yaml の foot.height 261mm と揃える)
   double gravity = 9.81;           // [m/s^2]
   double t_step = 0.40;            // [s]   1 歩の周期 T
   double foot_spacing = 0.1786;    // [m]   左右の足間隔 W = 股間隔

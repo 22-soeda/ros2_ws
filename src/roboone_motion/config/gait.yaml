@@ -2,8 +2,9 @@
 # 値の意味と単位は roboone_motion/walk_core/params.py を参照。
 # ここに無いキーを足すと GaitParams.from_yaml() が KeyError で落ちる (打ち間違い対策)。
 
-z_c: 0.261              # [m] 重心高さ。ホーム姿勢 (home_pose.yaml, 脚ピッチ 30 deg 曲げ) を
-                         # gait_from_kinematics で FK した値 260.9 mm。姿勢を変えたら出し直す
+z_c: 0.261              # [m] 重心高さ。home_pose.yaml の foot.height (mm) と同じ値にする。
+                         # 261 mm = 脚の傾き 30 deg 相当。motion ノードが起動時に
+                         # 突き合わせて、食い違っていれば警告する
 gravity: 9.81
 t_step: 0.40             # [s] 1 歩の周期。短いほど押しに強い
 foot_spacing: 0.1786     # [m] 左右の足間隔 W = 股間隔 2 x 89.3 mm (leg_config.hpp HIP_Y)
