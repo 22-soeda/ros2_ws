@@ -31,7 +31,7 @@ ament_target_dependencies(rs_depth_test rclcpp sensor_msgs)
 install(TARGETS rs_stream_test rs_imu_test rs_depth_test
   DESTINATION lib/${PROJECT_NAME})
 
-install(DIRECTORY launch config
+install(DIRECTORY launch config viz
   DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)

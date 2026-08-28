@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IMU 姿勢 3D ビジュアライザ</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --page: #f6f7f5; --panel: #ffffff; --ink: #101211; --ink-2: #4d534f;
+  --muted: #878c88; --border: rgba(0,0,0,0.12); --grid: #dcdfd9;
+  --ax: #d0342c; --ay: #2f9e44; --az: #1971c2; --up: #b0851f;
+  --ok: #1a9d6e; --warn: #c9761b; --bad: #cf4640;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #0d0f0e; --panel: #161918; --ink: #f0f2f0; --ink-2: #bcc2be;
+    --muted: #878c88; --border: rgba(255,255,255,0.13); --grid: #2a2e2b;
+    --ax: #f0655c; --ay: #4fc07a; --az: #4f9ae8; --up: #d8b24a;
+    --ok: #33b98a; --warn: #d99a3d; --bad: #e2665f;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  font: 13px/1.55 system-ui, -apple-system, "Noto Sans JP", sans-serif;
+  color: var(--ink); background: var(--page); display: flex; overflow: hidden;
+}
+#stage { flex: 1 1 auto; position: relative; min-width: 0; }
+#view { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+#view.drag { cursor: grabbing; }
+#hud {
+  position: absolute; left: 14px; top: 12px; pointer-events: none;
+  font-size: 12px; color: var(--ink-2); line-height: 1.7; text-shadow: 0 1px 2px var(--page);
+}
+#hud b { color: var(--ink); }
+#panel {
+  flex: 0 0 380px; background: var(--panel); border-left: 1px solid var(--border);
+  overflow-y: auto; padding: 14px 14px 40px;
+}
+h1 { font-size: 14px; margin: 0 0 2px; }
+.sub { color: var(--muted); font-size: 11px; margin-bottom: 12px; }
+fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 0 0 11px; padding: 9px 11px 11px; }
+legend { font-size: 11px; color: var(--muted); padding: 0 4px; }
+.chip {
+  display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 999px;
+  border: 1px solid var(--border); white-space: nowrap;
+}
+.chip.ok { color: var(--ok); border-color: var(--ok); }
+.chip.warn { color: var(--warn); border-color: var(--warn); }
+.chip.bad { color: var(--bad); border-color: var(--bad); }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+table { width: 100%; border-collapse: collapse; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+th { text-align: right; font-weight: 500; color: var(--muted); padding: 1px 4px; font-size: 10.5px; }
+td { text-align: right; padding: 1px 4px; }
+td.name { text-align: left; color: var(--ink-2); }
+.big { font-variant-numeric: tabular-nums; }
+.big td { padding: 3px 4px; font-size: 19px; }
+.big td.name { font-size: 11.5px; }
+.big td.u { font-size: 11px; color: var(--muted); text-align: left; width: 30px; }
+.big .sg { font-size: 10.5px; color: var(--muted); }
+.rx { color: var(--ax); } .ry { color: var(--ay); } .rz { color: var(--az); }
+button.act {
+  font: inherit; font-size: 11.5px; padding: 5px 9px; cursor: pointer; border-radius: 7px;
+  border: 1px solid var(--border); background: transparent; color: var(--ink);
+}
+button.act.primary { background: var(--ink); color: var(--page); border-color: var(--ink); }
+.btnrow { display: flex; gap: 5px; margin-top: 7px; flex-wrap: wrap; }
+.note { font-size: 10.5px; color: var(--muted); margin-top: 7px; line-height: 1.65; }
+.note b { color: var(--ink-2); font-weight: 600; }
+label.ck { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--ink-2); margin: 2px 0; }
+#chart { width: 100%; height: 108px; display: block; }
+.legend { display: flex; gap: 12px; font-size: 11px; margin-bottom: 5px; }
+.legend i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 4px; }
+@media (max-width: 860px) {
+  body { flex-direction: column; }
+  #panel { flex: 0 0 auto; max-height: 50vh; border-left: none; border-top: 1px solid var(--border); }
+}
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="view"></canvas><div id="hud"></div></div>
+
+<div id="panel">
+  <h1>IMU 姿勢 3D ビジュアライザ</h1>
+  <div class="sub">/camera/imu を EKF に通した姿勢。太い矢印が機体の x/y/z 正方向、
+    地面の細い矢印が世界の x/y/z 正方向。</div>
+
+  <fieldset>
+    <legend>状態</legend>
+    <div class="chips" id="chips"></div>
+    <div class="note" id="err" style="display:none;color:var(--bad)"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>姿勢（Σ_B・Z-Y-X）</legend>
+    <table class="big">
+      <tr><td class="name rx">roll φ</td><td id="vr">–</td><td class="u">°</td>
+          <td class="name">x(前) 軸まわり<br><span class="sg" id="sr"></span></td></tr>
+      <tr><td class="name ry">pitch θ</td><td id="vp">–</td><td class="u">°</td>
+          <td class="name">y(左) 軸まわり<br><span class="sg" id="sp"></span></td></tr>
+      <tr><td class="name rz">yaw ψ</td><td id="vy">–</td><td class="u">°</td>
+          <td class="name">z(上) 軸まわり<br><span class="sg" id="sy"></span></td></tr>
+    </table>
+    <div class="note">
+      <b>ヨーは 6 軸 IMU では観測できない。</b>加速度計は重力しか見ないので、
+      重力の軸まわりの回転は補正できない。表示のヨーはジャイロの積分で、
+      ゆっくりドリフトする（地磁気か足裏の接地拘束がいる）。
+    </div>
+    <div class="btnrow">
+      <button class="act" id="zeroyaw">ヨーを 0 に</button>
+      <button class="act" id="reset">フィルタをリセット</button>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>対応付けの確認</legend>
+    <div class="note" style="margin-top:0">
+      カメラを手で持って、下のとおりに動かす。数字と矢印が同じ向きに動けば対応付けは合っている。<br>
+      ・<b>右を下げる</b> → <span class="rx">roll が +</span><br>
+      ・<b>お辞儀させる（レンズを下へ）</b> → <span class="ry">pitch が +</span><br>
+      ・<b>左へ回す</b> → <span class="rz">yaw が +</span><br>
+      ピッチ ±90° 付近ではロールとヨーが縮退する（ジンバルロック）。真上・真下を向けた
+      ところで数字が暴れるのは式の性質で、異常ではない。
+    </div>
+    <table style="margin-top:8px">
+      <tr><th></th><th>roll</th><th>pitch</th></tr>
+      <tr><td class="name">EKF</td><td id="er">–</td><td id="ep">–</td></tr>
+      <tr><td class="name">加速度だけ（フィルタ無し）</td><td id="ar">–</td><td id="ap">–</td></tr>
+      <tr><td class="name">差</td><td id="dr">–</td><td id="dp">–</td></tr>
+    </table>
+    <div class="note">
+      静止していれば両者は一致する。動かしている間だけ差が出るのが正常
+      （加速度だけの値は重力以外の加速度をそのまま傾きと誤認する。EKF はジャイロで補う）。
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>時系列 [deg]</legend>
+    <div class="legend">
+      <span><i style="background:var(--ax)"></i>roll</span>
+      <span><i style="background:var(--ay)"></i>pitch</span>
+      <span><i style="background:var(--az)"></i>yaw</span>
+    </div>
+    <canvas id="chart"></canvas>
+  </fieldset>
+
+  <fieldset>
+    <legend>IMU 生値</legend>
+    <table>
+      <tr><th></th><th>x</th><th>y</th><th>z</th></tr>
+      <tr><td class="name">加速度 光学 [m/s²]<br><span class="sg" style="color:var(--muted)">X右 / Y下 / Z前</span></td>
+          <td id="ao0">–</td><td id="ao1">–</td><td id="ao2">–</td></tr>
+      <tr><td class="name">加速度 Σ_B [m/s²]<br><span class="sg" style="color:var(--muted)">x前 / y左 / z上</span></td>
+          <td id="ab0">–</td><td id="ab1">–</td><td id="ab2">–</td></tr>
+      <tr><td class="name">角速度 Σ_B [rad/s]</td>
+          <td id="wb0">–</td><td id="wb1">–</td><td id="wb2">–</td></tr>
+      <tr><td class="name">ジャイロバイアス推定</td>
+          <td id="bb0">–</td><td id="bb1">–</td><td id="bb2">–</td></tr>
+    </table>
+    <div class="note">
+      光学 → Σ_B は <b>x<sub>b</sub>=+z<sub>o</sub>, y<sub>b</sub>=−x<sub>o</sub>,
+      z<sub>b</sub>=−y<sub>o</sub></b>。静止していれば加速度は「上向きに +g」を指す
+      （水平・正立なら Σ_B で (0, 0, +9.81)、光学で (0, −9.81, 0)）。<br>
+      バイアス推定は <b>±0.05 rad/s</b> で頭打ちにしてある。鉛直まわりのバイアスは
+      観測できないので、押さえないと手で振り回した回転をバイアスが吸ってしまう。
+      「バイアス上限」のチップが出たら、振り回しすぎか本当にドリフトしている。
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>表示</legend>
+    <label class="ck"><input type="checkbox" id="showGrid" checked> 地面グリッド</label>
+    <label class="ck"><input type="checkbox" id="showBody" checked> カメラの箱</label>
+    <label class="ck"><input type="checkbox" id="showUp" checked> 加速度計が指す「上」</label>
+    <label class="ck"><input type="checkbox" id="showWorld" checked> 世界の座標軸</label>
+    <div class="btnrow">
+      <button class="act" id="vIso">斜め</button>
+      <button class="act" id="vFront">前から</button>
+      <button class="act" id="vSide">横から</button>
+      <button class="act" id="vTop">上から</button>
+    </div>
+    <div class="note">ドラッグで回転 / Shift+ドラッグで平行移動 / ホイールで拡大縮小</div>
+  </fieldset>
+</div>
+
+<script>
+'use strict';
+const V = {
+  sub: (a,b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]],
+  add: (a,b) => [a[0]+b[0], a[1]+b[1], a[2]+b[2]],
+  mul: (a,k) => [a[0]*k, a[1]*k, a[2]*k],
+  dot: (a,b) => a[0]*b[0] + a[1]*b[1] + a[2]*b[2],
+  cross: (a,b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]],
+  norm: a => { const n = Math.hypot(a[0],a[1],a[2]) || 1; return [a[0]/n, a[1]/n, a[2]/n]; },
+};
+const cam = { yaw: -0.85, pitch: 0.32, dist: 4.6, target: [0, 0, 0.25] };
+const canvas = document.getElementById('view');
+const ctx = canvas.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = canvas.clientWidth; H = canvas.clientHeight;
+  canvas.width = Math.round(W*DPR); canvas.height = Math.round(H*DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  draw();
+}
+new ResizeObserver(resize).observe(canvas);
+
+function camBasis() {
+  const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+  const eye = V.add(cam.target,
+    [cam.dist*cp*Math.cos(cam.yaw), cam.dist*cp*Math.sin(cam.yaw), cam.dist*sp]);
+  const fwd = V.norm(V.sub(cam.target, eye));
+  const right = V.norm(V.cross(fwd, [0,0,1]));
+  return { eye, fwd, right, up: V.cross(right, fwd) };
+}
+let B = camBasis();
+const FOV = 0.85;
+function project(p) {
+  const d = V.sub(p, B.eye), z = V.dot(d, B.fwd);
+  if (z < 0.02) return null;
+  const s = (H/2) / Math.tan(FOV/2);
+  return { x: W/2 + s*V.dot(d, B.right)/z, y: H/2 - s*V.dot(d, B.up)/z, z };
+}
+let items = [];
+function push(depth, fn) { items.push({ depth, fn }); }
+function flush() { items.sort((a,b) => b.depth - a.depth); for (const it of items) it.fn(); items = []; }
+function seg(a, b, color, width, alpha) {
+  const pa = project(a), pb = project(b);
+  if (!pa || !pb) return;
+  push((pa.z+pb.z)/2, () => {
+    ctx.strokeStyle = color; ctx.lineWidth = width;
+    ctx.globalAlpha = alpha === undefined ? 1 : alpha; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y); ctx.stroke();
+    ctx.globalAlpha = 1;
+  });
+}
+function poly3(pts, fill, stroke, wid) {
+  const ps = pts.map(project);
+  if (ps.some(p => !p)) return;
+  push(ps.reduce((s,p) => s+p.z, 0)/ps.length, () => {
+    ctx.beginPath(); ctx.moveTo(ps[0].x, ps[0].y);
+    for (let i = 1; i < ps.length; i++) ctx.lineTo(ps[i].x, ps[i].y);
+    ctx.closePath();
+    if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+    if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = wid || 1.2; ctx.stroke(); }
+  });
+}
+function label3(p, text, color, dx, dy) {
+  const q = project(p);
+  if (!q) return;
+  push(q.z - 0.02, () => {
+    ctx.fillStyle = color; ctx.font = '600 12px system-ui, sans-serif';
+    ctx.fillText(text, q.x + (dx||8), q.y + (dy||-8));
+  });
+}
+
+// 正方向を示す矢印。円錐の頭を付ける（線だけだと向きが読めない）
+function arrow(origin, dir, len, color, width, alpha, headLen, headR) {
+  const d = V.norm(dir);
+  const hl = headLen === undefined ? len*0.20 : headLen;
+  const hr = headR === undefined ? hl*0.38 : headR;
+  const tip = V.add(origin, V.mul(d, len));
+  const base = V.add(origin, V.mul(d, len - hl));
+  seg(origin, base, color, width, alpha);
+  // 円錐: 軸に直交する基底を作って底円を刻む
+  let ref = Math.abs(d[2]) > 0.9 ? [1,0,0] : [0,0,1];
+  const u = V.norm(V.cross(d, ref)), v = V.cross(d, u);
+  const N = 10, ring = [];
+  for (let i = 0; i < N; i++) {
+    const a = 2*Math.PI*i/N;
+    ring.push(V.add(base, V.add(V.mul(u, hr*Math.cos(a)), V.mul(v, hr*Math.sin(a)))));
+  }
+  for (let i = 0; i < N; i++)
+    poly3([tip, ring[i], ring[(i+1)%N]], color, color, 0.5);
+  poly3(ring, color, null);
+  return tip;
+}
+
+const ui = { showGrid: true, showBody: true, showUp: true, showWorld: true };
+let state = null;
+const cssCache = {};
+function css(n) {
+  if (!cssCache[n]) cssCache[n] = getComputedStyle(document.body).getPropertyValue(n).trim();
+  return cssCache[n];
+}
+
+function drawGrid() {
+  if (!ui.showGrid) return;
+  const R = 1.6, step = 0.2, c = css('--grid');
+  for (let i = -8; i <= 8; i++) {
+    const v = i*step, major = (i % 5 === 0);
+    seg([v,-R,0], [v,R,0], c, major?1.1:0.6, major?0.85:0.4);
+    seg([-R,v,0], [R,v,0], c, major?1.1:0.6, major?0.85:0.4);
+  }
+}
+function drawWorldAxes() {
+  if (!ui.showWorld) return;
+  const L = 0.85, a = 0.55;
+  arrow([0,0,0], [1,0,0], L, css('--ax'), 1.6, a, 0.12, 0.035);
+  arrow([0,0,0], [0,1,0], L, css('--ay'), 1.6, a, 0.12, 0.035);
+  arrow([0,0,0], [0,0,1], L, css('--az'), 1.6, a, 0.12, 0.035);
+  label3([L,0,0], '世界 x 前', css('--ax'));
+  label3([0,L,0], '世界 y 左', css('--ay'));
+  label3([0,0,L], '世界 z 上', css('--az'));
+}
+function drawBodyAxes(R) {
+  // R は 世界 <- 機体。列が機体軸の世界での向き
+  const ex = [R[0],R[3],R[6]], ey = [R[1],R[4],R[7]], ez = [R[2],R[5],R[8]];
+  const L = 1.15;
+  arrow([0,0,0], ex, L, css('--ax'), 5.5, 1, 0.20, 0.072);
+  arrow([0,0,0], ey, L, css('--ay'), 5.5, 1, 0.20, 0.072);
+  arrow([0,0,0], ez, L, css('--az'), 5.5, 1, 0.20, 0.072);
+  label3(V.mul(ex, L), 'x 前', css('--ax'));
+  label3(V.mul(ey, L), 'y 左', css('--ay'));
+  label3(V.mul(ez, L), 'z 上', css('--az'));
+
+  if (ui.showBody) {
+    // D435if の見立て。左右に長く、前面にレンズ
+    const hx = 0.085, hy = 0.30, hz = 0.11;
+    const P = [];
+    for (const sx of [1,-1]) for (const sy of [1,-1]) for (const sz of [1,-1])
+      P.push(V.add(V.add(V.mul(ex, sx*hx), V.mul(ey, sy*hy)), V.mul(ez, sz*hz)));
+    // 添字: 0(+++) 1(++-) 2(+-+) 3(+--) 4(-++) 5(-+-) 6(--+) 7(---)
+    const faces = [[0,1,3,2],[4,6,7,5],[0,2,6,4],[1,5,7,3],[0,4,5,1],[2,3,7,6]];
+    const ink = css('--ink-2');
+    for (const f of faces) poly3(f.map(i => P[i]), ink+'22', ink+'88', 1);
+    // 前面（+x）にレンズの向きを描く
+    const c = V.mul(ex, hx*1.02), N = 16, ring = [];
+    for (let i = 0; i < N; i++) {
+      const a = 2*Math.PI*i/N;
+      ring.push(V.add(c, V.add(V.mul(ey, 0.085*Math.cos(a)), V.mul(ez, 0.085*Math.sin(a)))));
+    }
+    poly3(ring, css('--ink')+'55', css('--ink'), 1.4);
+  }
+}
+function drawUp(u) {
+  if (!ui.showUp || !u) return;
+  arrow([0,0,0], u, 1.45, css('--up'), 2.2, 0.9, 0.16, 0.05);
+  label3(V.mul(V.norm(u), 1.45), '加速度計の「上」', css('--up'));
+}
+function draw() {
+  if (!W) return;
+  B = camBasis();
+  ctx.clearRect(0, 0, W, H);
+  drawGrid();
+  drawWorldAxes();
+  if (state && state.ready) { drawBodyAxes(state.R); drawUp(state.up_world); }
+  flush();
+  hud();
+}
+function hud() {
+  const el = document.getElementById('hud');
+  if (!state) { el.textContent = '接続中…'; return; }
+  if (!state.ready) {
+    el.innerHTML = state.error
+      ? '<b style="color:#cf4640">' + state.error + '</b>'
+      : '<b>/camera/imu を待っています…</b><br>カメラが上がっているか確認する';
+    return;
+  }
+  const r = state.rpy;
+  el.innerHTML =
+    '<b>Σ_B</b> x 前 / y 左 / z 上<br>' +
+    `roll <b>${r[0].toFixed(1)}°</b>&nbsp; pitch <b>${r[1].toFixed(1)}°</b>&nbsp; yaw <b>${r[2].toFixed(1)}°</b><br>` +
+    `|a| ${state.a_mag.toFixed(2)} m/s² &nbsp; ${state.hz.toFixed(0)} Hz &nbsp; t = ${state.t.toFixed(0)} s` +
+    (state.moving ? '<br><b style="color:#c9761b">動いている（加速度の重みを下げている）</b>' : '');
+}
+
+// ---- 時系列 ----
+const chart = document.getElementById('chart');
+const cx = chart.getContext('2d');
+function drawChart() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = chart.clientWidth, h = chart.clientHeight;
+  chart.width = Math.round(w*dpr); chart.height = Math.round(h*dpr);
+  cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cx.clearRect(0, 0, w, h);
+  const tr = (state && state.trace) || [];
+  let lim = 30;
+  for (const p of tr) lim = Math.max(lim, Math.abs(p[1]), Math.abs(p[2]), Math.abs(p[3]));
+  lim = Math.ceil(lim/30)*30;
+  const y = v => h/2 - (v/lim)*(h/2 - 4);
+  cx.strokeStyle = css('--grid'); cx.lineWidth = 1;
+  for (const g of [-lim, -lim/2, 0, lim/2, lim]) {
+    cx.globalAlpha = g === 0 ? 0.9 : 0.4;
+    cx.beginPath(); cx.moveTo(0, y(g)); cx.lineTo(w, y(g)); cx.stroke();
+  }
+  cx.globalAlpha = 1;
+  cx.fillStyle = css('--muted'); cx.font = '10px system-ui';
+  cx.fillText('+' + lim + '°', 2, 10);
+  cx.fillText('-' + lim + '°', 2, h - 3);
+  if (tr.length < 2) return;
+  for (const [i, c] of [[1,'--ax'],[2,'--ay'],[3,'--az']]) {
+    cx.strokeStyle = css(c); cx.lineWidth = 1.5; cx.beginPath();
+    for (let k = 0; k < tr.length; k++) {
+      const px = w * k/(tr.length-1);
+      k ? cx.lineTo(px, y(tr[k][i])) : cx.moveTo(px, y(tr[k][i]));
+    }
+    cx.stroke();
+  }
+}
+
+// ---- 取り込み ----
+const F = (id, v, d) => { document.getElementById(id).textContent =
+  (v === undefined || v === null) ? '–' : v.toFixed(d === undefined ? 2 : d); };
+function chip(t, cls) { return `<span class="chip ${cls||''}">${t}</span>`; }
+
+function apply(s) {
+  state = s;
+  const c = [];
+  c.push(chip(s.alive ? '受信中' : '受信なし', s.alive ? 'ok' : 'bad'));
+  if (s.hz) c.push(chip(s.hz.toFixed(1) + ' Hz', Math.abs(s.hz-200) < 20 ? 'ok' : 'warn'));
+  c.push(chip((s.n||0) + ' サンプル'));
+  if (s.ready) c.push(chip(s.moving ? '動いている' : '静止', s.moving ? 'warn' : 'ok'));
+  if (s.bias_clipping) c.push(chip('バイアス上限に張り付き', 'warn'));
+  if (s.frame_id) c.push(chip(s.frame_id));
+  document.getElementById('chips').innerHTML = c.join('');
+  const err = document.getElementById('err');
+  err.style.display = s.error ? 'block' : 'none';
+  err.textContent = s.error || '';
+  if (!s.ready) { draw(); return; }
+
+  F('vr', s.rpy[0], 1); F('vp', s.rpy[1], 1); F('vy', s.rpy[2], 1);
+  // σ は EKF が持っている「機体軸まわり」の値。ロール・ピッチ・ヨーそのものの
+  // 誤差ではないので、そう書いておく。ヨーの欄だけは意味のある鉛直まわりを出す。
+  document.getElementById('sr').textContent = '±' + s.sigma_axis[0].toFixed(2) + '° (x軸まわり)';
+  document.getElementById('sp').textContent = '±' + s.sigma_axis[1].toFixed(2) + '° (y軸まわり)';
+  document.getElementById('sy').textContent = '±' + s.sigma_heading.toFixed(2) + '° (鉛直まわり・ドリフト)';
+  F('er', s.rpy[0], 2); F('ep', s.rpy[1], 2);
+  F('ar', s.rpy_accel[0], 2); F('ap', s.rpy_accel[1], 2);
+  // ロールは ±180° をまたぐので、差はそのまま引くと 360° ずれる
+  const w180 = v => ((v + 180) % 360 + 360) % 360 - 180;
+  F('dr', w180(s.rpy[0] - s.rpy_accel[0]), 2);
+  F('dp', w180(s.rpy[1] - s.rpy_accel[1]), 2);
+  for (let i = 0; i < 3; i++) {
+    F('ao'+i, s.a_opt[i], 3); F('ab'+i, s.a_body[i], 3);
+    F('wb'+i, s.w_body[i], 4); F('bb'+i, s.bias[i], 5);
+  }
+  draw(); drawChart();
+}
+async function poll() {
+  try {
+    const r = await fetch('/api/state', { cache: 'no-store' });
+    apply(await r.json());
+  } catch (e) { /* サーバが落ちていても描画は続ける */ }
+  setTimeout(poll, 40);
+}
+
+// ---- 入力 ----
+let drag = null;
+canvas.addEventListener('pointerdown', e => {
+  drag = { x: e.clientX, y: e.clientY, pan: e.shiftKey };
+  canvas.setPointerCapture(e.pointerId); canvas.classList.add('drag');
+});
+canvas.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  drag.x = e.clientX; drag.y = e.clientY;
+  if (drag.pan) {
+    cam.target = V.add(cam.target, V.add(V.mul(B.right, -dx*cam.dist/900),
+                                         V.mul(B.up, dy*cam.dist/900)));
+  } else {
+    cam.yaw -= dx*0.008;
+    cam.pitch = Math.max(-1.45, Math.min(1.45, cam.pitch + dy*0.008));
+  }
+  draw();
+});
+for (const ev of ['pointerup','pointercancel'])
+  canvas.addEventListener(ev, () => { drag = null; canvas.classList.remove('drag'); });
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  cam.dist = Math.max(1.2, Math.min(14, cam.dist*Math.exp(e.deltaY*0.001)));
+  draw();
+}, { passive: false });
+
+for (const id of ['showGrid','showBody','showUp','showWorld'])
+  document.getElementById(id).addEventListener('change', e => { ui[id] = e.target.checked; draw(); });
+const views = { vFront: [-Math.PI, 0.10], vSide: [-Math.PI/2, 0.10], vTop: [-Math.PI, 1.40], vIso: [-0.85, 0.32] };
+for (const id in views) document.getElementById(id).onclick = () => {
+  cam.yaw = views[id][0]; cam.pitch = views[id][1]; draw();
+};
+document.getElementById('zeroyaw').onclick = () => fetch('/api/zeroyaw', { cache: 'no-store' });
+document.getElementById('reset').onclick = () => fetch('/api/reset', { cache: 'no-store' });
+
+resize();
+poll();
+</script>
+</body>
+</html>
