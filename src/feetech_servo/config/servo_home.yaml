@@ -17,8 +17,8 @@ buses:
   - port: /dev/feetech_left
     servos:
       1:   {home: 2025, offset:   -23}   # 178.0 deg  (前回の値)
-      2:   {home: 2077, offset:    29}   # 182.5 deg  (前回の値)
-      3:   {home: 2021, offset:   -27}   # 177.6 deg  (前回の値)
+      2:   {home: 2047, offset:    -1}   # 179.9 deg  (2026-08-28 T ポーズで再取得)
+      3:   {home: 2010, offset:   -38}   # 176.7 deg  (2026-08-28 T ポーズで再取得)
       4:   {home: 2095, offset:    47}   # 184.1 deg  (前回の値)
       5:   {home: 1971, offset:   -77}   # 173.2 deg  (前回の値)
       6:   {home: 2133, offset:    85}   # 187.5 deg  (前回の値)
@@ -28,7 +28,7 @@ buses:
   - port: /dev/feetech_right
     servos:
       1:   {home: 2143, offset:    95}   # 188.3 deg  (前回の値)
-      2:   {home: 2101, offset:    53}   # 184.7 deg  (前回の値)
+      2:   {home: 2094, offset:    46}   # 184.0 deg  (2026-08-28 T ポーズで再取得)
       3:   {home: 2068, offset:    20}   # 181.8 deg  (前回の値)
       4:   {home: 1835, offset:  -213}   # 161.3 deg  (前回の値)
       5:   {home: 2193, offset:   145}   # 192.7 deg  (前回の値)
