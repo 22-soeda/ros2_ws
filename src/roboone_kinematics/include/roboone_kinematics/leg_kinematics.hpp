@@ -14,11 +14,19 @@
 //   突き合わせができるよう (FK-n)/(IK-n)/(X-n) は Σ_S のままにし、読み替えは
 //   solver 名前空間の外側 1 か所に閉じ込めてある。
 //
-// 関節（括弧内は Σ_B での回転軸。名前は実機のサーボ名から引き継いだもので、
-//       Σ_B で見た「ピッチ / ロール」とは J1/J2 と J5/J6 で入れ替わっている）
-//   θ1 股ピッチ (Rx) / θ2 股ロール (Ry) / θ3 股ヨー (Rz)
+// 関節（括弧内は Σ_B での回転軸）
+//   θ1 股ピッチ (Ry) / θ2 股ロール (Rx) / θ3 股ヨー (Rz)
 //                                       … 3 軸は股中心 o3 で交わる (A1)
-//   θ4 膝 (Ry)  θ5 足首ピッチ (Rx)  θ6 足首ロール (Ry)
+//   θ4 膝 (Ry)  θ5 足首 (Rx)  θ6 足首 (Ry)
+//   ★股 3 軸の並びは文書 §2 と違う。文書は θ1 = Ry_S（Σ_B では x まわり = ロール）
+//     としているが、**実機は ID1 が y まわりのピッチ・ID2 が x まわりのロール**
+//     （2026-08-28 実機で確認）。ここでは実機に合わせて Σ_S の R1・R2 を入れ替え、
+//     R123 = Rx(θ1)·Ry(θ2)·Rz(θ3) にしてある。これで enum の HIP_PITCH /
+//     HIP_ROLL / HIP_YAW が Σ_B での呼び名とそのまま一致する。
+//     遠位 3 関節（膝・足首）は文書のままなので、(X-n) の導出には影響しない
+//     （股は最後に M = R·R456ᵀ から取り出すだけで、そこの式だけが変わる）。
+//   足首 J5/J6 の名前は実機のサーボ名から引き継いだままで、Σ_B での
+//   「ピッチ / ロール」とは入れ替わっている（ankle_config.hpp の注記を参照）。
 //   膝は θ4 > 0 で足先が後ろへ振れる（人型の曲げ。KNEE_FORWARD = +1）。
 //   出力は「関節角」でサーボ指令角ではない。4 節リンク・パラレルリンクの
 //   変換 f4, f56 は別レイヤ（文書 §7）。
@@ -66,7 +74,9 @@
 //       θ6 = atan2(V·r_y + B·r_z,  V·r_z - B·r_y)                           (X-9)
 //     a = 0 で V = -(A·c5+ℓ5) を入れると文書 (IK-10) に一致する。
 //
-// [8] 股 3 軸は文書のまま。M := R·R456ᵀ = R123 から (IK-12)〜(IK-14)。
+// [8] 股 3 軸は M := R·R456ᵀ = R123 から取り出す。文書 (IK-12)〜(IK-14) は
+//     R123 = Ry·Rx·Rz 前提だが、実機に合わせて Rx·Ry·Rz にしたので、
+//     取り出しの式だけ x-y-z 順に置き換えてある（ik() の該当箇所を参照）。
 //
 // 三角関数は atan2 が 6 回、asin と arccos が 1 回ずつ、平方根が 2 回。反復なし。
 #ifndef ROBOONE_KINEMATICS__LEG_KINEMATICS_HPP_
@@ -178,17 +188,17 @@ inline Mat3 rotZ(double t) { return rotZsc(std::cos(t), std::sin(t)); }
 //   v_S = Cᵀv_B = (-v_B.y,  v_B.x, v_B.z)
 //   R_B = C R_S Cᵀ,   R_S = Cᵀ R_B C
 //
-// 関節角は「Σ_B の正軸まわりの右ねじ」を正とする。Σ_S で Rx だった J2/J4/J6 は
+// 関節角は「Σ_B の正軸まわりの右ねじ」を正とする。Σ_S で Rx の関節（J1/J4/J6）は
 // Σ_B では -ŷ_B まわりになるので符号が反転する:
 //
-//   θ_S = (θ1, -θ2, θ3, -θ4, θ5, -θ6)_B                              (X-swap)
+//   θ_S = (-θ1, θ2, θ3, -θ4, θ5, -θ6)_B                              (X-swap)
 //
 // 掛けるのは ±1 なので往復とも同じ式でよい。
 inline constexpr Mat3 kBfromS{{{0, 1, 0}, {-1, 0, 0}, {0, 0, 1}}};
 inline constexpr Mat3 kSfromB{{{0, -1, 0}, {1, 0, 0}, {0, 0, 1}}};
 
-/// (X-swap) の関節符号。J2/J4/J6 が反転する。
-inline constexpr double kAxisSwapSign[6] = {1.0, -1.0, 1.0, -1.0, 1.0, -1.0};
+/// (X-swap) の関節符号。Σ_S で Rx の関節（J1/J4/J6）が反転する。
+inline constexpr double kAxisSwapSign[6] = {-1.0, 1.0, 1.0, -1.0, 1.0, -1.0};
 
 constexpr Vec3 toSolver(const Vec3 & v) { return {-v.y, v.x, v.z}; }
 constexpr Vec3 fromSolver(const Vec3 & v) { return {v.y, -v.x, v.z}; }
@@ -297,8 +307,8 @@ namespace solver
 /// t は文書の符号（AXIS_FLIP も (X-swap) も適用済みの内部角）。
 inline void fk(const LegParams & prm, const double t[kNumJoints], Vec3 & p, Mat3 & R)
 {
-  const Mat3 R1 = rotY(t[HIP_PITCH]);
-  const Mat3 R2 = rotX(t[HIP_ROLL]);
+  const Mat3 R1 = rotX(t[HIP_PITCH]);   // Σ_B では Ry = ピッチ
+  const Mat3 R2 = rotY(t[HIP_ROLL]);    // Σ_B では Rx = ロール
   const Mat3 R3 = rotZ(t[HIP_YAW]);
   const Mat3 R4 = rotX(t[KNEE]);
   const Mat3 R5 = rotY(t[ANKLE_PITCH]);
@@ -317,7 +327,7 @@ inline void fk(const LegParams & prm, const double t[kNumJoints], Vec3 & p, Mat3
 /// 各関節の回転中心 [o3, o4, o5, o6, 足先] を Σ_S で返す。
 inline void jointOrigins(const LegParams & prm, const double t[kNumJoints], Vec3 out[5])
 {
-  const Mat3 R123 = rotY(t[HIP_PITCH]) * rotX(t[HIP_ROLL]) * rotZ(t[HIP_YAW]);
+  const Mat3 R123 = rotX(t[HIP_PITCH]) * rotY(t[HIP_ROLL]) * rotZ(t[HIP_YAW]);
   const Mat3 R1234 = R123 * rotX(t[KNEE]);
   const Mat3 R12345 = R1234 * rotY(t[ANKLE_PITCH]);
   const Mat3 R = R12345 * rotX(t[ANKLE_ROLL]);
@@ -327,6 +337,16 @@ inline void jointOrigins(const LegParams & prm, const double t[kNumJoints], Vec3
   out[2] = out[1] + R1234 * prm.p4;
   out[3] = out[2] + R12345 * prm.p5;
   out[4] = out[3] + R * prm.p6;
+}
+
+/// 各リンクの姿勢 [Σ_3, Σ_4, Σ_5, Σ_6] を Σ_S で返す。
+inline void jointFrames(const LegParams & prm, const double t[kNumJoints], Mat3 out[4])
+{
+  (void)prm;
+  out[0] = rotX(t[HIP_PITCH]) * rotY(t[HIP_ROLL]) * rotZ(t[HIP_YAW]);
+  out[1] = out[0] * rotX(t[KNEE]);
+  out[2] = out[1] * rotY(t[ANKLE_PITCH]);
+  out[3] = out[2] * rotX(t[ANKLE_ROLL]);
 }
 
 }  // namespace solver
@@ -437,10 +457,12 @@ inline IkStatus ik(
   const Mat3 M = R * rotXsc(std::cos(t6), -std::sin(t6)) *
     rotYsc(bestC5, -bestS5) * rotXsc(std::cos(t4), -std::sin(t4));
 
-  const double c2 = std::hypot(M(1, 0), M(1, 1));
-  const double t2 = std::atan2(-M(1, 2), c2);
-  const double t3 = std::atan2(M(1, 0), M(1, 1));
-  const double t1 = std::atan2(M(0, 2), M(2, 2));
+  // M = R123 = Rx(θ1)·Ry(θ2)·Rz(θ3) からの取り出し（x-y-z 順のオイラー角）。
+  //   M(0,·) = (c2c3, -c2s3, s2) / M(1,2) = -s1c2 / M(2,2) = c1c2
+  const double c2 = std::hypot(M(0, 0), M(0, 1));
+  const double t2 = std::atan2(M(0, 2), c2);
+  const double t3 = std::atan2(-M(0, 1), M(0, 0));
+  const double t1 = std::atan2(-M(1, 2), M(2, 2));
 
   const double sol[kNumJoints] = {t1, t2, t3, t4, bestT5, t6};
   for (std::size_t k = 0; k < kNumJoints; ++k) {t[k] = sol[k];}
@@ -474,6 +496,26 @@ inline void jointOrigins(const LegParams & prm, const double theta[kNumJoints], 
   toSolverAngles(prm, theta, t);
   solver::jointOrigins(prm, t, out);
   for (int k = 0; k < 5; ++k) {out[k] = fromSolver(out[k]);}
+}
+
+/// 各リンクの姿勢 [Σ_3, Σ_4, Σ_5, Σ_6] を Σ_B で返す。
+///
+/// jointOrigins() が「節点がどこか」を返すのに対し、こちらは「そこに載っている
+/// リンクがどちらを向いているか」を返す。並びは
+///
+///   out[0] = Σ_3  股 3 軸の後（大腿に固定）
+///   out[1] = Σ_4  膝の後（下腿に固定）。足首パラレルの Σ_s と同じ向き
+///   out[2] = Σ_5  足首ロール θ5 の後
+///   out[3] = Σ_6  足板。fk() が返す R と同じ
+///
+/// 4 節リンクやパラレルリンクの点（Σ_s / Σ_6 の定数）を Σ_B に置くために要る。
+/// 例: 足首のクランク軸 O_i は o5 + out[1] · prm.ankle.c[i]。
+inline void jointFrames(const LegParams & prm, const double theta[kNumJoints], Mat3 out[4])
+{
+  double t[kNumJoints];
+  toSolverAngles(prm, theta, t);
+  solver::jointFrames(prm, t, out);
+  for (int k = 0; k < 4; ++k) {out[k] = fromSolver(out[k]);}
 }
 
 /// (足先位置 p, 足姿勢 R) -> 関節角 θ1..θ6。反復なしの閉形式解。

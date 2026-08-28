@@ -13,8 +13,14 @@
     CAD 座標をそのまま使う場合は x <-> y を読み替える（文書 §1.1）。
 
 関節
-    θ1 股ピッチ Ry / θ2 股ロール Rx / θ3 股ヨー Rz  … 3 軸は股中心 o3 で交わる (A1)
+    θ1 股ピッチ Rx / θ2 股ロール Ry / θ3 股ヨー Rz  … 3 軸は股中心 o3 で交わる (A1)
     θ4 膝ロール Rx  θ5 足首ピッチ Ry  θ6 足首ロール Rx
+
+    ★股 3 軸の並びは文書 §2 と違う。文書は θ1 = Ry としているが、**実機は ID1 が
+      機体の y まわり（ピッチ）・ID2 が x まわり（ロール）**（2026-08-28 実機で確認）
+      なので、この座標系（x = 右, y = 前）では R1 = Rx, R2 = Ry になる。
+      R123 = Rx(θ1)·Ry(θ2)·Rz(θ3)。遠位 3 関節は文書のままで、影響するのは
+      ik() の最後（股 3 軸の取り出し）と fk() の R123 だけ。
     出力は「関節角」であってサーボ指令角ではない（文書 §7）。
     4 節リンク・パラレルリンクの変換 f4, f56 は別レイヤ。
 
@@ -210,7 +216,7 @@ def fk(theta, prm: LegParams | None = None):
     prm = prm or LegParams()
     t1, t2, t3, t4, t5, t6 = to_internal(theta, prm)      # 回転方向の指定を適用
 
-    R123 = Ry(t1) @ Rx(t2) @ Rz(t3)                       # (FK-3)
+    R123 = Rx(t1) @ Ry(t2) @ Rz(t3)                       # (FK-3) 相当（股は実機順）
     R4, R5, R6 = Rx(t4), Ry(t5), Rx(t6)
     R456 = R4 @ R5 @ R6                                    # (FK-5)
 
@@ -233,7 +239,7 @@ def joint_origins(theta, prm: LegParams | None = None) -> np.ndarray:
     """各関節の回転中心 [o3, o4, o5, o6, 足先] を Σ_0 で返す (5, 3)。描画・検証用。"""
     prm = prm or LegParams()
     t1, t2, t3, t4, t5, t6 = to_internal(theta, prm)
-    R123 = Ry(t1) @ Rx(t2) @ Rz(t3)
+    R123 = Rx(t1) @ Ry(t2) @ Rz(t3)
     R1234 = R123 @ Rx(t4)
     R12345 = R1234 @ Ry(t5)
     R = R12345 @ Rx(t6)
@@ -313,11 +319,12 @@ def ik(p, R, prm: LegParams | None = None, *, clamp: bool = True) -> np.ndarray:
     V = a * s5 - A * c5 - l5
     t6 = math.atan2(V * ry + B * rz, V * rz - B * ry)
 
-    # 7. 残った回転から股 3 軸 (IK-11)〜(IK-14)
+    # 7. 残った回転から股 3 軸。M = R123 = Rx(θ1)·Ry(θ2)·Rz(θ3) の x-y-z 順で取り出す
+    #    （文書 (IK-12)〜(IK-14) は Ry·Rx·Rz 前提なので式が違う）
     M = R @ Rx(-t6) @ Ry(-t5) @ Rx(-t4)
-    t2 = math.atan2(-M[1, 2], math.hypot(M[1, 0], M[1, 1]))
-    t3 = math.atan2(M[1, 0], M[1, 1])
-    t1 = math.atan2(M[0, 2], M[2, 2])
+    t2 = math.atan2(M[0, 2], math.hypot(M[0, 0], M[0, 1]))
+    t3 = math.atan2(-M[0, 1], M[0, 0])
+    t1 = math.atan2(-M[1, 2], M[2, 2])
 
     return to_external(np.array([t1, t2, t3, t4, t5, t6]), prm)
 
@@ -416,14 +423,14 @@ def _check_closed_forms(prm: LegParams, n: int, seed: int) -> None:
         c6, s6 = math.cos(t6), math.sin(t6)
         c4, s4 = math.cos(t4), math.sin(t4)
 
-        # (FK-3)
+        # (FK-3) 相当。股は Rx(θ1)·Ry(θ2)·Rz(θ3)（実機の並び）
         R123_doc = np.array([
-            [c1 * c3 + s1 * s2 * s3, s1 * s2 * c3 - c1 * s3, s1 * c2],
-            [c2 * s3, c2 * c3, -s2],
-            [-s1 * c3 + c1 * s2 * s3, s1 * s3 + c1 * s2 * c3, c1 * c2],
+            [c2 * c3, -c2 * s3, s2],
+            [c1 * s3 + s1 * s2 * c3, c1 * c3 - s1 * s2 * s3, -s1 * c2],
+            [s1 * s3 - c1 * s2 * c3, s1 * c3 + c1 * s2 * s3, c1 * c2],
         ])
         worst["FK-3 R123"] = max(worst["FK-3 R123"],
-                                 float(np.max(np.abs(R123_doc - Ry(t1) @ Rx(t2) @ Rz(t3)))))
+                                 float(np.max(np.abs(R123_doc - Rx(t1) @ Ry(t2) @ Rz(t3)))))
 
         # (FK-5)
         R456_doc = np.array([
@@ -458,7 +465,7 @@ def _check_closed_forms(prm: LegParams, n: int, seed: int) -> None:
             m[:3, 3] = trans
             return m
         chain = (T(np.eye(3), prm.p0)
-                 @ T(Ry(t1), np.zeros(3)) @ T(Rx(t2), np.zeros(3)) @ T(Rz(t3), np.zeros(3))
+                 @ T(Rx(t1), np.zeros(3)) @ T(Ry(t2), np.zeros(3)) @ T(Rz(t3), np.zeros(3))
                  @ T(Rx(t4), prm.p3) @ T(Ry(t5), prm.p4) @ T(Rx(t6), prm.p5)
                  @ T(np.eye(3), prm.p6))
         worst["4x4 chain"] = max(worst["4x4 chain"],

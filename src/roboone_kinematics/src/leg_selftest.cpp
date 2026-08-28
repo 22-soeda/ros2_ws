@@ -133,11 +133,11 @@ void checkClosedForms(LegParams prm, int n, std::uint64_t seed)
     const double c5 = std::cos(t[4]), s5 = std::sin(t[4]);
     const double c6 = std::cos(t[5]), s6 = std::sin(t[5]);
 
-    // (FK-3)
-    const Mat3 R123doc{{{c1 * c3 + s1 * s2 * s3, s1 * s2 * c3 - c1 * s3, s1 * c2},
-                        {c2 * s3, c2 * c3, -s2},
-                        {-s1 * c3 + c1 * s2 * s3, s1 * s3 + c1 * s2 * c3, c1 * c2}}};
-    wR123 = std::max(wR123, maxAbsDiff(R123doc, rotY(t[0]) * rotX(t[1]) * rotZ(t[2])));
+    // (FK-3) 相当。股は実機に合わせて Rx(θ1)·Ry(θ2)·Rz(θ3)（文書は Ry·Rx·Rz）
+    const Mat3 R123doc{{{c2 * c3, -c2 * s3, s2},
+                        {c1 * s3 + s1 * s2 * c3, c1 * c3 - s1 * s2 * s3, -s1 * c2},
+                        {s1 * s3 - c1 * s2 * c3, s1 * c3 + c1 * s2 * s3, c1 * c2}}};
+    wR123 = std::max(wR123, maxAbsDiff(R123doc, rotX(t[0]) * rotY(t[1]) * rotZ(t[2])));
 
     // (FK-5)
     const Mat3 R456doc{{{c5, s5 * s6, s5 * c6},
@@ -374,14 +374,15 @@ void checkBodyFrame(int n, std::uint64_t seed)
   double th[kNumJoints];
   check(ik(right, target, I, th, /*clamp=*/false) == IkStatus::Ok, "屈み姿勢が解けない");
   jointOrigins(right, th, o);
-  std::printf("  50 mm 屈む: θ2 = %+.2f deg, θ4 = %+.2f deg, 膝の前後位置 %+.2f mm\n",
-    th[HIP_ROLL] * kDeg, th[KNEE] * kDeg, o[1].x - hip.x);
+  std::printf("  50 mm 屈む: θ1 = %+.2f deg, θ4 = %+.2f deg, 膝の前後位置 %+.2f mm\n",
+    th[HIP_PITCH] * kDeg, th[KNEE] * kDeg, o[1].x - hip.x);
   check(th[KNEE] * config::KNEE_FORWARD > 0.0, "膝の符号が KNEE_FORWARD と合わない");
   check((o[1].x - hip.x) * config::KNEE_FORWARD > 0.0, "膝が前に出ない（逆関節になっている）");
 
   // --- 左右の鏡像 ---
-  // y = 0 面の鏡映では Rx / Rz まわりの角（J1, J3, J5）が反転し、Ry まわり
-  // （J2, J4, J6）はそのまま。幾何だけを見たいので AXIS_FLIP は落としておく。
+  // y = 0 面の鏡映では Σ_B の Rx / Rz まわりの角（J2 股ロール, J3 股ヨー,
+  // J5 足首）が反転し、Ry まわり（J1 股ピッチ, J4 膝, J6 足首）はそのまま。
+  // 幾何だけを見たいので AXIS_FLIP は落としておく。
   LegParams r2 = right, l2 = left;
   for (std::size_t k = 0; k < kNumJoints; ++k) {r2.sign[k] = 1.0; l2.sign[k] = 1.0;}
   std::mt19937_64 rng(seed);
@@ -389,7 +390,7 @@ void checkBodyFrame(int n, std::uint64_t seed)
   for (int i = 0; i < n; ++i) {
     double thr[kNumJoints];
     randomTheta(r2, rng, thr);
-    const double thl[kNumJoints] = {-thr[0], thr[1], -thr[2], thr[3], -thr[4], thr[5]};
+    const double thl[kNumJoints] = {thr[0], -thr[1], -thr[2], thr[3], -thr[4], thr[5]};
     Vec3 pr, pl;
     Mat3 Rr, Rl;
     fk(r2, thr, pr, Rr);

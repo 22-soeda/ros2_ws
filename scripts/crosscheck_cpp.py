@@ -34,8 +34,9 @@ _STATUS = {0: "Ok", 1: "AnkleOutOfRange", 2: "KneeOutOfRange", 3: "NoBranch"}
 
 #: Σ_B -> Σ_0（文書）。v_doc = C^T v_B、R_doc = C^T R_B C、C = Rz(-90°)
 _C = np.array([[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
-#: (X-swap) の関節符号。Σ_S で Rx だった J2/J4/J6 が反転する
-_SWAP = np.array([1.0, -1.0, 1.0, -1.0, 1.0, -1.0])
+#: (X-swap) の関節符号。Σ_S で Rx の関節（J1 股ピッチ・J4 膝・J6 足首）が反転する。
+#: leg_kinematics.hpp の kAxisSwapSign と同じ並びにしておくこと。
+_SWAP = np.array([-1.0, 1.0, 1.0, -1.0, 1.0, -1.0])
 
 
 def to_doc_vec(v):
