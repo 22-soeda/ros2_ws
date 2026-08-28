@@ -1,0 +1,96 @@
+# behavior のパラメータ。
+#
+# docs/behavior_planning.pdf §5「数値のまとめ」の表がそのまま入っている。
+# 分け方は opponent_detector.yaml と同じ 3 つ。
+#
+#   match.*  競技から決まる … リングの寸法と規則の時間。実測で動かさない
+#   robot.*  機体から決まる … 歩行の上限・技の間合い・開始位置。起動時に固定
+#   tune.*   実装から決まる … ゲインとヒステリシス。実機で追い込む
+#
+# 既定値は roboone_behavior/behavior/params.py にあり、ここに書くのは
+# 「この機体での選択」だけにする。値の意味と根拠は params.py の注記を見ること。
+# ros2 param set で実行時に変えられるのは tune.* と robot.techniques だけ。
+/**:
+  ros__parameters:
+
+    # ---- 競技から決まる ------------------------------------------------
+    match:
+      # 360 cm 角の四隅を 90 cm 落とした八角形（規則 4.1 図 C-1, C-2）
+      ring_half_width: 1.8
+      ring_corner_cut: 0.9
+      # 相手がダウンしたときに離れる距離。規則 10.2(b)(i) は「起き上がりを
+      # 妨げない距離」としか書いておらず、数値は規定に無い
+      retreat_range: 0.6
+      retreat_max_travel: 0.4
+      # 規則 10.3(d) の「10 秒以上前後左右に移動しない」に対する小移動
+      keepalive_period: 6.0
+      keepalive_shift: 0.05
+      # 規則 10.2(l)。しゃがみを含む技のあとに要る歩数
+      crouch_steps: 3
+
+    # ---- 機体から決まる ------------------------------------------------
+    robot:
+      # 歩行ノート(2) 表 2 の v_max / ω_max。gait.yaml と揃えること
+      v_max: 0.15
+      v_y_max: 0.08
+      w_max: 0.8
+      # !! 暫定値 !! 技の間合い。腕の届く距離から数 cm 引く。技ができてから測る
+      strike_range: 0.25
+      # !! 暫定値 !! 深度の最短距離。解像度設定ごとに実測すること
+      blind_range: 0.25
+      # D435if の水平視野 87 deg の半角 [rad]
+      fov_half: 0.7592
+      # gait.yaml の T_step と揃える。しゃがみ後の 3 歩を時間で数えるのに使う
+      step_period: 0.40
+      # !! 暫定値 !! 「はじめ」の時点の自陣コーナーの位置と向き [m, m, rad]。
+      # 規則の赤青コーナーの運用を確認して置き直すこと
+      start_x: -1.2
+      start_y: -0.9
+      start_yaw: 0.588
+      # /cmd_motion に出す技名。motion の config/motions.yaml にある名前のこと。
+      # 空にすると ENGAGE は間合いを保って待つだけになる（歩行だけの試走用）
+      techniques: ['punch_r', 'punch_l']
+      # 上のうちしゃがみを含むもの。規則 10.2(l) の縛りが掛かる。
+      # 空にしたいときはこの行ごと消す（YAML の [] は ros2 では型が付かず、
+      # 「未設定」として届く。behavior_node._value がそれを空リストに畳む）
+      crouch_techniques: []
+
+    # ---- 実装から決まる ------------------------------------------------
+    tune:
+      rate_hz: 20.0
+
+      # 相手の追跡 (§2.2)
+      track_alpha: 0.5
+      track_gate: 0.3
+      lost_time: 0.5
+      close_hold_time: 2.0
+      close_back_off: 0.15
+
+      # 転倒判定 (§2.3)。κ_d / κ_u と継続時間
+      fallen_ratio: 0.5
+      stand_ratio: 0.75
+      fallen_time: 0.7
+      stand_time: 0.5
+      height_cal_time: 2.0
+      # 間合いの中での転倒判定に要る横幅の比。tracking.py の
+      # FallenDetector._step_close の注記（文書からの変更点）を見ること
+      close_width_ratio: 0.75
+
+      # リング座標系と縁 (§2.4)。κ_s は滑りの実測で決める。
+      # /odom が無いうちは指令の積分なので、大きめに取っておく
+      edge_margin0: 0.25
+      edge_margin_slip: 0.15
+      edge_release: 0.5
+      lookahead: 1.0
+      edge_speed: 0.1
+      retreat_speed: 0.1
+
+      # 状態遷移 (§3)。β_in / β_out [rad] = 8 deg / 15 deg
+      bearing_in: 0.1396
+      bearing_out: 0.2618
+      k_bearing: 1.5
+      k_range: 0.8
+      range_eps: 0.03
+      search_omega: 0.6
+      dwell: 0.5
+      technique_timeout: 1.0

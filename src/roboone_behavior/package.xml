@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>roboone_behavior</name>
+  <version>0.0.0</version>
+  <description>自律動作の行動層 — /opponent と /ring_edge から /cmd_walk と /cmd_motion を決める behavior ノード</description>
+  <maintainer email="soedayu.030622@gmail.com">auto</maintainer>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+  <depend>rcl_interfaces</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>roboone_interfaces</depend>
+
+  <!-- 相手位置と縁の出どころ / 指令の行き先。同時に起動する相手 -->
+  <exec_depend>roboone_perception</exec_depend>
+  <exec_depend>ros2launch</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

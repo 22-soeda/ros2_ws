@@ -1,0 +1,519 @@
+% 自律機の動作計画指針
+% lualatex でビルド: latexmk -lualatex behavior_planning.tex
+\documentclass[a4paper,11pt]{ltjsarticle}
+\usepackage[haranoaji]{luatexja-preset}
+\usepackage{amsmath,amssymb}
+\usepackage{bm}
+\usepackage{booktabs,array}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{adjustbox}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,calc,positioning,decorations.pathreplacing}
+\usepackage[unicode,hidelinks]{hyperref}
+
+\setlist{leftmargin=*,itemsep=2pt,topsep=3pt}
+\captionsetup{font=small,labelfont=bf}
+\allowdisplaybreaks
+
+\newcommand{\vc}[1]{\bm{#1}}
+\newcommand{\mat}[1]{\bm{#1}}
+\newcommand{\code}[1]{\texttt{#1}}
+\DeclareMathOperator{\atan}{atan2}
+\DeclareMathOperator{\clamp}{clamp}
+\DeclareMathOperator{\sgn}{sgn}
+
+\title{自律機の動作計画指針\\
+\large 相手検知から歩行指令までの判断の設計}
+\author{ROBO-ONE Auto 2026 機 向け技術ノート（3）}
+\date{2026年8月28日}
+
+\begin{document}
+\maketitle
+
+\section*{先に結論}
+
+\begin{itemize}
+\item 行動層（\code{behavior} ノード）がやることは五つで足りる。
+\textbf{探す}（前方に相手がいなければその場で旋回して視野に入れる）、
+\textbf{近づく}（相手の少し手前の点まで直線で歩く）、
+\textbf{仕掛ける}（技の再生を \code{motion} に渡す）、
+\textbf{離れる}（相手が倒れていたら距離を取る）、
+\textbf{縁から戻る}（リングの縁に近づきすぎたら中央側へ戻る）。
+これを優先順位付きの状態機械にし、20 Hzで一つの歩行指令 $(v_x,v_y,\omega_z)$ に落とす。
+\item 判断に使う量は二つだけである。相手の相対位置（距離 $\rho$、方位 $\beta$、上端高さ）と、
+リング座標系での自分の位置である。前者はRealSenseの深度から、後者は歩行のオドメトリと、深度で見える床の切れ目から出す。
+\item 設計を縛る競技規則は四つ。相手がダウンしたら起き上がりを妨げない距離に離れること、
+倒れていなくても3秒停止か10秒無移動でスタンディング扱いになること、
+リングアウトは1ダウンであること、autoは相手が起き上がれば合図なしで攻撃してよいこと。
+「止まって待つ」状態を作ってはいけないので、どの状態にも足踏みと小さな横移動を重ねる（\S\ref{sec:keepalive}）。
+\item 縁の扱いは「見えている方向へしか進まない」を原則にする。カメラの視野（水平87$^\circ$）の中では床の切れ目で縁までの距離が測れる。
+見えない方向（後退・横移動）はオドメトリ推定に余裕を上乗せして、短い距離しか許さない。
+\end{itemize}
+
+本書は行動層の設計だけを扱う。歩行そのものは理論ノート（1）（2）、ノード構成は \code{ros-architecture.md} に従う。
+競技規則は第44回ROBO-ONE競技規則（2025年6月11日作成）を参照した。ROBO-ONE autoの規定は本戦と共通で、
+auto向けの特別規則として上に挙げた項目が加わる。
+
+\clearpage
+{\small\tableofcontents}
+\clearpage
+
+\section{前提}\label{sec:premise}
+
+\subsection{競技規則のうち行動設計に効くもの}
+
+\begin{table}[h]
+\centering\small
+\begin{tabular}{p{0.24\linewidth}p{0.49\linewidth}p{0.17\linewidth}}
+\toprule
+規定 & 内容 & 出典 \\
+\midrule
+リング & 360 cm角の四隅を90 cm落とした八角形、台状で段差あり。周囲30 cmは空ける & 4.1 図C-1, C-2 \\
+試合 & 3分1ラウンド、3ダウンでKO。リングアウトは1ダウン & 10.2(a), 10.3(b) \\
+autoの開始・停止 & 「はじめ」で動作開始、「待て」「止め」で停止。無線による始動・停止・脱力機構が必須。試合中は人が触れない & 5.1.2 \\
+相手のダウン & 起き上がりを妨げない距離に離れる。ダウン中の攻撃はイエローカード。autoは相手が起き上がれば合図なしで攻撃可 & 10.2(b)(i), 解説10.2-1 \\
+スタンディング & 倒れていなくても3秒以上停止、または10秒以上前後左右に移動しないとスタンディング（スリップ相当）。3カウント内に歩かなければダウン相当 & 10.3(d) \\
+しゃがみ & しゃがみ状態は3秒以内に立つ。3歩以上歩いてからでないと再攻撃・再しゃがみ不可 & 10.2(l) \\
+再開時の配置 & 再開時に相手を検出しやすいよう近距離に置かれることがある & 解説10.2-1 \\
+autoの特典 & 本戦にautoで出ると$-1$ダウンから開始 & 10.2(g) \\
+\bottomrule
+\end{tabular}
+\caption{第44回競技規則から抜き出した行動設計の制約。リングの段差の高さは図に寸法がなく、会場かCリングで確認する。}
+\label{tab:rules}
+\end{table}
+
+\subsection{機体側の前提}
+
+\begin{center}\small
+\begin{tabular}{p{0.28\linewidth}p{0.62\linewidth}}
+\toprule
+項目 & 値 \\
+\midrule
+相手検知 & RealSense D435if の深度点群。RANSACで床平面を除去し、最近接クラスタの重心を出す（厚木で検証済み）。約15 Hz \\
+深度の視野 & 水平87$^\circ$、垂直58$^\circ$。最短距離は解像度設定で0.2〜0.3 m（要実測） \\
+歩行指令 & \code{/cmd\_walk}（$v_x,v_y,\omega_z$）、20 Hz。上限は $v_{\max}=0.15$ m/s、$\omega_{\max}=0.8$ rad/s（歩行ノートの初期値） \\
+歩行の状態 & \code{/motion/state} に IDLE/START/STEP/STOP/FALL/ESTOP と技再生中が出る \\
+姿勢 & \code{/imu/data} からヨー（ジャイロ積分、ドリフトあり） \\
+開始・停止の合図 & PS3コントローラ（\code{teleop}）のボタンで「はじめ」「待て」「止め」を入れる。これが規則5.1.2の無線始動・停止機構を兼ねる \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{見えるものと見えないもの}
+
+行動層が持てるのは、相手の相対位置と自分の大まかな位置だけである。
+相手の意図、相手の技の予備動作、自分の絶対位置は分からない。
+また相手が近すぎると深度の最短距離を割って見えなくなり、遠すぎると点群がまばらになる。
+したがって設計は「見えているものだけで決め、見えないものには余裕で対処する」を通す。
+
+\section{観測量の整形}\label{sec:obs}
+
+\subsection{座標系}
+
+$\{B\}$ は胴体を水平にした機体座標系（$x$ 前、$y$ 左）、$\{C\}$ はカメラ座標系、$\{R\}$ はリング座標系（原点をリング中心、$x$ を自陣から相手陣へ向かう向き）である。
+相手の位置は $\{B\}$ の極座標
+\begin{equation}
+\rho=\sqrt{x_o^2+y_o^2},\qquad \beta=\atan(y_o,\,x_o)
+\end{equation}
+で扱う。$\beta>0$ が左である。
+
+カメラから機体への変換は、検知ノードがRANSACで求めた床平面をそのまま使う。
+カメラ座標系で床平面が $\vc n^\top\vc p+d=0$ と求まれば、カメラの高さは $h_c=|d|$、
+床に垂直な軸は $\vc n$ である。$\vc n$ を $\{B\}$ の $z$ 軸に重ねる回転で点群を水平化してから、
+機体前方を $x$ 軸に取る。歩行中に胴体が揺れても床平面が毎フレーム追従するので、固定の取付角より確実である。
+
+\subsection{相手位置の追跡}
+
+検知ノードが出す重心は15 Hzでばらつき、取りこぼしもある。行動層では簡単な予測付きフィルタで平滑化する。
+機体が $(v_x,v_y,\omega_z)$ で動くと、静止した相手は機体座標系で
+\begin{equation}
+\vc p^-_{k}=\mat R_z(-\omega_z\Delta t)\left(\vc p_{k-1}-\begin{pmatrix}v_x\\ v_y\end{pmatrix}\Delta t\right)
+\label{eq:predict}
+\end{equation}
+だけ動いて見える。観測 $\vc z_k$ が来たら
+\begin{equation}
+\vc p_k=\vc p^-_k+\alpha\left(\vc z_k-\vc p^-_k\right),\qquad \alpha=0.5
+\label{eq:update}
+\end{equation}
+で更新し、来なければ $\vc p_k=\vc p^-_k$ とする。
+観測が予測から $g_{\max}=0.3$ m 以上離れていたら、その1回は捨てて外れ値とみなす。
+2回続いたら乗り換える。最後に受理した観測から $T_\mathrm{lost}=0.5$ s 経ったら「見失い」とし、
+最後の位置と方位 $\beta_\mathrm{last}$ だけを保持する。
+
+\subsection{相手の転倒判定}
+
+クラスタの上端高さ $z_\mathrm{top}$（床平面からの高さ）を使う。
+「はじめ」の直後2秒間の $z_\mathrm{top}$ の中央値を相手の立位高さ $H_o$ として記録し、
+\begin{equation}
+z_\mathrm{top}<\kappa_d H_o\ \text{が}\ T_\mathrm{down}\ \text{続く}\Rightarrow\text{転倒},\qquad
+z_\mathrm{top}>\kappa_u H_o\ \text{が}\ T_\mathrm{up}\ \text{続く}\Rightarrow\text{復帰}
+\label{eq:fallen}
+\end{equation}
+とする。$\kappa_d=0.5$、$\kappa_u=0.75$、$T_\mathrm{down}=0.7$ s、$T_\mathrm{up}=0.5$ s から始める。
+上下で閾値を分けるのはヒステリシスのためである。
+補助として、クラスタの水平方向の広がりが $H_o$ を超えたら転倒側の証拠に加える。
+相手が近すぎて上部しか映らないとき（$\rho<\rho_s+0.2$ m）は $z_\mathrm{top}$ が信用できないので判定を凍結し、直前の判定を保つ。
+
+\subsection{自分の位置とリングの縁}\label{sec:edge}
+
+\paragraph{リング座標系での推定}
+リングは既知の八角形なので、自分の位置 $(x_r,y_r)$ とヨー $\psi$ が分かれば縁までの距離は閉形式で出る。
+半幅 $a=1.8$ m、角の切り落とし $c=0.9$ m として、八角形の内側の点の縁までの距離は
+\begin{equation}
+d_\mathrm{edge}=\min\!\left(a-|x_r|,\ a-|y_r|,\ \frac{2a-c-|x_r|-|y_r|}{\sqrt2}\right)
+\label{eq:dedge}
+\end{equation}
+である（角の辺は $|x|+|y|=2a-c=2.7$ m）。
+位置は「はじめ」の時点の自陣コーナーの位置と向きで初期化し、歩行ノードが出す脚オドメトリ（\code{/odom}、歩の境界ごとの支持足の乗り換えを累積したもの）とIMUヨーで進める。
+脚オドメトリは足裏の滑りで狂うので、最後に補正してからの歩行距離 $s$ に比例して余裕を増やす。
+\begin{equation}
+d_\mathrm{margin}=d_0+\kappa_s\,s,\qquad d_0=0.25\ \mathrm{m},\ \kappa_s=0.15
+\label{eq:margin}
+\end{equation}
+
+\paragraph{深度で見える床の切れ目}
+リングは台状なので、視野の中では床平面の内点が縁で途切れ、その先は点がないか床より低い点になる。
+検知ノードは床平面を持っているので、方位を $\theta$ の刻みに分け、各方位で床平面の内点が続く最遠距離 $r_\mathrm{floor}(\theta)$ を出すだけで、
+縁までの距離 $d_\mathrm{cliff}(\theta)$ になる。ただし
+\begin{itemize}
+\item 視野の外（$|\theta|>43.5^\circ$）は分からない
+\item 床が見える範囲には上限がある。カメラ高さ $h_c$、下向きの取付角 $\alpha$、垂直視野 $\varphi_v=58^\circ$ で、
+床が映る最遠は $r_\mathrm{far}=h_c/\tan(\alpha-\varphi_v/2)$（$\alpha>\varphi_v/2$ のとき。そうでなければ深度の到達距離で決まる）
+\item 相手の陰は見えない。相手の方位では $d_\mathrm{cliff}$ は相手までの距離で打ち切られる
+\end{itemize}
+という限界があるので、$d_\mathrm{cliff}$ は「見えている方向の確証」として使い、リング座標系の推定を置き換えるものではない。
+前方に縁が見えたら、その方位の予測 $d_\mathrm{edge}$ との差で $(x_r,y_r)$ を視線方向に1次元で補正し、$s$ を0に戻す。
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[>=Stealth,font=\small,scale=1.0]
+ \draw[thick] (-2,0) -- (2.6,0);
+ \draw[fill=gray!30] (2.6,0) rectangle (3.4,-0.5);
+ \node[below,font=\footnotesize] at (3.0,-0.5) {縁の段差};
+ \draw[thick] (2.6,0) -- (2.6,-0.5) -- (3.4,-0.5);
+ \coordinate (cam) at (-1.2,1.5);
+ \fill (cam) circle (0.08); \node[left] at (cam) {カメラ};
+ \draw[dashed] (cam) -- (-1.2,0);
+ \draw[->] (cam) -- ++(15:1.2) node[right,font=\footnotesize] {上端 $\alpha-\varphi_v/2$};
+ \draw[->] (cam) -- ++(-43:2.1);
+ \node[font=\footnotesize] at (-0.5,-0.32) {下端 $\alpha+\varphi_v/2$};
+ \draw[dotted] (cam) -- (2.6,0);
+ \node[font=\footnotesize] at (1.2,-0.78) {$r_\mathrm{far}$ まで床が映る};
+ \draw[fill=gray!15] (0.6,0) rectangle (1.0,0.9);
+ \node[above,font=\footnotesize] at (0.8,0.9) {相手 $H_o$};
+ \draw[<->] (-1.9,0) -- (-1.9,1.5) node[midway,left,font=\footnotesize] {$h_c$};
+\end{tikzpicture}
+\caption{側面から見た視野。床は近点から $r_\mathrm{far}$ まで映り、縁は床平面の内点が途切れる位置として現れる。相手の陰と視野外は見えない。}
+\end{figure}
+
+\section{行動の設計}\label{sec:behavior}
+
+\subsection{状態と優先順位}
+
+\begin{figure}[h]
+\centering
+\begin{adjustbox}{max width=\textwidth}
+\begin{tikzpicture}[>=Stealth,font=\small,
+ st/.style={draw,rounded corners=3pt,minimum width=2.3cm,minimum height=9mm,align=center}]
+ \node[st] (wait) at (0,0) {WAIT\\合図待ち};
+ \node[st] (search) at (4.6,0) {SEARCH\\旋回して探す};
+ \node[st] (app) at (9.2,0) {APPROACH\\直線で近づく};
+ \node[st] (eng) at (13.8,0) {ENGAGE\\技を渡す};
+ \node[st] (edge) at (0,-3.0) {EDGE\\中央へ戻る};
+ \node[st] (ret) at (9.2,-3.0) {RETREAT\\離れて待つ};
+ \node[st] (down) at (13.8,-3.0) {SELF\_DOWN\\起き上がり待ち};
+ \draw[->] (wait) -- node[above,font=\footnotesize] {「はじめ」} (search);
+ \draw[->,transform canvas={yshift=2mm}] (search) -- node[above,font=\footnotesize] {$|\beta|<\beta_\mathrm{in}$} (app);
+ \draw[->,transform canvas={yshift=-2mm}] (app) -- node[below,align=center,font=\footnotesize] {見失い /\\$|\beta|>\beta_\mathrm{out}$} (search);
+ \draw[->,transform canvas={yshift=2mm}] (app) -- node[above,font=\footnotesize] {$\rho\le\rho_s+\epsilon_\rho$} (eng);
+ \draw[->,transform canvas={yshift=-2mm}] (eng) -- node[below,font=\footnotesize] {技の完了} (app);
+ \draw[->] (app) -- node[right,font=\footnotesize] {相手が転倒} (ret);
+ \draw[->] (ret.north) -- ++(0,0.9) -| node[pos=0.25,above,font=\footnotesize] {相手が復帰} (search.south);
+ \draw[->] (edge.north) -- ++(0,1.2) -| node[pos=0.25,above,font=\footnotesize] {$d_\mathrm{edge}>d_1$} (search.south);
+ \node[align=left,font=\footnotesize] at (5.0,-4.3) {EDGE：どの状態からも $d_\mathrm{edge}<d_\mathrm{margin}$ で割り込む　　SELF\_DOWN：\code{/motion/state}=FALL で割り込み、起き上がり後は SEARCH へ\\WAIT：「待て」「止め」でどの状態からも戻る};
+\end{tikzpicture}
+\end{adjustbox}
+\caption{行動の状態。横一列が通常の流れ、下段が割り込みである。}
+\label{fig:fsm}
+\end{figure}
+
+毎周期（20 Hz）、次の優先順位で一つの状態を選ぶ。上にあるほど強い。
+\begin{enumerate}
+\item \textbf{WAIT}：「はじめ」前、「待て」「止め」後、非常停止。歩行指令は零、足踏みもしない（規則10.2(k)）
+\item \textbf{SELF\_DOWN}：\code{/motion/state} が FALL。起き上がりは \code{motion} の仕事で、行動層は待つだけ
+\item \textbf{EDGE}：$d_\mathrm{edge}<d_\mathrm{margin}$、または前方の $d_\mathrm{cliff}<d_\mathrm{margin}$。中央側へ戻る
+\item \textbf{RETREAT}：相手が転倒中。$\rho\ge\rho_r$ まで離れ、向きは相手に保ち、復帰を待つ
+\item \textbf{ENGAGE}：相手が立っていて $\rho\le\rho_s+\epsilon_\rho$、$|\beta|<\beta_\mathrm{in}$。技を \code{motion} に渡す
+\item \textbf{APPROACH}：相手が見えていて $|\beta|<\beta_\mathrm{in}$（既にAPPROACH中は $\beta_\mathrm{out}$ まで許す）
+\item \textbf{SEARCH}：それ以外。見失っているか、視野の端にいる
+\end{enumerate}
+状態を変えたら最低 $T_\mathrm{dwell}=0.5$ s はその状態に留まる。閾値は全部ヒステリシス付きにする。
+
+\subsection{SEARCH：旋回して視野に入れる}
+
+相手が見えていなければ、その場で旋回する。回る向きは、最後に見えた方位の側 $\sgn\beta_\mathrm{last}$、
+それも無ければリング中央がある側にする。リングの外を向いて掃くより、中央側を先に掃く方が早く見つかる。
+\begin{equation}
+\omega_z=\sgn(\beta_\mathrm{last})\,\omega_\mathrm{search},\qquad v_x=v_y=0
+\end{equation}
+$\omega_\mathrm{search}=0.6$ rad/s なら1周に10.5 s、視野87$^\circ$は毎周期十分に重なる。
+
+相手が見えていて視野の端にいる（$|\beta|>\beta_\mathrm{in}$）ときも同じ状態で、方位サーボで中央に寄せる。
+\begin{equation}
+\omega_z=\clamp\!\left(k_\beta\,\beta,\ -\omega_{\max},\ \omega_{\max}\right),\qquad k_\beta=1.5\ \mathrm{s^{-1}}
+\label{eq:bearing}
+\end{equation}
+$|\beta|<\beta_\mathrm{in}$ になったらAPPROACHへ移る。$\beta_\mathrm{in}=8^\circ$、戻りは $\beta_\mathrm{out}=15^\circ$ とする。
+旋回だけでは規則の「10秒以上前後左右に移動しない」に当たりうるので、\S\ref{sec:keepalive}の小移動を重ねる。
+
+\subsection{APPROACH：相手の手前まで直線で歩く}
+
+目標点は相手から $\rho_s$ だけ手前の点
+\begin{equation}
+\vc g=\vc p-\rho_s\frac{\vc p}{|\vc p|}
+\label{eq:goal}
+\end{equation}
+である。$\rho_s$ は技の間合いで決める（腕の届く距離から数cm引いた値。仮に0.25 m）。
+方位サーボ\eqref{eq:bearing}で相手を正面に保ちながら前進するので、相手が動かなければ経路は直線になる。
+前進速度は残り距離に比例させ、上限で飽和させる。
+\begin{equation}
+v_x=\clamp\!\left(k_v\,(\rho-\rho_s),\ 0,\ v_{\max}\right)\cdot\max\!\left(0,\cos\beta\right),\qquad
+k_v=0.8\ \mathrm{s^{-1}},\qquad v_y=0
+\label{eq:approach}
+\end{equation}
+$\cos\beta$ を掛けるのは、向きが合っていないうちは進まないためである。
+$k_v$ は、歩行ノードのレート制限 $a_{\max}=0.3\ \mathrm{m/s^2}$ で $v_{\max}$ から止まるのに要する距離
+$v_{\max}^2/(2a_{\max})=0.04$ m と、指令から着地までの遅れ（1歩、0.4 s）で進む $0.06$ m を足した $0.1$ m の手前から減速が始まるように選ぶ。
+$k_v=0.8$ なら $\rho-\rho_s=0.19$ m で $v_{\max}$ を割り、上の条件を満たす。
+$\rho\le\rho_s+\epsilon_\rho$（$\epsilon_\rho=0.03$ m）でENGAGEへ移る。
+
+初期距離が2.5 mなら到達に $(2.5-0.25)/0.15=15$ s かかる。試合3分に対して十分短い。
+
+\paragraph{縁の確認}
+前進は「見えている床の上」に限る。前方の切れ目 $d_\mathrm{cliff}(0)$ が使えるなら
+\begin{equation}
+v_x\leftarrow\min\!\left(v_x,\ k_v\left(d_\mathrm{cliff}(0)-d_\mathrm{margin}\right)\right)
+\label{eq:cliff-limit}
+\end{equation}
+で縁の手前に止める。相手が縁の近くにいる場合は、$\vc g$ が縁の余裕の外に出るので、そこで止まって技の間合いに入らないことを受け入れる。
+相手を押し出すよりリングアウトの1ダウンが重い。
+
+\paragraph{近距離の死角}
+深度の最短距離 $\rho_\mathrm{blind}$（0.2〜0.3 m）は $\rho_s$ とほぼ同じで、間合いに入った相手は見えなくなりうる。
+見失いが $\rho<\rho_\mathrm{blind}+0.1$ m で起きた場合は「近すぎて見えない」とみなし、
+$T_\mathrm{close}=2$ s の間は最後の位置を保持してENGAGEを続ける。それを超えたら後ろへ $0.15$ m 下がって再取得する。
+遠くで見失った場合はSEARCHへ戻る。この二つを区別する材料は見失う直前の $\rho$ だけである。
+
+\subsection{ENGAGE：技を渡す}
+
+\code{/cmd\_motion} に技名を出し、\code{/motion/state} が技再生中の間は歩行指令を出さない。
+技が終わったらAPPROACHに戻して再評価する。行動層が守る制約は二つある。
+\begin{itemize}
+\item しゃがみを含む技のあとは3歩以上歩いてから次の技を出す（規則10.2(l)）。技ごとに「しゃがみを含む」属性を持たせ、含む技の後は $0.15$ m の後退を挟む
+\item 技の再生時間が3秒を超えると停止扱いになりうる（規則10.3(d)）。技は3秒未満に収めるか、途中に足踏みを含める
+\end{itemize}
+どの技を出すかは本書の範囲外で、最初は1種類でよい。
+
+\subsection{RETREAT：相手が倒れたら離れる}
+
+規則10.2(b)により、相手がダウンしたら起き上がりを妨げない距離に離れる。
+離れる向きは「相手から遠ざかる」と「リング中央へ寄る」の合成にする。
+機体座標系で、相手への単位ベクトルを $\hat{\vc e}_o=\vc p/|\vc p|$、リング中央への単位ベクトルを
+$\hat{\vc e}_c=\mat R_z(-\psi)\,(-\vc r)/|\vc r|$（$\vc r=(x_r,y_r)$）として
+\begin{equation}
+\vc u=\frac{-\hat{\vc e}_o+\lambda\,\hat{\vc e}_c}{|-\hat{\vc e}_o+\lambda\,\hat{\vc e}_c|},\qquad
+\lambda=\clamp\!\left(\frac{d_1-d_\mathrm{edge}}{d_1-d_0},\,0,\,1\right)
+\label{eq:retreat}
+\end{equation}
+とし、$(v_x,v_y)=v_r\,\vc u$、$\omega_z$ は式\eqref{eq:bearing}で相手を正面に保つ。
+縁から遠い（$d_\mathrm{edge}>d_1$）ときは真後ろへ、縁に近づくほど中央へ曲がる。
+$d_1=0.5$ m、$v_r=0.1$ m/s とし、$\rho\ge\rho_r=0.6$ m で止める。
+後退と横移動は視野外の移動なので、リング座標系の推定に式\eqref{eq:margin}の余裕を付けて使い、
+1回の後退で許す距離は $0.4$ m までとする。
+
+離れたら向きを相手に保ったまま復帰を待つ。相手が立ち上がったら（式\eqref{eq:fallen}の復帰条件）SEARCHへ戻り、
+autoの規定により合図を待たずに近づいてよい。
+待っている間も\S\ref{sec:keepalive}の小移動を続ける。
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[>=Stealth,font=\small,scale=1.1]
+ \draw[fill=gray!25] (0,0) circle (0.25); \node[below=3pt] at (0,-0.25) {自機};
+ \fill (2.2,0.6) circle (0.09); \node[right] at (2.3,0.6) {相手（転倒）};
+ \draw[->] (0,0) -- (2.2,0.6); \node[above,font=\footnotesize] at (1.1,0.35) {$\hat{\vc e}_o$};
+ \draw[->,gray] (0,0) -- (-1.0,1.6); \node[above,font=\footnotesize] at (-1.0,1.65) {$\lambda\hat{\vc e}_c$（中央へ）};
+ \draw[->,thick] (0,0) -- (-1.9,0.8); \node[left,font=\footnotesize] at (-1.95,0.8) {$\vc u$};
+ \draw[dashed] (-2.5,-1.0) -- (-1.2,-1.0) node[right,font=\footnotesize] {縁（$d_\mathrm{edge}$ 小）};
+\end{tikzpicture}
+\caption{離れる向きの合成。相手の反対向きと中央向きを $\lambda$ で混ぜ、縁に近いほど中央へ曲げる。}
+\end{figure}
+
+\subsection{EDGE：縁から戻る}
+
+リング座標系の $d_\mathrm{edge}$、または前方の $d_\mathrm{cliff}$ が $d_\mathrm{margin}$ を割ったら、他の状態に優先して中央へ戻る。
+歩行は全方向なので向きを変えずに戻れる。
+\begin{equation}
+(v_x,v_y)=v_e\,\hat{\vc e}_c,\qquad \omega_z=\text{相手が見えていれば式\eqref{eq:bearing}、いなければ}\ 0
+\end{equation}
+$v_e=0.1$ m/s とし、$d_\mathrm{edge}>d_1$ になるまで続ける。
+縁の余裕 $d_\mathrm{margin}$ は式\eqref{eq:margin}で歩行距離とともに増えるので、オドメトリが古いほど早めに戻ることになる。
+前方に切れ目が見えたときは、その観測でリング座標系の位置を補正し、$s$ を零に戻す（\S\ref{sec:edge}）。
+
+\subsection{歩行指令の合成と縁の事前確認}
+
+状態が決めた指令 $(v_x,v_y,\omega_z)$ は、出す前に一つだけ共通の検査を通す。
+先読み時間 $T_h=1$ s 後の予測位置
+\begin{equation}
+\vc r^+=\vc r+\mat R_z(\psi)\begin{pmatrix}v_x\\ v_y\end{pmatrix}T_h
+\end{equation}
+が余裕を除いた八角形の内側になければ、$(v_x,v_y)$ を内側に収まるまで一様に縮める（$\omega_z$ は触らない）。
+これで、どの状態の指令も縁へ向かう成分だけが削られる。
+検知の遅れ（約70 ms）と歩行の遅れ（1歩、0.4 s）を合わせて0.5 s程度の遅れがあるので、$T_h$ はそれより長く取る。
+
+\subsection{止まらないための小移動}\label{sec:keepalive}
+
+規則10.3(d)により、3秒以上の停止と10秒以上の無移動は避けなければならない。
+行動層は次を全状態（WAITとSELF\_DOWNを除く）に重ねる。
+\begin{itemize}
+\item 歩行指令が零でも歩行エンジンを足踏み（STEP、$\vc v=0$）のままにし、停止状態を作らない
+\item 最後に前後左右へ移動してから $T_\mathrm{ka}=6$ s 経ったら、$0.05$ m の横移動を1回入れる。向きは左右交互、ただし縁に近い側へは出さない
+\item 技の再生中はこのカウンタを止めない。技が3秒を超えるなら技側に足踏みを入れる
+\end{itemize}
+$T_\mathrm{ka}$ を10 sより十分短くしてあるのは、歩行の遅れと横移動の所要時間を見込むためである。
+
+\section{数値のまとめ}\label{sec:params}
+
+\begin{center}\small
+\begin{tabular}{p{0.22\linewidth}p{0.14\linewidth}p{0.54\linewidth}}
+\toprule
+名前 & 初期値 & 根拠・決め方 \\
+\midrule
+$\rho_s$ & 0.25 m & 技の間合い。腕の届く距離から数cm引く。技ごとに変えてよい \\
+$\epsilon_\rho$ & 0.03 m & 到達判定の幅 \\
+$\beta_\mathrm{in}$ / $\beta_\mathrm{out}$ & 8$^\circ$ / 15$^\circ$ & 前進を許す方位のヒステリシス \\
+$\beta_\mathrm{fov}$ & 43.5$^\circ$ & 深度の水平視野の半角。これを超えたら見えない \\
+$k_\beta$ & 1.5 s$^{-1}$ & 方位サーボ。$\omega_{\max}$ で飽和 \\
+$k_v$ & 0.8 s$^{-1}$ & 減速開始距離0.19 mが停止距離0.1 mより長い \\
+$v_{\max}$, $\omega_{\max}$ & 0.15 m/s, 0.8 rad/s & 歩行ノートの初期値 \\
+$\omega_\mathrm{search}$ & 0.6 rad/s & 1周10.5 s \\
+$\rho_r$, $v_r$ & 0.6 m, 0.1 m/s & 離れる距離と速さ。規則は距離を数値で規定していない \\
+$T_\mathrm{lost}$ & 0.5 s & 検知15 Hzで7フレーム分 \\
+$T_\mathrm{close}$ & 2 s & 近距離死角での保持時間 \\
+$\kappa_d$ / $\kappa_u$ & 0.5 / 0.75 & 転倒判定の高さ比 \\
+$T_\mathrm{down}$ / $T_\mathrm{up}$ & 0.7 s / 0.5 s & 転倒判定の継続時間 \\
+$d_0$, $\kappa_s$ & 0.25 m, 0.15 & 縁の余裕とオドメトリ劣化率。滑りの実測で決める \\
+$d_1$ & 0.5 m & 中央へ寄せ始める距離、EDGEの解除距離 \\
+$T_h$ & 1 s & 縁の事前確認の先読み \\
+$T_\mathrm{dwell}$ & 0.5 s & 状態の最短滞在 \\
+$T_\mathrm{ka}$ & 6 s & 無移動10 sに対する小移動の周期 \\
+判断周期 & 20 Hz & \code{/cmd\_walk} と同じ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[>=Stealth,font=\small,scale=1.6]
+ % octagon: half width 1.8, corner cut 0.9
+ \draw[thick] (0.9,-1.8) -- (1.8,-0.9) -- (1.8,0.9) -- (0.9,1.8) -- (-0.9,1.8) -- (-1.8,0.9) -- (-1.8,-0.9) -- (-0.9,-1.8) -- cycle;
+ \draw[dashed] (0.75,-1.5) -- (1.5,-0.75) -- (1.5,0.75) -- (0.75,1.5) -- (-0.75,1.5) -- (-1.5,0.75) -- (-1.5,-0.75) -- (-0.75,-1.5) -- cycle;
+ \node[font=\footnotesize] at (0,1.65) {余裕 $d_\mathrm{margin}$};
+ \draw[<->] (-1.8,-2.0) -- (1.8,-2.0) node[midway,below,font=\footnotesize] {3.6 m};
+ \draw[<->] (0.9,2.0) -- (1.8,2.0) node[midway,above,font=\footnotesize] {0.9 m};
+ % robot at red corner (left), opponent
+ \coordinate (rob) at (-1.2,-0.9);
+ \coordinate (opp) at (0.9,0.5);
+ \fill[gray!50] (rob) circle (0.1); \node[below left,font=\footnotesize] at (rob) {自機};
+ \fill (opp) circle (0.08); \node[above right,font=\footnotesize] at (opp) {相手};
+ % fov cone
+ \draw[gray] (rob) -- ++(33.7-43.5:2.6);
+ \draw[gray] (rob) -- ++(33.7+43.5:2.6);
+ \node[gray,font=\footnotesize] at (-0.2,0.9) {視野 $87^\circ$};
+ % goal point
+ \draw[dashed] (rob) -- (opp);
+ \coordinate (goal) at ($(opp)!0.25cm!(rob)$);
+ \draw[fill=white] (goal) circle (0.06); \node[below,font=\footnotesize] at ($(goal)+(0.05,-0.05)$) {$\vc g$（$\rho_s$ 手前）};
+ \node[font=\footnotesize] at (0,-0.5) {$\{R\}$};
+ \draw[->] (0,-0.2) -- (0.4,-0.2) node[right,font=\footnotesize] {$x_r$};
+ \draw[->] (0,-0.2) -- (0,0.2) node[above,font=\footnotesize] {$y_r$};
+\end{tikzpicture}
+\caption{リング座標系での配置。自機は自陣側の角付近から相手を視野に入れ、相手の $\rho_s$ 手前の点 $\vc g$ へ直線で向かう。破線の内側の八角形が縁の余裕である。}
+\end{figure}
+
+\section{ROS 2 での配線}\label{sec:ros}
+
+\subsection{トピック}
+
+\begin{center}\footnotesize
+\begin{tabular}{p{0.2\linewidth}p{0.28\linewidth}p{0.42\linewidth}}
+\toprule
+トピック & 型 & 備考 \\
+\midrule
+\code{/opponent} & \code{PointStamped}（現行） & 位置だけ。転倒判定に上端高さが要るので、下の \code{Opponent} 型へ昇格させる \\
+\code{/opponent} & \code{Opponent}（自作） & \code{header}, \code{position}（機体座標系）, \code{top\_height}, \code{width}, \code{valid} \\
+\code{/ring\_edge} & \code{Float32MultiArray} & 視野内の方位刻みごとの $d_\mathrm{cliff}(\theta)$。不明は NaN。検知ノードが床平面から出す \\
+\code{/odom} & \code{nav\_msgs/Odometry} & 歩行ノードの脚オドメトリ＋IMUヨー。歩の境界ごとに更新 \\
+\code{/motion/state} & \code{String} & 歩行の状態と技再生中 \\
+\code{/match/cmd} & \code{String} & \code{teleop} から「start / hold / stop」。規則5.1.2の無線始動・停止 \\
+\code{/cmd\_walk} & \code{Twist} & 出力。20 Hz \\
+\code{/cmd\_motion} & \code{String} & 出力。技名 \\
+\code{/behavior/state} & \code{String} & 出力。状態と理由 \\
+\code{/behavior/debug} & \code{Float64MultiArray} & $\rho,\beta,z_\mathrm{top},d_\mathrm{edge},d_\mathrm{cliff}(0),\lambda$、各タイマ \\
+\bottomrule
+\end{tabular}
+\end{center}
+\code{/ring\_edge} と \code{/odom} は新設で、それぞれ検知ノードと歩行ノードに追加する。
+
+\code{behavior} と \code{teleop} が両方 \code{/cmd\_walk} を出す衝突は、当面「\code{/match/cmd} が start のときだけ behavior が出す」で回避する。
+手動操作は start 前と hold 中に限る。
+
+\subsection{ノードの中身}
+
+\begin{itemize}
+\item 20 Hzのタイマで1周期を回す。コールバックは最新値を置くだけにする（歩行ノードと同じ流儀）
+\item 1周期の順序：観測の整形（追跡、転倒判定、位置とオドメトリ）$\to$ 割り込み状態の判定（WAIT, SELF\_DOWN, EDGE）$\to$ 通常状態の選択 $\to$ 指令の計算 $\to$ 縁の事前確認 $\to$ 小移動の重ね合わせ $\to$ publish
+\item 状態とその理由（どの条件で入ったか）を \code{/behavior/state} に文字列で出す。試合後の bag で「なぜそう動いたか」を追えるようにするため
+\item パラメータは \code{behavior.yaml} に置き、\code{ros2 param set} で実行時に変えられるようにする
+\item 行動の本体はROSに依存しない \code{behavior\_core} に置き、観測列を与えれば決定的に動くようにする。単体テストは観測列を作って状態遷移を検査する
+\end{itemize}
+
+\section{検証の順番}\label{sec:verify}
+
+実機の前に、段ボール箱を相手に見立てたテストで一つずつ確かめる。各段で \code{/behavior/debug} を bag に残す。
+\begin{enumerate}
+\item 静止した箱に対する $\rho,\beta$ の精度。距離0.3〜2.5 m、方位 $\pm40^\circ$ の格子で真値と比べる。近距離の死角 $\rho_\mathrm{blind}$ をここで測る
+\item 箱を視野外に置いてSEARCH。旋回で見つけて $|\beta|<\beta_\mathrm{in}$ で止まること、回る向きが最後の方位側であること
+\item APPROACHの停止距離。$\rho_s$ に対して実際に止まった距離の分布を取り、$k_v$ と $\epsilon_\rho$ を詰める
+\item 箱を横倒しにして転倒判定。$T_\mathrm{down}$ 内に判定し、RETREATで $\rho_r$ まで離れること。箱を立て直したら復帰すること
+\item 縁。低い台（数cm）の上で、視野内の切れ目 $d_\mathrm{cliff}$ が台の縁と合うこと。次にオドメトリだけでEDGEに入ること。転落防止に紐を付ける
+\item 小移動。SEARCHとRETREATの待ちで、無移動が $T_\mathrm{ka}$ を超えないことをログで確かめる
+\item 通しの模擬試合。人が箱を動かし、「はじめ」「待て」「止め」を入れて全状態を通す
+\end{enumerate}
+1〜4は平らな床でできる。5だけ段差が要る。
+
+\section{未確定・要確認}
+
+\begin{center}\small
+\begin{tabular}{p{0.29\linewidth}p{0.35\linewidth}p{0.24\linewidth}}
+\toprule
+項目 & 効く箇所 & 手段 \\
+\midrule
+リングの段差の高さ & 切れ目の検出が成立するか & 会場かCリングで見る \\
+開始位置と向き & リング座標系の初期化 & 規則の赤青コーナーの運用を確認 \\
+深度の最短距離 $\rho_\mathrm{blind}$ & 近距離死角の扱い、$\rho_s$ との関係 & 解像度設定ごとに実測 \\
+相手の立位高さの範囲 & $\kappa_d,\kappa_u$ & 出場機の傾向。開始直後の計測で吸収 \\
+検知の遅れと処理時間 & $T_h$、$T_\mathrm{lost}$ & Pi 5上で実測（未実測） \\
+脚オドメトリの滑り & $\kappa_s$ & 直進1 mと旋回1周の誤差を測る \\
+技の間合い $\rho_s$ と再生時間 & ENGAGEの条件、3秒規定 & 技ができてから \\
+「待て」中の扱い & WAITで足踏みを止めてよいか & レフリーに確認 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{thebibliography}{9}
+\bibitem{rules44} 一般社団法人二足歩行ロボット協会, 『第44回ROBO-ONE 競技規則』, 2025年6月11日作成.\newline
+\url{https://www.robo-one.com/upload/roboones/81_2a59f06b4f2dea6dc18cb81df62a0790original.pdf}
+\end{thebibliography}
+
+\end{document}
