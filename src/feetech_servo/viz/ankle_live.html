@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>足首パラレルリンク ライブ表示</title>
+<style>
+:root{
+  color-scheme: light dark;
+  --page:#EDF0F2; --panel:#F8FAFB; --ink:#101619; --muted:#5A6B75; --faint:#8496A0;
+  --rule:#C4CED4; --chain1:#2F6FA8; --chain2:#A85A2E; --accent:#0C7C78;
+  --sole:#3A4A52; --bad:#B3402F;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --page:#0E1417; --panel:#161F23; --ink:#E4ECF0; --muted:#8FA3AD; --faint:#6D8290;
+    --rule:#28353B; --chain1:#7BB0DE; --chain2:#D3946A; --accent:#41BDB5;
+    --sole:#9DB3BE; --bad:#E0705A;
+  }
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:var(--page); color:var(--ink);
+  font-family:"Noto Sans JP",system-ui,sans-serif; font-size:14px;
+  display:grid; grid-template-columns:1fr 320px; height:100vh; overflow:hidden;
+}
+#view{position:relative; min-width:0}
+canvas{display:block; width:100%; height:100%; cursor:grab; touch-action:none}
+canvas:active{cursor:grabbing}
+#hint{position:absolute; left:16px; bottom:14px; font-size:12px; color:var(--faint)}
+aside{
+  background:var(--panel); border-left:1px solid var(--rule);
+  padding:20px 20px 24px; overflow-y:auto; display:flex; flex-direction:column; gap:18px;
+}
+h1{font-size:16px; margin:0; letter-spacing:-.01em}
+.sub{font-size:12px; color:var(--muted); margin:6px 0 0; line-height:1.7}
+.badge{display:inline-block; font-family:ui-monospace,monospace; font-size:11px;
+  padding:2px 8px; border-radius:99px; border:1px solid currentColor}
+.ok{color:var(--accent)} .ng{color:var(--bad)}
+section h2{font-size:11px; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--faint); margin:0 0 8px; font-weight:600}
+table{width:100%; border-collapse:collapse; font-family:ui-monospace,monospace; font-size:12.5px}
+td{padding:3px 0; font-variant-numeric:tabular-nums}
+td:first-child{color:var(--muted); font-family:"Noto Sans JP",sans-serif}
+td.v{text-align:right; color:var(--ink)}
+td.c1{color:var(--chain1)} td.c2{color:var(--chain2)}
+.note{font-size:11.5px; color:var(--muted); line-height:1.65; border-top:1px solid var(--rule);
+  padding-top:14px}
+@media (max-width:820px){ body{grid-template-columns:1fr; grid-template-rows:1fr auto} aside{border-left:none; border-top:1px solid var(--rule)} }
+</style>
+</head>
+<body>
+<div id="view"><canvas id="cv"></canvas>
+  <div id="hint">ドラッグで回転・ホイールで拡大縮小・ダブルクリックで正面へ</div>
+</div>
+<aside>
+  <div>
+    <h1>足首パラレルリンク ライブ表示</h1>
+    <p class="sub">実機のサーボ角を読み取り、足裏と 2 本のリンクの姿勢をそのまま描く。
+      表示している点はすべて C++ の <code>ankle_parallel.hpp</code> が計算したもの。</p>
+    <p class="sub" id="state"><span class="badge ng">接続待ち</span></p>
+  </div>
+
+  <section>
+    <h2>関節角 [deg]</h2>
+    <table id="joints"><tbody>
+      <tr><td>股ピッチ</td><td class="v" id="t0">—</td></tr>
+      <tr><td>股ロール</td><td class="v" id="t1">—</td></tr>
+      <tr><td>股ヨー</td><td class="v" id="t2">—</td></tr>
+      <tr><td>膝</td><td class="v" id="t3">—</td></tr>
+      <tr><td>足首 θ5 ロール</td><td class="v" id="t4">—</td></tr>
+      <tr><td>足首 θ6 ピッチ</td><td class="v" id="t5">—</td></tr>
+    </tbody></table>
+  </section>
+
+  <section>
+    <h2>クランク角 [deg]</h2>
+    <table><tbody>
+      <tr><td>鎖 1（下・短ロッド）</td><td class="v c1" id="q0">—</td></tr>
+      <tr><td>鎖 2（上・長ロッド）</td><td class="v c2" id="q1">—</td></tr>
+    </tbody></table>
+  </section>
+
+  <section>
+    <h2>実機</h2>
+    <table><tbody>
+      <tr><td>電圧</td><td class="v" id="volt">—</td></tr>
+      <tr><td>フレーム</td><td class="v" id="frame">—</td></tr>
+      <tr><td>受信</td><td class="v" id="fps">—</td></tr>
+    </tbody></table>
+  </section>
+
+  <p class="note">初期位置（全関節 0）で脚が垂直に伸びる。原点は servo_home.yaml の
+    T ポーズなので、サーボ実測がそのまま 0 deg になる姿勢がこの図の直立状態にあたる。
+    トルクは入れていないので、手で関節を動かせばそのまま追随する。</p>
+</aside>
+
+<script>
+(() => {
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+const css = getComputedStyle(document.documentElement);
+const C = n => css.getPropertyValue(n).trim();
+
+// ---- 状態（C++ から来る点をそのまま持つ。ここで幾何計算はしない）----
+let S = null, lastFrame = -1, recv = 0, fps = 0;
+setInterval(() => { fps = recv; recv = 0; }, 1000);
+
+// ---- カメラ（方位角・仰角・拡大率のみ）----
+const cam = { yaw: -0.62, pitch: 0.30, scale: 1.9 };
+let drag = null;
+cv.addEventListener('pointerdown', e => { drag = {x:e.clientX, y:e.clientY}; cv.setPointerCapture(e.pointerId); });
+cv.addEventListener('pointermove', e => {
+  if (!drag) return;
+  cam.yaw -= (e.clientX - drag.x) * 0.008;
+  cam.pitch = Math.max(-1.4, Math.min(1.4, cam.pitch + (e.clientY - drag.y) * 0.008));
+  drag = {x:e.clientX, y:e.clientY};
+});
+addEventListener('pointerup', () => { drag = null; });
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  cam.scale = Math.max(0.6, Math.min(6, cam.scale * (e.deltaY > 0 ? 0.92 : 1.087)));
+}, {passive:false});
+cv.addEventListener('dblclick', () => { cam.yaw = -Math.PI/2; cam.pitch = 0; });
+
+// Σ_s (x 前 / y 左 / z 上) → 画面。原点 o5 は画面のやや上に置き、脚が下に伸びる形にする。
+function project(p){
+  const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw);
+  const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+  const x =  p[0]*cy + p[1]*sy;              // 視線まわりに回す
+  const d = -p[0]*sy + p[1]*cy;
+  const u =  p[2]*cp - d*sp;                 // 仰角
+  const s = cam.scale * dpr;
+  return [cx + x*s, cyPix - u*s];
+}
+let dpr = 1, cx = 0, cyPix = 0;
+function resize(){
+  dpr = Math.min(2, devicePixelRatio || 1);
+  cv.width = cv.clientWidth * dpr; cv.height = cv.clientHeight * dpr;
+  cx = cv.width * 0.5; cyPix = cv.height * 0.34;
+}
+addEventListener('resize', resize);
+
+function line(a, b, color, w){
+  const A = project(a), B = project(b);
+  ctx.strokeStyle = color; ctx.lineWidth = w * dpr; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(A[0], A[1]); ctx.lineTo(B[0], B[1]); ctx.stroke();
+}
+function dot(p, color, r){
+  const P = project(p);
+  ctx.fillStyle = color; ctx.beginPath();
+  ctx.arc(P[0], P[1], r * dpr, 0, 6.284); ctx.fill();
+}
+function label(p, text, color, dx, dy){
+  const P = project(p);
+  ctx.fillStyle = color; ctx.font = `${11.5*dpr}px ui-monospace, monospace`;
+  ctx.fillText(text, P[0] + (dx||8)*dpr, P[1] + (dy||0)*dpr);
+}
+
+function draw(){
+  resizeIfNeeded();
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  const ink = C('--ink'), rule = C('--rule'), faint = C('--faint');
+  const c1 = C('--chain1'), c2 = C('--chain2'), sole = C('--sole'), acc = C('--accent');
+
+  // 基準グリッド（足裏が水平のときの高さ）
+  ctx.globalAlpha = .30;
+  for (let i = -3; i <= 3; ++i){
+    line([i*40, -120, -42], [i*40, 120, -42], rule, 1);
+    line([-120, i*40, -42], [120, i*40, -42], rule, 1);
+  }
+  ctx.globalAlpha = 1;
+
+  if (!S || !S.pts){
+    ctx.fillStyle = faint; ctx.font = `${13*dpr}px sans-serif`; ctx.textAlign = 'center';
+    ctx.fillText('leg_live_test からのデータ待ち', cx, cv.height*0.5);
+    ctx.textAlign = 'left';
+    return;
+  }
+  const P = S.pts;
+
+  // 下腿（o5 から上へ）。初期位置ではこれが画面上まっすぐ縦になる
+  ctx.globalAlpha = .35;
+  line([0,0,0], [0,0,150], ink, 7);
+  ctx.globalAlpha = 1;
+  label([0,0,150], '下腿', faint, 10, -4);
+
+  // 足裏
+  const s4 = P.sole;
+  ctx.beginPath();
+  s4.forEach((p, i) => { const q = project(p); i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); });
+  ctx.closePath();
+  ctx.fillStyle = sole; ctx.globalAlpha = .22; ctx.fill();
+  ctx.globalAlpha = 1; ctx.strokeStyle = sole; ctx.lineWidth = 2*dpr; ctx.stroke();
+
+  // 足首 2 軸
+  line(P.o5, P.o6, ink, 3);
+  dot(P.o5, ink, 4.5); dot(P.o6, ink, 4.5);
+  label(P.o5, 'o5 ロール', ink, 9, -5);
+  label(P.o6, 'o6 ピッチ', ink, 9, 13);
+
+  // 2 本の鎖：クランク（O→K）とロッド（K→B）
+  P.chain.forEach((ch, i) => {
+    const col = i === 0 ? c1 : c2;
+    line(ch.O, ch.K, col, 5);        // クランク
+    line(ch.K, ch.B, col, 2.6);      // ロッド
+    dot(ch.O, col, 4); dot(ch.K, col, 3.5); dot(ch.B, col, 4);
+    label(ch.O, i === 0 ? '鎖1' : '鎖2', col, 9, -4);
+    line(ch.B, P.o6, col, 1);        // 足板側の取り付け（参考線）
+  });
+
+  // 状態が異常なら赤で囲う
+  if (!S.ok || S.status !== 0){
+    ctx.strokeStyle = C('--bad'); ctx.lineWidth = 3*dpr;
+    ctx.strokeRect(6*dpr, 6*dpr, cv.width-12*dpr, cv.height-12*dpr);
+  }
+  ctx.fillStyle = acc; ctx.font = `${11.5*dpr}px ui-monospace, monospace`;
+  ctx.fillText('Σs  x 前 / y 左 / z 上   [mm]', 14*dpr, cv.height - 14*dpr);
+}
+let lastW = 0, lastH = 0;
+function resizeIfNeeded(){
+  if (cv.clientWidth !== lastW || cv.clientHeight !== lastH){
+    lastW = cv.clientWidth; lastH = cv.clientHeight; resize();
+  }
+}
+
+// ---- 表示更新 ----
+const $ = id => document.getElementById(id);
+function paintPanel(){
+  if (!S) return;
+  for (let i = 0; i < 6; ++i) $('t'+i).textContent = S.theta_deg[i].toFixed(2);
+  $('q0').textContent = S.crank_deg[0].toFixed(2);
+  $('q1').textContent = S.crank_deg[1].toFixed(2);
+  $('volt').textContent = S.volt.toFixed(2) + ' V';
+  $('frame').textContent = S.frame;
+  $('fps').textContent = fps + ' /s';
+  const good = S.ok && S.status === 0;
+  const lowV = S.volt < 9.0;
+  $('state').innerHTML = good
+    ? '<span class="badge ok">読み取り中</span>'
+    : `<span class="badge ng">${lowV ? '電圧が低い（12V を入れる）' : '一部の軸が応答なし'}</span>`;
+}
+
+const es = new EventSource('/stream');
+es.onmessage = ev => {
+  try { S = JSON.parse(ev.data); } catch (e) { return; }
+  if (S.frame !== lastFrame){ lastFrame = S.frame; ++recv; }
+  paintPanel();
+};
+es.onerror = () => { $('state').innerHTML = '<span class="badge ng">切断</span>'; };
+
+resize();
+(function loop(){ draw(); requestAnimationFrame(loop); })();
+})();
+</script>
+</body>
+</html>

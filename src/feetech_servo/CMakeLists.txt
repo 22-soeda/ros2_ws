@@ -11,6 +11,8 @@ find_package(sensor_msgs REQUIRED)
 find_package(Threads REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(yaml-cpp REQUIRED)
+# 実機のサーボ角から関節角を出す leg_live_test で使う（ヘッダオンリ）
+find_package(roboone_kinematics REQUIRED)
 
 # ---------------------------------------------------------------------------
 # 同梱した Feetech 公式 SCServo SDK (静的ライブラリ)
@@ -68,12 +70,26 @@ ament_target_dependencies(feetech_goto_test ament_index_cpp)
 add_executable(feetech_shell test/feetech_shell.cpp)
 target_link_libraries(feetech_shell feetech_servo scservo)
 
+# ---------------------------------------------------------------------------
+# 実機のサーボ角を読み取り、脚の姿勢を出す読み取り専用ツール。
+#   一切書き込まないので、脱力したまま手で関節を動かして確かめられる。
+#   roboone_kinematics の leg_servo.hpp（膝 4 節リンク + 足首パラレルリンク）を通す。
+# ---------------------------------------------------------------------------
+add_executable(leg_live_test test/leg_live_test.cpp)
+target_link_libraries(leg_live_test feetech_servo scservo ${YAML_CPP_LIBRARIES})
+ament_target_dependencies(leg_live_test roboone_kinematics)
+
 # set_limits は EEPROM アドレス定義と YAML パーサ、既定設定の場所解決に ament_index を使う。
 add_executable(feetech_set_limits test/feetech_set_limits.cpp)
 target_link_libraries(feetech_set_limits feetech_servo scservo yaml-cpp::yaml-cpp)
 ament_target_dependencies(feetech_set_limits ament_index_cpp)
 
 # calibrate_home も軸一覧(YAML)と TORQUE_ENABLE のアドレス定義を使う。
+# 膝 4 節リンクの動作確認用。角度を読むだけ（書き込みは起動時のトルク OFF 1 回のみ）
+add_executable(feetech_knee_stream test/feetech_knee_stream.cpp)
+target_link_libraries(feetech_knee_stream feetech_servo)
+target_compile_options(feetech_knee_stream PRIVATE -O2)
+
 add_executable(feetech_calibrate_home test/feetech_calibrate_home.cpp)
 target_link_libraries(feetech_calibrate_home feetech_servo scservo yaml-cpp::yaml-cpp)
 ament_target_dependencies(feetech_calibrate_home ament_index_cpp)
@@ -91,10 +107,10 @@ install(TARGETS feetech_servo scservo
   INCLUDES DESTINATION include)
 
 install(TARGETS feetech_demo_node feetech_scan_test feetech_goto_test feetech_shell
-  feetech_set_limits feetech_calibrate_home
+  feetech_set_limits feetech_calibrate_home feetech_knee_stream leg_live_test
   DESTINATION lib/${PROJECT_NAME})
 
-install(DIRECTORY launch config
+install(DIRECTORY launch config viz
   DESTINATION share/${PROJECT_NAME})
 
 ament_export_targets(export_feetech_servo HAS_LIBRARY_TARGET)

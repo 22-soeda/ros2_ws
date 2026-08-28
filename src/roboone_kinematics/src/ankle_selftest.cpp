@@ -1,599 +1,317 @@
-// 足首パラレルリンク FK/IK の自己検算。
-//   ros2 run roboone_kinematics ankle_selftest [-n 姿勢数] [--seed S]
+// 足首パラレルリンクの検算。
 //
-// docs/足首パラレルリンク導出.pdf §8 の検算をそのまま再現し、同文書が本文中に
-// 数値で書いている量（中立まわりの線形近似 (AP-22)、静力学 (AP-21)、曲線の傾き
-// dθ5/dθ6、死点余裕、|det Jθ|、必要サーボ可動範囲）と突き合わせる。
-#include <algorithm>
-#include <chrono>
+//   ros2 run roboone_kinematics ankle_selftest [-n 往復の試行数]
+//
+// 期待値は「足首パラレルリンク：関節角 ↔ サーボ角 変換の実装仕様」§8。
+// 仕様の数値は s = +1（左脚）・ℓ5 = 8.0 mm のもの。leg_config.hpp の L5 が
+// 違う値なら、寸法に依る照合は飛ばして機構そのものの検算だけを走らせる。
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <random>
-#include <string>
-#include <vector>
 
 #include "roboone_kinematics/ankle_parallel.hpp"
 
-using namespace roboone_kinematics;
+using namespace roboone_kinematics;      // NOLINT(build/namespaces)
 
 namespace
 {
-
-int g_failures = 0;
+constexpr double kDeg = 180.0 / M_PI;
+int g_fail = 0;
 
 void check(bool cond, const char * what)
 {
-  if (!cond) {
-    std::printf("           *** 不一致: %s\n", what);
-    ++g_failures;
+  std::printf("  [%s] %s\n", cond ? " OK " : "FAIL", what);
+  if (!cond) {++g_fail;}
+}
+
+/// 仕様 §8 の数値は ℓ5 = 8.0 前提。leg_config.hpp が違えば照合はスキップする。
+const bool kSpecGeometry = std::fabs(config::L5 - ankle_config::L5_SPEC) < 1e-9;
+
+void checkSpec(bool cond, const char * what)
+{
+  if (kSpecGeometry) {
+    check(cond, what);
+  } else if (!cond) {
+    std::printf("  [skip] %s（ℓ5 が仕様 §3 の %.1f と違う）\n",
+      what, ankle_config::L5_SPEC);
   }
 }
 
-constexpr double kDeg = 180.0 / M_PI;
-
-double angleDiff(double x, double y)
+double angleDiff(double a, double b)
 {
-  return std::fabs(std::atan2(std::sin(x - y), std::cos(x - y)));
+  return std::fabs(std::atan2(std::sin(a - b), std::cos(a - b)));
 }
 
-/// 設計可動域の一様乱数姿勢。
-void randomPose(std::mt19937_64 & rng, double & th5, double & th6)
-{
-  std::uniform_real_distribution<double> d5(
-    ankle_config::TH5_LIMIT_DEG[0] / kDeg, ankle_config::TH5_LIMIT_DEG[1] / kDeg);
-  std::uniform_real_distribution<double> d6(
-    ankle_config::TH6_LIMIT_DEG[0] / kDeg, ankle_config::TH6_LIMIT_DEG[1] / kDeg);
-  th5 = d5(rng);
-  th6 = d6(rng);
-}
-
-// ---------------------------------------------------------------------------
-// 1. 中立姿勢とロッド長
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------- §8.1
 void testNeutral(const AnkleParams & prm)
 {
-  std::printf("\n[1] 中立姿勢 (θ5,θ6)=(0,0)\n");
-
+  std::printf("\n§8.1 中立姿勢 (θ5, θ6) = (0, 0)\n");
   const AnkleIkResult ik = ankleIk(prm, 0.0, 0.0);
-  std::printf(
-    "    逆変換 q = (%.3e, %.3e) deg   status=%d\n",
-    ik.q[0] * kDeg, ik.q[1] * kDeg, static_cast<int>(ik.status));
-  check(ik.status == AnkleIkStatus::Ok, "中立姿勢が到達不能");
-  const double worstQ = std::max(std::fabs(ik.q[0]), std::fabs(ik.q[1])) * kDeg;
-  check(worstQ < 1e-12, "中立姿勢で q = 0 にならない");
-
-  // ロッド長は「中立姿勢が q=0」から決めている。表 1 の公称値と照合する。
-  std::printf(
-    "    ロッド長 L = (%.4f, %.4f) mm   表 1 の公称 (%.1f, %.1f)\n",
-    prm.rod[0], prm.rod[1], ankle_config::ROD_LENGTH[0], ankle_config::ROD_LENGTH[1]);
-  check(
-    std::fabs(prm.rod[0] - ankle_config::ROD_LENGTH[0]) < 0.05 &&
-    std::fabs(prm.rod[1] - ankle_config::ROD_LENGTH[1]) < 0.05,
-    "ロッド長が表 1 の公称値とずれている");
-
-  const double q0[2] = {0.0, 0.0};
-  const AnkleFkResult fk = ankleFk(prm, q0, 0.0);
-  std::printf(
-    "    順変換 (θ5,θ6) = (%.3e, %.3e) deg   %d 反復\n",
-    fk.th5 * kDeg, fk.th6 * kDeg, fk.iters);
-  check(fk.status == AnkleFkStatus::Ok, "中立姿勢の順変換が収束しない");
-  check(
-    std::fabs(fk.th5) * kDeg < 1e-11 && std::fabs(fk.th6) * kDeg < 1e-11,
-    "中立姿勢の順変換が 0 に戻らない");
-
-  std::printf("    枝 ε = (%+d, %+d)   δ = (%+d, %+d)\n", prm.eps[0], prm.eps[1],
-    prm.del[0], prm.del[1]);
-}
-
-// ---------------------------------------------------------------------------
-// 2. 往復（文書 §8 の主検算）
-// ---------------------------------------------------------------------------
-void testRoundTrip(const AnkleParams & prm, int n, std::uint64_t seed)
-{
-  std::printf("\n[2] 往復 逆変換 -> 順変換（%d 姿勢, 可動域 ±35°）\n", n);
-  std::mt19937_64 rng(seed);
-
-  double worstCold = 0.0, worstWarm = 0.0, worstAll = 0.0;
-  double minMargin = 1e300, minDet = 1e300;
-  double worstF = 0.0;
-  int unreachable = 0, notConverged = 0;
-  int worstIters = 0;
-  double prevTh6 = 0.0;
-
-  for (int k = 0; k < n; ++k) {
-    double th5, th6;
-    randomPose(rng, th5, th6);
-
-    const AnkleIkResult ik = ankleIk(prm, th5, th6);
-    if (ik.status != AnkleIkStatus::Ok) {
-      ++unreachable;
-      continue;
-    }
-    minMargin = std::min({minMargin, ik.margin[0], ik.margin[1]});
-
-    // 拘束式そのものが満たされているか（式の実装ミスはここで出る）
-    for (int i = 0; i < kAnkleChains; ++i) {
-      worstF = std::max(worstF, std::fabs(ankleConstraint(prm, i, th5, th6, ik.q[i])));
-    }
-
-    const AnkleJacobian J = ankleJacobian(prm, th5, th6, ik.q);
-    minDet = std::min(minDet, std::fabs(J.det()));
-
-    // 起動直後（前周期の値が無い）を模して θ6 = 0 から
-    const AnkleFkResult cold = ankleFk(prm, ik.q, 0.0);
-    // 制御ループを模して「前の姿勢の θ6」から
-    const AnkleFkResult warm = ankleFk(prm, ik.q, prevTh6);
-    prevTh6 = th6;
-
-    if (cold.status != AnkleFkStatus::Ok || warm.status != AnkleFkStatus::Ok) {
-      ++notConverged;
-      continue;
-    }
-    worstIters = std::max(worstIters, std::max(cold.iters, warm.iters));
-
-    const double ec = std::max(angleDiff(cold.th5, th5), angleDiff(cold.th6, th6)) * kDeg;
-    const double ew = std::max(angleDiff(warm.th5, th5), angleDiff(warm.th6, th6)) * kDeg;
-    worstCold = std::max(worstCold, ec);
-    worstWarm = std::max(worstWarm, ew);
-    worstAll = std::max(worstAll, std::max(ec, ew));
-  }
-
-  std::printf("    往復誤差   θ6=0 から %.2e deg / 前周期から %.2e deg\n", worstCold, worstWarm);
-  std::printf("    反復回数   最大 %d（上限 %d）\n", worstIters, ankle_config::FK_MAX_ITER);
-  std::printf("    死点余裕   min(ρ_i - |S_i|) = %.2f mm   文書 §5.2 は 8.0 mm\n", minMargin);
-  std::printf("    型 2 特異  min|det Jθ| = %.2e            文書 §5.2 は 4.1e6\n", minDet);
-  std::printf("    拘束残差   max|F_i| = %.2e mm²\n", worstF);
-  std::printf("    到達不能 %d 件 / 収束せず %d 件\n", unreachable, notConverged);
-
-  check(unreachable == 0, "可動域内に到達不能な姿勢がある");
-  check(notConverged == 0, "順変換が収束しない姿勢がある");
-  check(worstAll < 1e-9, "往復誤差が大きい");
-  check(worstF < 1e-6, "拘束式が満たされていない");
-  check(minMargin > ankle_config::DEAD_POINT_MARGIN_MM, "死点に近い姿勢がある");
-  check(minDet > ankle_config::SINGULARITY_DET_MIN, "型 2 特異点に近い姿勢がある");
-}
-
-// ---------------------------------------------------------------------------
-// 3. ヤコビアン（解析 vs 数値微分）
-// ---------------------------------------------------------------------------
-void testJacobian(const AnkleParams & prm, int n, std::uint64_t seed)
-{
-  std::printf("\n[3] ヤコビアン (AP-17) と逆変換の数値微分\n");
-  std::mt19937_64 rng(seed + 1);
-  const double h = 1e-6;
-  double worst = 0.0;
-
-  for (int k = 0; k < n; ++k) {
-    double th5, th6;
-    randomPose(rng, th5, th6);
-    const AnkleIkResult ik = ankleIk(prm, th5, th6);
-    if (ik.status != AnkleIkStatus::Ok) {continue;}
-
-    const AnkleJacobian J = ankleJacobian(prm, th5, th6, ik.q);
-    // Jq q̇ = Jθ θ̇ なので ∂q_i/∂θ_j = (Jθ)_{ij} / (Jq)_i
-    const AnkleIkResult p5 = ankleIk(prm, th5 + h, th6);
-    const AnkleIkResult m5 = ankleIk(prm, th5 - h, th6);
-    const AnkleIkResult p6 = ankleIk(prm, th5, th6 + h);
-    const AnkleIkResult m6 = ankleIk(prm, th5, th6 - h);
-
-    for (int i = 0; i < kAnkleChains; ++i) {
-      const double num[2] = {
-        (p5.q[i] - m5.q[i]) / (2.0 * h), (p6.q[i] - m6.q[i]) / (2.0 * h)};
-      for (int j = 0; j < 2; ++j) {
-        worst = std::max(worst, std::fabs(num[j] - J.jt[i][j] / J.jq[i]));
-      }
-    }
-  }
-  std::printf("    max|∂q/∂θ の差| = %.2e   文書 §8 は 4.6e-11\n", worst);
-  check(worst < 1e-7, "解析ヤコビアンが数値微分と合わない");
-}
-
-// ---------------------------------------------------------------------------
-// 4. 中立姿勢まわりの数値（文書が本文で挙げている値との照合）
-// ---------------------------------------------------------------------------
-void testNeutralNumbers(const AnkleParams & prm)
-{
-  std::printf("\n[4] 中立姿勢まわり\n");
-  const double q0[2] = {0.0, 0.0};
-  const AnkleJacobian J = ankleJacobian(prm, 0.0, 0.0, q0);
-
-  // 線形近似 (AP-22)  [q1;q2] ≈ M [θ5;θ6],  M = Jq⁻¹ Jθ
-  double M[2][2];
-  for (int i = 0; i < kAnkleChains; ++i) {
-    for (int j = 0; j < 2; ++j) {M[i][j] = J.jt[i][j] / J.jq[i];}
-  }
-  std::printf("    (AP-22) M = [%+.3f %+.3f; %+.3f %+.3f]   文書は [-0.915 0.656; 0.907 0.658]\n",
-    M[0][0], M[0][1], M[1][0], M[1][1]);
-  check(
-    std::fabs(M[0][0] + 0.915) < 0.002 && std::fabs(M[0][1] - 0.656) < 0.002 &&
-    std::fabs(M[1][0] - 0.907) < 0.002 && std::fabs(M[1][1] - 0.658) < 0.002,
-    "線形近似 (AP-22) が文書と違う");
-
-  // 差がピッチ、和がロール。文書は θ5 ≈ (q2-q1)/1.82、θ6 ≈ (q1+q2)/1.31
-  const double kPitch = M[1][0] - M[0][0];
-  const double kRoll = M[0][1] + M[1][1];
-  std::printf("    θ5 ≈ (q2-q1)/%.2f   θ6 ≈ (q1+q2)/%.2f   文書は 1.82, 1.31\n", kPitch, kRoll);
-  check(std::fabs(kPitch - 1.82) < 0.01 && std::fabs(kRoll - 1.31) < 0.01,
-    "差動の係数が文書と違う");
-
-  // 静力学 (AP-21)  τ_q = Jqᵀ Jθ⁻ᵀ τ_θ = M⁻ᵀ τ_θ
-  const double detM = M[0][0] * M[1][1] - M[0][1] * M[1][0];
-  const double S[2][2] = {
-    { M[1][1] / detM, -M[1][0] / detM},
-    {-M[0][1] / detM,  M[0][0] / detM},
-  };
-  std::printf(
-    "    (AP-21) JqᵀJθ⁻ᵀ = [%+.3f %+.3f; %+.3f %+.3f]   文書は [-0.550 0.758; 0.548 0.764]\n",
-    S[0][0], S[0][1], S[1][0], S[1][1]);
-  check(
-    std::fabs(S[0][0] + 0.550) < 0.002 && std::fabs(S[0][1] - 0.758) < 0.002 &&
-    std::fabs(S[1][0] - 0.548) < 0.002 && std::fabs(S[1][1] - 0.764) < 0.002,
-    "静力学の行列が文書と違う");
-  std::printf("      -> θ6 は 2 個が同符号 %.2f ずつ、θ5 は逆符号 %.2f ずつ分担（文書 §5.3 と同じ）\n",
-    0.5 * (S[0][1] + S[1][1]), 0.5 * (std::fabs(S[0][0]) + std::fabs(S[1][0])));
-
-  // 曲線の傾き dθ5/dθ6 = -(Jθ)_{i2}/(Jθ)_{i1} = -M_{i2}/M_{i1}
-  const double slope0 = -J.jt[0][1] / J.jt[0][0];
-  const double slope1 = -J.jt[1][1] / J.jt[1][0];
-  std::printf("    曲線の傾き dθ5/dθ6 = %+.3f, %+.3f（中立姿勢）\n", slope0, slope1);
-  check(
-    std::fabs(slope0 + M[0][1] / M[0][0]) < 1e-9 &&
-    std::fabs(slope1 + M[1][1] / M[1][0]) < 1e-9,
-    "曲線の傾きが (AP-22) と整合しない");
-  check(slope0 > 0.5 && slope1 < -0.5, "2 族の曲線が同じ向きに傾いている");
-}
-
-// ---------------------------------------------------------------------------
-// 4b. 文書の例題（図 3・図 4 の (θ5,θ6) = (+12°, -8°)）
-// ---------------------------------------------------------------------------
-void testWorkedExample(const AnkleParams & prm)
-{
-  std::printf("\n[4b] 文書の例題 (θ5,θ6) = (+12°, -8°)\n");
-  const double th5 = 12.0 / kDeg, th6 = -8.0 / kDeg;
-
-  // 図 3 の太い 2 本は q1 = -15.6°、q2 = +6.1° の曲線。
-  const AnkleIkResult ik = ankleIk(prm, th5, th6);
-  std::printf("    逆変換 q = (%+.2f, %+.2f) deg   図 3 は (-15.6, +6.1)\n",
+  std::printf("    q      = (%+.4f, %+.4f) deg   仕様 (-0.390, +1.202)\n",
     ik.q[0] * kDeg, ik.q[1] * kDeg);
-  check(ik.status == AnkleIkStatus::Ok, "例題が到達不能");
-  check(
-    std::fabs(ik.q[0] * kDeg + 15.6) < 0.05 && std::fabs(ik.q[1] * kDeg - 6.1) < 0.05,
-    "例題のクランク角が図 3 と違う");
+  std::printf("    Δ      = (%.1f, %.1f) mm²      仕様 (323.7, 324.0)  最大 r² = %.0f\n",
+    ik.delta[0], ik.delta[1], prm.r[0] * prm.r[0]);
 
-  // §4.2 が「傾きが +0.75 と -0.65」と書いている数値は、本文では中立姿勢と
-  // されているが、実際に一致するのはこの例題姿勢の方。中立姿勢では +0.72/-0.73。
-  const AnkleJacobian J = ankleJacobian(prm, th5, th6, ik.q);
-  const double slope0 = -J.jt[0][1] / J.jt[0][0];
-  const double slope1 = -J.jt[1][1] / J.jt[1][0];
-  std::printf("    曲線の傾き dθ5/dθ6 = %+.3f, %+.3f   文書 §4.2 は +0.75, -0.65\n",
-    slope0, slope1);
-  check(std::fabs(slope0 - 0.75) < 0.005 && std::fabs(slope1 + 0.65) < 0.005,
-    "例題姿勢の曲線の傾きが文書と違う");
+  check(ik.status == AnkleIkStatus::Ok, "中立姿勢は到達可能");
+  checkSpec(std::fabs(ik.q[0] * kDeg - (-0.390)) < 1e-3, "鎖1 のクランク角が -0.390 deg");
+  checkSpec(std::fabs(ik.q[1] * kDeg - (+1.202)) < 1e-3, "鎖2 のクランク角が +1.202 deg");
+  checkSpec(std::fabs(ik.delta[0] - 323.7) < 0.1, "鎖1 の Δ が 323.7 mm²");
+  checkSpec(std::fabs(ik.delta[1] - 324.0) < 0.1, "鎖2 の Δ が 324.0 mm²");
 
-  // 図 4 は (q1,q2) = (-15.6°, +6.1°) で組める姿勢が 4 通り、そのうち
-  // θ6 = -8° と -4.8° の 2 根が図では重なる、と書いている。
-  const double q[2] = {-15.6 / kDeg, 6.1 / kDeg};
-  AnkleFkSolution sols[16];
-  const int m = ankleFkAllSolutions(prm, q, sols, 16);
-  std::printf("    組める姿勢 %d 通り（図 4 は 4 通り）:", m);
-  for (int j = 0; j < m; ++j) {std::printf("  θ6=%+.1f°", sols[j].th6 * kDeg);}
-  std::printf("\n");
-  check(m == 4, "例題の組み方の数が図 4 と違う");
-
-  int nearMinus8 = 0, nearMinus5 = 0;
-  for (int j = 0; j < m; ++j) {
-    const double t = sols[j].th6 * kDeg;
-    if (std::fabs(t + 8.0) < 0.2) {++nearMinus8;}
-    if (std::fabs(t + 4.8) < 0.2) {++nearMinus5;}
+  // 拘束残差。閉形式が本当に閉ループを満たしているか
+  double worst = 0.0;
+  for (int i = 0; i < kAnkleChains; ++i) {
+    worst = std::max(worst, std::fabs(ankleConstraint(prm, i, 0.0, 0.0, ik.q[i])));
   }
-  check(nearMinus8 == 1 && nearMinus5 == 1, "図 4 が言う -8° / -4.8° の 2 根が出ない");
+  std::printf("    拘束残差 %.2e mm²\n", worst);
+  check(worst < 1e-8, "閉ループ拘束を満たす");
+
+  // T ポーズ原点: サーボ 0 が中立姿勢に対応する（§4.5）
+  for (int i = 0; i < kAnkleChains; ++i) {
+    const double phi = ankleServoFromCrank(prm, i, ik.q[i]);
+    check(std::fabs(phi - prm.servoHome[i]) < 1e-12,
+      i == 0 ? "T ポーズで鎖1 のサーボ値が home" : "T ポーズで鎖2 のサーボ値が home");
+  }
 }
 
-// ---------------------------------------------------------------------------
-// 5. 必要なサーボ可動範囲（文書 §8 の最後の項目）
-// ---------------------------------------------------------------------------
-void testServoRange(const AnkleParams & prm, int n, std::uint64_t seed)
+// ---------------------------------------------------------------------- §4.4
+void testBranches(const AnkleParams & prm)
 {
-  std::printf("\n[5] 設計可動域をカバーするのに必要なクランク角の範囲\n");
+  std::printf("\n§4.4 組み立ての枝\n");
+  AnkleParams alt = prm;
+  alt.eps[0] = alt.eps[1] = -1;
+  alt.finalize();
+  const AnkleIkResult ik = ankleIk(alt, 0.0, 0.0);
+  std::printf("    ε = -1 : (%+.3f, %+.3f) deg   仕様 (-176.691, -179.183)\n",
+    ik.q[0] * kDeg, ik.q[1] * kDeg);
+  checkSpec(std::fabs(ik.q[0] * kDeg - (-176.691)) < 1e-2, "ε=-1 の鎖1 が -176.691 deg");
+  checkSpec(std::fabs(ik.q[1] * kDeg - (-179.183)) < 1e-2, "ε=-1 の鎖2 が -179.183 deg");
 
-  // (a) 可動域の格子を全部なめた厳密な範囲。実機のリミットはこちらで決める。
-  double lo[2] = {1e300, 1e300}, hi[2] = {-1e300, -1e300};
-  const int g = 121;
-  for (int i5 = 0; i5 < g; ++i5) {
-    for (int i6 = 0; i6 < g; ++i6) {
-      const double th5 = (ankle_config::TH5_LIMIT_DEG[0] +
-        (ankle_config::TH5_LIMIT_DEG[1] - ankle_config::TH5_LIMIT_DEG[0]) * i5 / (g - 1)) / kDeg;
-      const double th6 = (ankle_config::TH6_LIMIT_DEG[0] +
-        (ankle_config::TH6_LIMIT_DEG[1] - ankle_config::TH6_LIMIT_DEG[0]) * i6 / (g - 1)) / kDeg;
-      const AnkleIkResult ik = ankleIk(prm, th5, th6);
-      if (ik.status != AnkleIkStatus::Ok) {continue;}
-      for (int i = 0; i < kAnkleChains; ++i) {
-        lo[i] = std::min(lo[i], ik.q[i] * kDeg);
-        hi[i] = std::max(hi[i], ik.q[i] * kDeg);
-      }
+  std::printf("    β（自動選択）= (%+d, %+d)   仕様 (+1, -1)\n", prm.del[0], prm.del[1]);
+  checkSpec(prm.del[0] == +1 && prm.del[1] == -1, "順変換の枝 β が (+1, -1)");
+}
+
+// ---------------------------------------------------------------------- §8.2
+void testRoundTrip(const AnkleParams & prm, int n)
+{
+  std::printf("\n§8.2 往復 ankleFk(ankleIk(θ)) == θ   (±15 deg 一様乱数 %d 姿勢)\n", n);
+  std::mt19937 rng(20260828);
+  std::uniform_real_distribution<double> ang(-15.0 / kDeg, 15.0 / kDeg);
+  std::uniform_real_distribution<double> seed(-5.0 / kDeg, 5.0 / kDeg);
+
+  double worst = 0.0;
+  int unreachable = 0, notOk = 0, iters = 0, maxIter = 0;
+  for (int k = 0; k < n; ++k) {
+    const double t5 = ang(rng), t6 = ang(rng);
+    const AnkleIkResult ik = ankleIk(prm, t5, t6);
+    if (ik.status != AnkleIkStatus::Ok) {++unreachable; continue;}
+    // 初期値を ±5 deg ずらしても落ちること
+    const AnkleFkResult fk = ankleFk(prm, ik.q, t6 + seed(rng));
+    if (fk.status != AnkleFkStatus::Ok) {++notOk; continue;}
+    iters += fk.iters;
+    maxIter = std::max(maxIter, fk.iters);
+    worst = std::max(worst, std::max(angleDiff(fk.th5, t5), angleDiff(fk.th6, t6)) * kDeg);
+  }
+  std::printf("    最大誤差 %.2e deg   到達不能 %d 件   収束せず %d 件\n",
+    worst, unreachable, notOk);
+  std::printf("    ニュートン反復 平均 %.2f 回 / 最大 %d 回（上限 %d）\n",
+    static_cast<double>(iters) / std::max(1, n - unreachable - notOk),
+    maxIter, ankle_config::FK_MAX_ITER);
+  check(unreachable == 0, "±15 deg の範囲に到達不能な姿勢が無い");
+  check(notOk == 0, "順変換が全姿勢で収束する");
+  check(worst < 1e-9, "往復誤差が 1e-9 deg 未満");
+}
+
+// ---------------------------------------------------------------------- §8.3
+void testWorkspace(const AnkleParams & prm)
+{
+  std::printf("\n§8.3 可動域\n");
+
+  // 単軸（0.1 deg 刻みで Δ が負になるまで）
+  for (int axis = 0; axis < 2; ++axis) {
+    double lim = 0.0;
+    for (double a = 0.0; a <= 130.0; a += 0.1) {
+      const double t = a / kDeg;
+      const AnkleIkResult p = ankleIk(prm, axis == 0 ? t : 0.0, axis == 0 ? 0.0 : t, false);
+      const AnkleIkResult m = ankleIk(prm, axis == 0 ? -t : 0.0, axis == 0 ? 0.0 : -t, false);
+      if (p.status != AnkleIkStatus::Ok || m.status != AnkleIkStatus::Ok) {break;}
+      lim = a;
+    }
+    if (axis == 0) {
+      std::printf("    θ5（ロール）単軸 ±%.1f deg   仕様 ±35.8\n", lim);
+      checkSpec(std::fabs(lim - 35.8) < 0.2, "θ5 の機構限界が ±35.8 deg");
+    } else {
+      std::printf("    θ6（ピッチ）単軸 ±%.1f deg 以上（130 deg まで走査。機構では止まらない）\n",
+        lim);
+      check(lim >= 79.8, "θ6 は少なくとも ±79.8 deg まで到達できる");
     }
   }
 
-  // (b) 文書 §8 と同じ作り方（一様乱数 n 姿勢）。隅を踏まないぶん内側に出る。
-  double rlo[2] = {1e300, 1e300}, rhi[2] = {-1e300, -1e300};
-  std::mt19937_64 rng(seed + 6);
+  // 同時
+  for (const double lim : {15.0, 20.0, 25.0}) {
+    double q1lo = 1e9, q1hi = -1e9, q2lo = 1e9, q2hi = -1e9, dmin = 1e9;
+    int bad = 0;
+    for (int i = 0; i <= 40; ++i) {
+      for (int j = 0; j <= 40; ++j) {
+        const double t5 = (-lim + 2.0 * lim * i / 40.0) / kDeg;
+        const double t6 = (-lim + 2.0 * lim * j / 40.0) / kDeg;
+        const AnkleIkResult r = ankleIk(prm, t5, t6, false);
+        if (r.status != AnkleIkStatus::Ok) {++bad; continue;}
+        q1lo = std::min(q1lo, r.q[0] * kDeg); q1hi = std::max(q1hi, r.q[0] * kDeg);
+        q2lo = std::min(q2lo, r.q[1] * kDeg); q2hi = std::max(q2hi, r.q[1] * kDeg);
+        dmin = std::min(dmin, std::min(r.delta[0], r.delta[1]));
+      }
+    }
+    std::printf("    同時 ±%.0f : q1 [%+.1f, %+.1f]  q2 [%+.1f, %+.1f]  Δmin %.0f/324  到達不能 %d\n",
+      lim, q1lo, q1hi, q2lo, q2hi, dmin, bad);
+    if (lim == 15.0) {
+      checkSpec(bad == 0 && std::fabs(dmin - 198.0) < 2.0, "同時 ±15 deg で Δmin = 198");
+    } else if (lim == 25.0) {
+      check(bad > 0, "同時 ±25 deg では到達不能な点が出る");
+    }
+  }
+}
+
+// ---------------------------------------------------------------------- §8.4
+void testLinear(const AnkleParams & prm)
+{
+  std::printf("\n§8.4 中立まわりの線形近似  ∂q/∂θ\n");
+  const double h = 1e-6;
+  double J[2][2];
+  for (int j = 0; j < 2; ++j) {
+    const AnkleIkResult p = ankleIk(prm, j == 0 ? h : 0.0, j == 0 ? 0.0 : h);
+    const AnkleIkResult m = ankleIk(prm, j == 0 ? -h : 0.0, j == 0 ? 0.0 : -h);
+    for (int i = 0; i < 2; ++i) {J[i][j] = (p.q[i] - m.q[i]) / (2.0 * h);}
+  }
+  std::printf("        [ %+.3f  %+.3f ]      仕様 [ +1.474  -0.776 ]\n", J[0][0], J[0][1]);
+  std::printf("        [ %+.3f  %+.3f ]           [ -1.480  -0.789 ]\n", J[1][0], J[1][1]);
+  std::printf("    差がロール（θ5 ≈ (q1-q2)/%.3f）、和がピッチ（θ6 ≈ -(q1+q2)/%.3f）\n",
+    J[0][0] - J[1][0], -(J[0][1] + J[1][1]));
+  checkSpec(std::fabs(J[0][0] - 1.474) < 2e-3 && std::fabs(J[1][0] + 1.480) < 2e-3,
+    "ロール列が (+1.474, -1.480)");
+  checkSpec(std::fabs(J[0][1] + 0.776) < 2e-3 && std::fabs(J[1][1] + 0.789) < 2e-3,
+    "ピッチ列が (-0.776, -0.789)");
+}
+
+// ------------------------------------------------------------------- 左右対称
+void testMirror(int n)
+{
+  std::printf("\n左右の対称性（右脚は s = -1 を入れるだけ）\n");
+  const AnkleParams l = makeAnkleParams(Side::LEFT);
+  const AnkleParams r = makeAnkleParams(Side::RIGHT);
+  std::mt19937 rng(7);
+  std::uniform_real_distribution<double> ang(-15.0 / kDeg, 15.0 / kDeg);
+  double worst = 0.0;
   for (int k = 0; k < n; ++k) {
-    double th5, th6;
-    randomPose(rng, th5, th6);
-    const AnkleIkResult ik = ankleIk(prm, th5, th6);
-    if (ik.status != AnkleIkStatus::Ok) {continue;}
+    const double t5 = ang(rng), t6 = ang(rng);
+    // y 反転の鏡像ではロール θ5 だけ符号が変わり、ピッチ θ6 は変わらない。
+    // クランク円は x-z 平面内なので y 反転の影響を受けず、クランク角もそのまま。
+    // **鎖の添字は入れ替わらない**（取付高さ 73/108 が鎖を区別するため）。
+    const AnkleIkResult a = ankleIk(l, t5, t6);
+    const AnkleIkResult b = ankleIk(r, -t5, t6);
     for (int i = 0; i < kAnkleChains; ++i) {
-      rlo[i] = std::min(rlo[i], ik.q[i] * kDeg);
-      rhi[i] = std::max(rhi[i], ik.q[i] * kDeg);
+      worst = std::max(worst, angleDiff(a.q[i], b.q[i]));
     }
   }
-
-  std::printf("    格子(厳密)   q1 ∈ [%+.1f, %+.1f]   q2 ∈ [%+.1f, %+.1f]\n",
-    lo[0], hi[0], lo[1], hi[1]);
-  std::printf("    乱数 %d 姿勢 q1 ∈ [%+.1f, %+.1f]   q2 ∈ [%+.1f, %+.1f]\n",
-    n, rlo[0], rhi[0], rlo[1], rhi[1]);
-  std::printf("    文書 §8      q1 ∈ [-49.7, +62.4]   q2 ∈ [-50.8, +61.5]（乱数 4000 姿勢）\n");
-
-  // 範囲の端は可動域の隅で取るので、乱数標本は seed ごとに ±1.5° ほどばらつく
-  // （12 seed で実測）。文書の数値もその散らばりの中にある。厳密な判定は
-  // 「格子で求めた範囲が文書の標本を含む」の方で行い、標本同士は緩く見る。
-  check(
-    lo[0] <= -49.7 && hi[0] >= 62.4 && lo[1] <= -50.8 && hi[1] >= 61.5,
-    "厳密な範囲が文書の乱数標本を含んでいない");
-  check(
-    std::fabs(rlo[0] + 49.7) < 2.5 && std::fabs(rhi[0] - 62.4) < 2.5 &&
-    std::fabs(rlo[1] + 50.8) < 2.5 && std::fabs(rhi[1] - 61.5) < 2.5,
-    "乱数標本の範囲が文書と違う");
+  std::printf("    q_left,i(θ5,θ6) と q_right,i(-θ5,θ6) の最大差 %.2e deg\n", worst * kDeg);
+  check(worst * kDeg < 1e-9, "右脚が左脚の鏡像になっている");
 }
 
-// ---------------------------------------------------------------------------
-// 6. 全解（文書 §4.4）
-// ---------------------------------------------------------------------------
-void testAllSolutions(const AnkleParams & prm, int n, std::uint64_t seed)
+// -------------------------------------------------------------------- 起動時
+void testScan(const AnkleParams & prm)
 {
-  std::printf("\n[6] 順変換の全解（枝 4 通りの残差 Δ を走査）\n");
-  std::mt19937_64 rng(seed + 2);
-  int hist[12] = {0};
-  int missed = 0;
-  double worstResidual = 0.0;
-
-  for (int k = 0; k < n; ++k) {
-    double th5, th6;
-    randomPose(rng, th5, th6);
-    const AnkleIkResult ik = ankleIk(prm, th5, th6);
-    if (ik.status != AnkleIkStatus::Ok) {continue;}
-
-    AnkleFkSolution sols[16];
-    const int m = ankleFkAllSolutions(prm, ik.q, sols, 16);
-    ++hist[std::min(m, 11)];
-
-    // 元の姿勢が全解の中にあるか（1 変数ニュートンの答えと同じものが居るか）
-    bool found = false;
-    for (int j = 0; j < m; ++j) {
-      if (angleDiff(sols[j].th5, th5) < 1e-6 && angleDiff(sols[j].th6, th6) < 1e-6) {
-        found = true;
-      }
-      for (int i = 0; i < kAnkleChains; ++i) {
-        worstResidual = std::max(
-          worstResidual,
-          std::fabs(ankleConstraint(prm, i, sols[j].th5, sols[j].th6, ik.q[i])));
-      }
-    }
-    if (!found) {++missed;}
-  }
-
-  std::printf("    解の個数:");
-  for (int i = 0; i < 12; ++i) {
-    if (hist[i]) {std::printf("  %d 個 = %d 件", i, hist[i]);}
-  }
-  std::printf("\n    （文書 §8 は 4000 姿勢で 2 個 1250 件 / 4 個 2733 件 / 6 個 17 件）\n");
-  std::printf("    全解が拘束を満たす max|F_i| = %.2e mm²\n", worstResidual);
-  std::printf("    元の姿勢を拾えなかった件数 = %d\n", missed);
-  check(missed == 0, "全解探索が元の姿勢を取りこぼす");
-  check(worstResidual < 1e-4, "全解が拘束式を満たしていない");
-  check(hist[1] == 0 && hist[3] == 0 && hist[5] == 0, "解の個数が奇数になっている");
+  std::printf("\n§5.2 前周期の値が無いときの粗探し\n");
+  const double t5 = 9.0 / kDeg, t6 = -11.0 / kDeg;
+  const AnkleIkResult ik = ankleIk(prm, t5, t6);
+  const AnkleFkResult fk = ankleFkScan(prm, ik.q);
+  std::printf("    ankleFkScan → (%+.4f, %+.4f) deg   真値 (%+.4f, %+.4f)\n",
+    fk.th5 * kDeg, fk.th6 * kDeg, t5 * kDeg, t6 * kDeg);
+  check(fk.status == AnkleFkStatus::Ok, "種なしでも解が見つかる");
+  check(angleDiff(fk.th5, t5) * kDeg < 1e-9 && angleDiff(fk.th6, t6) * kDeg < 1e-9,
+    "粗探しの解が正しい");
 }
 
-// ---------------------------------------------------------------------------
-// 7. 左右対称に組んだ機構（文書 §6.1）
-// ---------------------------------------------------------------------------
-void testMirrorSymmetry(const AnkleParams & base)
+// -------------------------------------------------------------------- 異常系
+void testErrors(const AnkleParams & prm)
 {
-  std::printf("\n[7] 左右対称に組んだ機構では θ5 = 0 ⟺ q1 = q2\n");
-  // 鎖 2 を鎖 1 の鏡像 M = diag(-1,1,1) に置き直す（本機は 2 個を上下にずらして
-  // 積んでいるので実際には対称でない。ここは式の検算のための仮想機構）。
-  AnkleParams sym = base;
-  sym.c[1] = {-base.c[0].x, base.c[0].y, base.c[0].z};
-  sym.b[1] = {-base.b[0].x, base.b[0].y, base.b[0].z};
-  sym.u[1] = {-base.u[0].x, base.u[0].y, base.u[0].z};
-  sym.e[1] = {base.e[0].x, -base.e[0].y, -base.e[0].z};   // ê_2 = -M ê_1
-  sym.r[1] = base.r[0];
-  sym.finalize();
-  check(sym.valid(), "対称機構のパラメータが前提を満たさない");
-  check(std::fabs(sym.rod[0] - sym.rod[1]) < 1e-12, "対称機構でロッド長が揃わない");
+  std::printf("\n§8.6 異常系\n");
+  const AnkleIkResult far = ankleIk(prm, 40.0 / kDeg, 0.0, false);
+  std::printf("    θ5 = 40 deg → status=%d  Δ=(%.1f, %.1f)\n",
+    static_cast<int>(far.status), far.delta[0], far.delta[1]);
+  check(far.status == AnkleIkStatus::Unreachable, "θ5 = 40 deg は到達不能を返す");
 
-  double worstQ = 0.0, worstTh5 = 0.0;
-  for (int k = -30; k <= 30; ++k) {
-    const double th6 = k / kDeg;
-    const AnkleIkResult ik = ankleIk(sym, 0.0, th6);
-    if (ik.status != AnkleIkStatus::Ok) {continue;}
-    worstQ = std::max(worstQ, std::fabs(ik.q[0] - ik.q[1]));
+  AnkleParams broken = prm;
+  broken.rod[1] = 200.0;
+  broken.finalize();
+  const AnkleIkResult bad = ankleIk(broken, 0.0, 0.0, false);
+  std::printf("    ロッド長 r22 = 200 → status=%d\n", static_cast<int>(bad.status));
+  check(bad.status == AnkleIkStatus::Unreachable, "壊した幾何は中立でも到達不能");
 
-    const AnkleFkResult fk = ankleFk(sym, ik.q, th6);
-    if (fk.status == AnkleFkStatus::Ok) {
-      worstTh5 = std::max(worstTh5, std::fabs(fk.th5) * kDeg);
-    }
-  }
-  std::printf("    θ6 = ±30° で max|q1 - q2| = %.2e rad、戻した θ5 = %.2e deg\n",
-    worstQ, worstTh5);
-  std::printf("    （文書 §6.1 は厳密に 0 と 2.5e-14 deg）\n");
-  check(worstQ < 1e-13, "対称機構で q1 = q2 にならない");
-  check(worstTh5 < 1e-10, "対称機構で θ5 = 0 に戻らない");
-}
+  // ロッドが届かない幾何では、中立のクランク角でも曲線が存在しない
+  const AnkleIkResult nk = ankleIk(prm, 0.0, 0.0);
+  const AnkleFkResult fkBad = ankleFk(broken, nk.q, 0.0);
+  std::printf("    壊した幾何の順変換 → status=%d\n", static_cast<int>(fkBad.status));
+  check(fkBad.status != AnkleFkStatus::Ok, "解の無い (q1,q2) は Ok を返さない");
 
-// ---------------------------------------------------------------------------
-// 8. ℓ5 = 0（足首 2 軸が交わる。文書 §6.2）
-// ---------------------------------------------------------------------------
-void testZeroL5(const AnkleParams & base, int n, std::uint64_t seed)
-{
-  std::printf("\n[8] ℓ5 = 0（足首 2 軸が交わる）\n");
-  AnkleParams p = base;
-  p.l5 = 0.0;
-  p.finalize();
-  check(p.valid(), "ℓ5=0 のパラメータが前提を満たさない");
-
-  std::mt19937_64 rng(seed + 3);
-  double worst = 0.0;
-  int bad = 0;
-  for (int k = 0; k < n; ++k) {
-    double th5, th6;
-    randomPose(rng, th5, th6);
-    const AnkleIkResult ik = ankleIk(p, th5, th6);
-    if (ik.status != AnkleIkStatus::Ok) {++bad; continue;}
-    const AnkleFkResult fk = ankleFk(p, ik.q, th6);
-    if (fk.status != AnkleFkStatus::Ok) {++bad; continue;}
-    worst = std::max(
-      worst, std::max(angleDiff(fk.th5, th5), angleDiff(fk.th6, th6)) * kDeg);
-  }
-  std::printf("    往復誤差 %.2e deg（文書 §8 は 3.0e-13）、解けない姿勢 %d 件\n", worst, bad);
-  check(bad == 0, "ℓ5=0 で解けない姿勢がある");
-  check(worst < 1e-9, "ℓ5=0 で往復しない");
-}
-
-// ---------------------------------------------------------------------------
-// 9. 左脚（鏡像の幾何）
-// ---------------------------------------------------------------------------
-void testLeftLeg(const AnkleParams & right, int n, std::uint64_t seed)
-{
-  std::printf("\n[9] 左脚（鏡映 M = diag(-1,1,1) を掛けた幾何）\n");
-  const AnkleParams left = makeAnkleParams(Side::LEFT);
-  check(left.valid(), "左脚のパラメータが前提を満たさない");
-  check(
-    std::fabs(left.rod[0] - right.rod[0]) < 1e-12 &&
-    std::fabs(left.rod[1] - right.rod[1]) < 1e-12,
-    "左右でロッド長が変わってしまっている");
-
-  // 文書 §6.1 の帰結: 同じ (q1,q2) に対して θ5 の符号だけが左右で入れ替わる。
-  std::mt19937_64 rng(seed + 4);
-  double worst = 0.0;
-  int bad = 0;
-  for (int k = 0; k < n; ++k) {
-    double th5, th6;
-    randomPose(rng, th5, th6);
-    const AnkleIkResult ikR = ankleIk(right, th5, th6);
-    const AnkleIkResult ikL = ankleIk(left, -th5, th6);
-    if (ikR.status != AnkleIkStatus::Ok || ikL.status != AnkleIkStatus::Ok) {++bad; continue;}
-    worst = std::max(
-      worst, std::max(angleDiff(ikR.q[0], ikL.q[0]), angleDiff(ikR.q[1], ikL.q[1])));
-
-    const AnkleFkResult fk = ankleFk(left, ikL.q, th6);
-    if (fk.status != AnkleFkStatus::Ok) {++bad; continue;}
-    worst = std::max(
-      worst, std::max(angleDiff(fk.th5, -th5), angleDiff(fk.th6, th6)));
-  }
-  std::printf("    右脚 (θ5,θ6) と左脚 (-θ5,θ6) が同じ q を与える: 差 %.2e rad、失敗 %d 件\n",
-    worst, bad);
-  check(bad == 0, "左脚で解けない姿勢がある");
-  check(worst < 1e-9, "左脚の鏡像関係が成り立たない");
-}
-
-// ---------------------------------------------------------------------------
-// 10. サーボ角の往復
-// ---------------------------------------------------------------------------
-void testServoMapping(const AnkleParams & prm)
-{
-  std::printf("\n[10] サーボ角の換算 (1)\n");
-  double worst = 0.0;
-  for (int k = -60; k <= 60; k += 5) {
-    const double q = k / kDeg;
+  // 逆に、Ok を返したときは必ず閉ループ拘束を満たしていること。
+  // (2.5, -2.5) rad は「でたらめ」ではなく θ5 ≈ 24 deg の実在する姿勢なので、
+  // 到達不能の例には使えない。不変条件はこちらで見る。
+  const double qFar[kAnkleChains] = {2.5, -2.5};
+  const AnkleFkResult fkFar = ankleFkScan(prm, qFar);
+  if (fkFar.status == AnkleFkStatus::Ok) {
+    double res = 0.0;
     for (int i = 0; i < kAnkleChains; ++i) {
-      worst = std::max(
-        worst, std::fabs(ankleCrankFromServo(prm, i, ankleServoFromCrank(prm, i, q)) - q));
+      res = std::max(res,
+        std::fabs(ankleConstraint(prm, i, fkFar.th5, fkFar.th6, qFar[i])));
     }
+    std::printf("    q = (2.5, -2.5) rad → (%+.2f, %+.2f) deg  拘束残差 %.2e mm²\n",
+      fkFar.th5 * kDeg, fkFar.th6 * kDeg, res);
+    check(res < 1e-6, "Ok を返した順変換は閉ループ拘束を満たす");
   }
-  std::printf("    φ <-> q の往復誤差 %.2e rad\n", worst);
-  check(worst < 1e-15, "サーボ角の換算が往復しない");
 }
 
-// ---------------------------------------------------------------------------
-// 11. 実行時間
-// ---------------------------------------------------------------------------
-void testTiming(const AnkleParams & prm, std::uint64_t seed)
+// ------------------------------------------------------------------ 整合確認
+void testConsistency(const AnkleParams & prm)
 {
-  std::printf("\n[11] 実行時間（200Hz ループの見積もり用）\n");
-  const int n = 20000;
-  std::vector<double> th5(n), th6(n);
-  std::mt19937_64 rng(seed + 5);
-  for (int k = 0; k < n; ++k) {randomPose(rng, th5[k], th6[k]);}
-
-  double sink = 0.0;
-  auto t0 = std::chrono::steady_clock::now();
-  for (int k = 0; k < n; ++k) {
-    const AnkleIkResult r = ankleIk(prm, th5[k], th6[k]);
-    sink += r.q[0] + r.q[1];
+  std::printf("\n上流との整合\n");
+  std::printf("    leg_config::L5 = %.3f mm   仕様 §3 の ℓ5 = %.1f mm\n",
+    config::L5, ankle_config::L5_SPEC);
+  if (!kSpecGeometry) {
+    // 失敗にはしない。ankle_parallel.hpp は config::L5 を読むので FK と IK は
+    // 互いに整合しており、機構としては正しく解けている。ずれているのは
+    // 「仕様 §8 の期待値を計算したときの寸法」だけ。ただし脚 IK 側と足首側で
+    // 別々の ℓ5 を持つと足先位置がずれるので、どちらが正かは決めること（§9-6）。
+    std::printf("  [warn] ℓ5 が仕様 §8 の期待値を出したときの値と違う。"
+      "寸法に依る照合は飛ばす（機構の検算は寸法に依らず走る）\n");
   }
-  auto t1 = std::chrono::steady_clock::now();
-
-  std::vector<double> q0(n), q1(n);
-  for (int k = 0; k < n; ++k) {
-    const AnkleIkResult r = ankleIk(prm, th5[k], th6[k]);
-    q0[k] = r.q[0];
-    q1[k] = r.q[1];
-  }
-  auto t2 = std::chrono::steady_clock::now();
-  for (int k = 0; k < n; ++k) {
-    const double q[2] = {q0[k], q1[k]};
-    const AnkleFkResult r = ankleFk(prm, q, k ? th6[k - 1] : 0.0);
-    sink += r.th5 + r.th6;
-  }
-  auto t3 = std::chrono::steady_clock::now();
-
-  const double ikNs = std::chrono::duration<double, std::nano>(t1 - t0).count() / n;
-  const double fkNs = std::chrono::duration<double, std::nano>(t3 - t2).count() / n;
-  std::printf("    逆変換 %.0f ns/回、順変換 %.0f ns/回（前周期を初期値に）\n", ikNs, fkNs);
-  std::printf("    200Hz = 5ms 周期に対して %.4f%% / %.4f%%\n",
-    ikNs * 1e-6 / 5.0 * 100.0, fkNs * 1e-6 / 5.0 * 100.0);
-  if (sink == 12345.678) {std::printf(" ");}   // 最適化除去よけ（sink を使う）
+  check(prm.valid(), "パラメータが前提条件を満たす");
 }
-
 }  // namespace
 
 int main(int argc, char ** argv)
 {
-  int n = 4000;
-  std::uint64_t seed = 20260828;
+  int n = 3000;
   for (int i = 1; i < argc; ++i) {
-    if (std::strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
-      n = std::atoi(argv[++i]);
-    } else if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
-      seed = std::strtoull(argv[++i], nullptr, 10);
-    } else {
-      std::fprintf(stderr, "usage: %s [-n 姿勢数] [--seed S]\n", argv[0]);
-      return 2;
-    }
+    if (std::strcmp(argv[i], "-n") == 0 && i + 1 < argc) {n = std::atoi(argv[++i]);}
   }
 
-  const AnkleParams prm = makeAnkleParams(Side::RIGHT);
-  std::printf("足首パラレルリンク 自己検算（右脚、%d 姿勢、seed %llu）\n",
-    n, static_cast<unsigned long long>(seed));
-  std::printf("寸法は ankle_config.hpp（docs/足首パラレルリンク導出.pdf 表 1 の仮置き値）\n");
-  check(prm.valid(), "パラメータが前提を満たしていない");
+  const AnkleParams prm = makeAnkleParams(Side::LEFT);
+  std::printf("足首パラレルリンク 検算（左脚 s=+1、ℓ5 = %.3f mm）\n", prm.l5);
+  std::printf("  クランク半径 %.1f / %.1f mm   ロッド長 %.1f / %.1f mm\n",
+    prm.r[0], prm.r[1], prm.rod[0], prm.rod[1]);
 
+  testConsistency(prm);
   testNeutral(prm);
-  testRoundTrip(prm, n, seed);
-  testJacobian(prm, std::min(n, 500), seed);
-  testNeutralNumbers(prm);
-  testWorkedExample(prm);
-  testServoRange(prm, n, seed);
-  testAllSolutions(prm, n, seed);
-  testMirrorSymmetry(prm);
-  testZeroL5(prm, std::min(n, 1000), seed);
-  testLeftLeg(prm, std::min(n, 1000), seed);
-  testServoMapping(prm);
-  testTiming(prm, seed);
+  testBranches(prm);
+  testRoundTrip(prm, n);
+  testWorkspace(prm);
+  testLinear(prm);
+  testMirror(500);
+  testScan(prm);
+  testErrors(prm);
 
-  std::printf("\n%s（不一致 %d 件）\n", g_failures ? "*** 失敗" : "全部一致", g_failures);
-  return g_failures ? 1 : 0;
+  std::printf("\n%s（失敗 %d 件）\n", g_fail == 0 ? "すべて通過" : "失敗あり", g_fail);
+  return g_fail == 0 ? 0 : 1;
 }

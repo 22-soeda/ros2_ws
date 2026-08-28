@@ -17,6 +17,8 @@
   <depend>sensor_msgs</depend>
   <depend>ament_index_cpp</depend>
   <depend>yaml-cpp</depend>
+  <!-- leg_live_test が膝 4 節リンク・足首パラレルリンクを通すため -->
+  <depend>roboone_kinematics</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_cmake_gtest</test_depend>
