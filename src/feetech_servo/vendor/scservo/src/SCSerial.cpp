@@ -203,8 +203,17 @@ int SCSerial::readSCS(unsigned char* nDat, int nLen)
 
 		fs_sel = select(fd + 1, &fs_read, NULL, NULL, &time);
 		if (fs_sel) {
-			rvLen += read(fd, nDat + rvLen, nLen - rvLen);
-			// printf("nLen = %d rvLen = %d\n", nLen, rvLen);
+			// [ローカル修正] read() の戻り値を検査してから加算する。
+			// 元は rvLen += read(...) で、read() がエラー (-1) を返すと rvLen が -1 になり、
+			// 次の周回が read(fd, nDat - 1, nLen + 1) となってバッファの 1 バイト手前へ
+			// 書き込んでいた（ヒープ破壊 -> "double free or corruption" で異常終了）。
+			// 受信が間欠的に欠ける低電圧時に踏む。短い受信は上位が「欠損」として扱うので、
+			// ここではそこまでの受信長を返せばよい。
+			const int n = read(fd, nDat + rvLen, nLen - rvLen);
+			if (n <= 0) {
+				return rvLen;   // エラー / EOF。それまでに読めたぶんを返す
+			}
+			rvLen += n;
 			if (rvLen < nLen) {
 				continue;
 			} else {
