@@ -12,10 +12,10 @@ const WALK_STATES = ['IDLE', 'START', 'STEP', 'STOP', 'ESTOP'];
 
 function walkDefaultParams() {
   return {
-    z_c: 0.16, gravity: 9.81, t_step: 0.40, foot_spacing: 0.08,
+    z_c: 0.261, gravity: 9.81, t_step: 0.40, foot_spacing: 0.1786,
     swing_height: 0.02, swing_lock_phase: 0.70,
     td_overdrive: 0.004, td_speed_max: 0.10,
-    v_max: [0.15, 0.08], a_max: [0.15, 0.08],
+    v_max: [0.15, 0.08], a_max: [0.15, 0.05],
     step_clamp_x: 0.04, step_clamp_out: 0.045, step_clamp_in: 0.015,
     start_pushoff_max: 0.15, k_dcm: 1.0, cmd_timeout: 0.5, loop_hz: 200.0,
     v_start_eps: 0.005, v_stop_eps: 0.010, settle_eps: 0.002,

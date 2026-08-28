@@ -16,10 +16,13 @@ import math
 @dataclass
 class GaitParams:
     # --- 力学 -------------------------------------------------------------
-    z_c: float = 0.16               # [m]   骨盤 (≒重心) 高さ。ω = sqrt(g/z_c)
+    # z_c はホーム姿勢 (config/home_pose.yaml: 脚ピッチ 30 deg 曲げ) での重心質点
+    # (= 運動学 Σ_B 原点) から足裏までの高さ。roboone_walk_core/gait_from_kinematics
+    # が FK で出した値 (260.9 mm)。姿勢を変えたらツールで出し直す。
+    z_c: float = 0.261              # [m]   重心高さ。ω = sqrt(g/z_c) = 6.13 rad/s
     gravity: float = 9.81           # [m/s^2]
     t_step: float = 0.40            # [s]   1 歩の周期 T
-    foot_spacing: float = 0.08      # [m]   左右の足間隔 W
+    foot_spacing: float = 0.1786    # [m]   左右の足間隔 W = 股間隔 (leg_config HIP_Y x 2)
 
     # --- 遊脚 -------------------------------------------------------------
     swing_height: float = 0.02      # [m]   遊脚の頂点高さ h_sw
@@ -30,12 +33,12 @@ class GaitParams:
     # --- 指令の整形 -------------------------------------------------------
     v_max: tuple = (0.15, 0.08)     # [m/s]     (x, y) の飽和
     # a_max は文書表 2 では (0.3, 0.2) だが、純フィードフォワードでは 1 歩あたりの
-    # 指令変化 ΔL = a·T が着地点クランプで吸収できる範囲
+    # 指令変化 ΔL = (a·T)·T = a·T² が着地点クランプで吸収できる範囲
     #   ΔLx (1 + 1/(e^{ωT}-1)) < step_clamp_x,  ΔLy (1 + 1/(e^{ωT}+1)) < step_clamp_in
-    # を超えると、吸収残りが e^{ωT} ≈ 22.9 倍に増幅されて発散する。
-    # その条件 (a_x < 0.24, a_y < 0.09) に余裕を持たせた値に下げてある。
-    # 踏み出し補正 (推定 ξ) を入れた段階で戻すか再検討する。
-    a_max: tuple = (0.15, 0.08)     # [m/s^2]   (x, y) のレート制限
+    # を超えると、吸収残りが e^{ωT} (z_c=0.261, T=0.4 で 11.6) 倍に増幅されて発散する。
+    # その条件 (a_x < 0.23, a_y < 0.09) の 6 割程度に抑えてある
+    # (gait_from_kinematics が印字する)。踏み出し補正 (推定 ξ) を入れた段階で再検討。
+    a_max: tuple = (0.15, 0.05)     # [m/s^2]   (x, y) のレート制限
 
     # --- 着地点クランプ (式 11) -------------------------------------------
     step_clamp_x: float = 0.04      # [m] 前後の許容ずれ
@@ -56,12 +59,12 @@ class GaitParams:
 
     @property
     def omega(self) -> float:
-        """LIPM の時定数 ω = sqrt(g/z_c)。z_c=0.16 で 7.83 rad/s。"""
+        """LIPM の時定数 ω = sqrt(g/z_c)。z_c=0.261 で 6.13 rad/s。"""
         return math.sqrt(self.gravity / self.z_c)
 
     @property
     def e_wt(self) -> float:
-        """e^{ωT}。既定値で 22.9 (文書 §3.4 と一致)。"""
+        """e^{ωT}。既定値 (z_c=0.261, T=0.4) で 11.6。文書 §3.4 の 22.9 は z_c=0.16 のとき。"""
         return math.exp(self.omega * self.t_step)
 
     @classmethod

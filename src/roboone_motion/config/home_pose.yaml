@@ -1,0 +1,35 @@
+# ホームポジション（立位・歩行の基準姿勢）。2026-08-28 定義。
+#
+# T ポーズ（全軸 0、脚まっすぐ・足裏水平・腕水平）からの関節角 [deg]。
+# 脚は roboone_kinematics の Σ_B の関節角（ik() が返す符号）、
+# 腕はサーボ ID ごとの指令角（T ポーズ = servo_home.yaml の home を 0 とする）。
+#
+# 脚: 大腿・下腿をそれぞれ鉛直から leg_bend 傾け、胴体は直立・足裏は水平のまま。
+#     股ピッチ -leg_bend、膝 +2·leg_bend、足首ピッチ (J6) -leg_bend。
+#     符号は roboone_walk_core/gait_from_kinematics が FK で確認したもの。
+#     この姿勢での重心質点 (Σ_B 原点) の高さが LIPM の z_c（gait.yaml）。
+#       leg_bend 30 -> z_c = 0.261 m（伸び切り 0.300 m の 87 %）
+#       leg_bend 20 -> z_c = 0.282 m
+#       leg_bend 15 -> z_c = 0.290 m
+#     30 deg だと足首ピッチが常時 -30 deg で、足首パラレルリンクの設計可動域
+#     （同時 ±15 deg）の外・機構限界の内で歩くことになる（ankle_config.hpp）。
+#
+# 腕: id9 = 肩ピッチ相当を +50 で少し下ろす、id10 = 肘相当を +30 で少し前に曲げる。
+#     id8 はそのまま。脚の FK・z_c には効かない。
+#
+# motion ノードの home 技はこれを目標角にし、リンク変換 → 較正表 → tick にして送る。
+
+leg_bend_deg: 30.0
+
+legs:            # 左右共通（Σ_B の関節角。左脚の AXIS_FLIP は変換層が掛ける）
+  hip_pitch:   -30.0
+  hip_roll:      0.0
+  hip_yaw:       0.0
+  knee:         60.0
+  ankle_j5:      0.0     # Σ_B ではロール
+  ankle_j6:    -30.0     # Σ_B ではピッチ
+
+arms:            # サーボ ID ごと。左右同じ値（向きの反転は較正表 / 方向設定が受け持つ）
+  8:   0.0
+  9:  50.0
+  10: 30.0
