@@ -498,6 +498,8 @@ inline AnkleParams makeAnkleParams(Side side)
 
   AnkleParams prm;
   prm.l5 = config::L5;
+  // SERVO_SIGN は [脚][鎖]。Side enum の値に依存させず、ここで明示的に選ぶ。
+  const int leg = (side == Side::LEFT) ? 0 : 1;
   for (int i = 0; i < kAnkleChains; ++i) {
     prm.a0[i] = {A0[i][0], A0[i][1] * s * A0_Y_SIDE_SIGN, A0[i][2]};
     prm.b[i] = {FOOT_BALL[i][0], FOOT_BALL[i][1] * s * FOOT_BALL_Y_SIDE_SIGN,
@@ -507,7 +509,7 @@ inline AnkleParams makeAnkleParams(Side side)
     prm.eps[i] = BRANCH_EPS[i];
     prm.del[i] = BRANCH_BETA[i];
     prm.servoHome[i] = SERVO_HOME_DEG[i] * M_PI / 180.0;
-    prm.servoSign[i] = SERVO_SIGN[i];
+    prm.servoSign[i] = SERVO_SIGN[leg][i];
     prm.gear[i] = GEAR_RATIO[i];
   }
   prm.finalize();
