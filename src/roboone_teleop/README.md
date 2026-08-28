@@ -57,6 +57,7 @@ ros2 launch roboone_teleop teleop.launch.py
 | パンチ 左 | □ | `/cmd_motion` → `punch_l` | |
 | 起き上がり 前 | △ | `/cmd_motion` → `getup_front` | ★ |
 | 起き上がり 後 | ✕ | `/cmd_motion` → `getup_back` | ★ |
+| しゃがみ (動作確認) | 十字キー 下 | `/cmd_motion` → `squat` | |
 | **脱力** | **L1** (押した瞬間) | `/estop true` をラッチ | ★ |
 | **ホームポジション** | **Options を 1 秒長押し** | `/cmd_motion` → `home`、0.1 秒後に `/estop false` | ★ |
 | 無線テスト | Create を押している間 | `/ui/led` + `/ui/buzzer` | ★ |
