@@ -209,8 +209,9 @@ function draw(){
     line(ch.B, P.o6, col, 1);        // 足板側の取り付け（参考線）
   });
 
-  // 状態が異常なら赤で囲う
-  if (!S.ok || S.status !== 0){
+  // 足首の順変換が解けていないときだけ赤で囲う。膝や股が読めないだけでは囲わない
+  // （このビューアの主題は足首なので、膝の欠損に巻き込まれない）
+  if (S.ankle_status !== 0){
     ctx.strokeStyle = C('--bad'); ctx.lineWidth = 3*dpr;
     ctx.strokeRect(6*dpr, 6*dpr, cv.width-12*dpr, cv.height-12*dpr);
   }
@@ -234,11 +235,18 @@ function paintPanel(){
   $('volt').textContent = S.volt.toFixed(2) + ' V';
   $('frame').textContent = S.frame;
   $('fps').textContent = fps + ' /s';
-  const good = S.ok && S.status === 0;
   const lowV = S.volt < 9.0;
-  $('state').innerHTML = good
-    ? '<span class="badge ok">読み取り中</span>'
-    : `<span class="badge ng">${lowV ? '電圧が低い（12V を入れる）' : '一部の軸が応答なし'}</span>`;
+  const ankleOk = S.ankle_status === 0;
+  const parts = [];
+  parts.push(ankleOk
+    ? '<span class="badge ok">足首 読み取り中</span>'
+    : '<span class="badge ng">足首の順変換が解けない</span>');
+  if (lowV) {parts.push('<span class="badge ng">電圧が低い（12V を入れる）</span>');}
+  else if (!S.ok) {parts.push('<span class="badge ng">一部の軸が応答なし</span>');}
+  if (S.status !== 0 && ankleOk) {
+    parts.push('<span class="badge ng">膝・股は未取得</span>');
+  }
+  $('state').innerHTML = parts.join(' ');
 }
 
 const es = new EventSource('/stream');

@@ -8,12 +8,22 @@
 //   脱力したまま。手で膝を曲げれば、その角度がそのまま画面に出る。
 //   （書き込み API を呼んでいる箇所が 1 つも無いことをレビューで確認すること）
 //
-// 使い方の順番:
-//   1. --scan で全軸を表示し、動かしたい関節を手で振って **どの ID が動くか**を見る。
-//      軸 ID と関節の対応は機体の組み立てで決まり、リポジトリには記録が無い。
-//   2. 分かった順（股ピッチ, 股ロール, 股ヨー, 膝, 足首上, 足首下）で --ids に渡す。
+// 軸 ID と関節の対応（2026-08-28 実機で確定）:
+//
+//   ID 1..4  軸 1..4（股ピッチ・股ロール・股ヨー・膝）にそのまま対応
+//   ID 5     足首パラレルの**腕が長い方** = ロッド 115mm = 上側サーボ = 鎖 2
+//   ID 6     足首パラレルの**腕が短い方** = ロッド  80mm = 下側サーボ = 鎖 1
+//
+// ★--ids の並びは leg_servo.hpp の Joint enum 順で、足首の 2 つは
+//   （鎖 1 = 短ロッド, 鎖 2 = 長ロッド）の順。**ID は 6, 5 の順に並ぶ**ので、
+//   既定の --ids 1,2,3,4,6,5 の末尾が入れ替わって見えるのは正しい。
+//   ここを 5,6 の順にすると足首のロールとピッチが入れ替わる。
+//
+// 使い方:
+//   1. --scan で全軸を表示し、手で振って上の対応を確かめる（組み替えたとき用）。
+//   2. --ids で関節に割り当てる（省略時は上の既定）。
 //   3. --json を付けると roboone_kinematics の leg_servo.hpp を通した関節角と
-//      足裏の姿勢が 1 行 1 JSON で出る。viz/serve_leg_live.py がこれを読む。
+//      足裏の姿勢が 1 行 1 JSON で出る。viz/serve_ankle_live.py がこれを読む。
 //
 // 角度の基準は servo_home.yaml の原点（T ポーズ = 脚がまっすぐ真上）。
 // つまり全軸 0 deg が「脚が垂直に伸びた姿勢」になる。
@@ -104,7 +114,8 @@ void usage()
   std::printf(
     "使い方: leg_live_test [--scan] [--ids a,b,c,d,e,f] [--json] [--leg L|R]\n"
     "  --scan     全軸の角度を表で出し続ける（ID と関節の対応を探すため）\n"
-    "  --ids      股ピッチ,股ロール,股ヨー,膝,足首上,足首下 の順に軸 ID を並べる\n"
+    "  --ids      股ピッチ,股ロール,股ヨー,膝,足首鎖1(短),足首鎖2(長) の順に軸 ID\n"
+    "             既定 1,2,3,4,6,5（ID5 が長ロッド側なので末尾が入れ替わる）\n"
     "  --leg      どちらの脚か（既定 L）。バスは L=左半身 / R=右半身 を選ぶ\n"
     "  --json     1 行 1 JSON で出す（可視化用）\n"
     "  --hz       読み取り周期（既定 30）\n"
@@ -120,7 +131,8 @@ int main(int argc, char ** argv)
   std::signal(SIGINT, on_sigint);
 
   bool scan = false, json = false, relax = false;
-  std::string idsArg, leg = "L", homePath;
+  // 既定は実機の対応（ヘッダのコメント参照）。ID 5 が長ロッド側なので 6, 5 の順。
+  std::string idsArg = "1,2,3,4,6,5", leg = "L", homePath;
   double hz = 30.0;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
@@ -134,7 +146,6 @@ int main(int argc, char ** argv)
       return a == "--help" || a == "-h" ? 0 : 2;
     }
   }
-  if (!scan && idsArg.empty()) {usage(); return 2;}
 
   if (homePath.empty()) {
     const char * share = std::getenv("FEETECH_SHARE");
@@ -232,16 +243,35 @@ int main(int argc, char ** argv)
       double theta[rk::kNumJoints] = {0};
       const rk::LegServoStatus lst =
         rk::legJointsFromServo(prm, servo, theta, th6Seed);
-      if (lst == rk::LegServoStatus::Ok) {th6Seed = theta[rk::ANKLE_ROLL];}
 
-      // 足首パラレルリンクのクランク角（表示用）
+      // 足首は脚全体とは別に解き直す。**膝が読めなくても足首は出す**ため。
+      // legJointsFromServo() は膝の変換に失敗すると早期リターンするので、
+      // 足首だけ確かめたいときに股・膝の欠損に巻き込まれてしまう。
       const double q[rk::kAnkleChains] = {
         rk::ankleCrankFromServo(prm.ankle, 0, servo[rk::ANKLE_PITCH]),
         rk::ankleCrankFromServo(prm.ankle, 1, servo[rk::ANKLE_ROLL])};
+      const rk::AnkleFkResult afk = rk::ankleFk(prm.ankle, q, th6Seed);
+      if (afk.status == rk::AnkleFkStatus::Ok) {
+        theta[rk::ANKLE_PITCH] = afk.th5;
+        theta[rk::ANKLE_ROLL] = afk.th6;
+        th6Seed = afk.th6;
+      } else {
+        // 収束しなかったときは粗探しに 1 回だけ落とす（起動直後・大きく動かした後）
+        const rk::AnkleFkResult sc = rk::ankleFkScan(prm.ankle, q);
+        if (sc.status == rk::AnkleFkStatus::Ok) {
+          theta[rk::ANKLE_PITCH] = sc.th5;
+          theta[rk::ANKLE_ROLL] = sc.th6;
+          th6Seed = sc.th6;
+        }
+      }
+      const rk::AnkleFkStatus ast =
+        (afk.status == rk::AnkleFkStatus::Ok) ? afk.status
+        : rk::ankleFkScan(prm.ankle, q).status;
 
       if (json) {
-        std::printf("{\"frame\":%ld,\"ok\":%s,\"status\":%d,\"leg\":\"%s\"",
-          frame, allOk ? "true" : "false", static_cast<int>(lst), right ? "R" : "L");
+        std::printf("{\"frame\":%ld,\"ok\":%s,\"status\":%d,\"ankle_status\":%d,"
+          "\"leg\":\"%s\"", frame, allOk ? "true" : "false",
+          static_cast<int>(lst), static_cast<int>(ast), right ? "R" : "L");
         std::printf(",\"servo_deg\":[");
         for (int j = 0; j < rk::kNumJoints; ++j) {
           std::printf("%s%.4f", j ? "," : "", servo[j] * kDeg);
@@ -292,14 +322,18 @@ int main(int argc, char ** argv)
       } else {
         std::printf("\033[H\033[Jstatus=%d  %s\n\n", static_cast<int>(lst),
           allOk ? "" : "★一部の軸が応答していない");
-        static const char * kName[] = {"股ピッチ", "股ロール", "股ヨー ", "膝    ",
-          "足首上 ", "足首下 "};
+        static const char * kName[] = {"股ピッチ  ", "股ロール  ", "股ヨー    ",
+          "膝        ", "足首 鎖1短", "足首 鎖2長"};
         std::printf("  関節       ID   サーボ[deg]   関節角[deg]\n");
         for (int j = 0; j < rk::kNumJoints; ++j) {
           std::printf("  %s  %-4d  %+9.2f    %+9.2f\n", kName[j], jointIds[j],
             servo[j] * kDeg, theta[j] * kDeg);
         }
-        std::printf("\n  足首クランク q = (%+.2f, %+.2f) deg\n", q[0] * kDeg, q[1] * kDeg);
+        static const char * kAst[] = {"OK", "曲線なし", "収束せず", "特異姿勢"};
+        std::printf("\n  足首クランク q = (%+.2f, %+.2f) deg   順変換 %s\n",
+          q[0] * kDeg, q[1] * kDeg, kAst[static_cast<int>(ast)]);
+        std::printf("  → 足首 θ5 ロール %+.2f   θ6 ピッチ %+.2f deg\n",
+          theta[rk::ANKLE_PITCH] * kDeg, theta[rk::ANKLE_ROLL] * kDeg);
         std::fflush(stdout);
       }
     }

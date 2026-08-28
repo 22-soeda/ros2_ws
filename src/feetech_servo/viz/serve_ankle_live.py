@@ -2,8 +2,7 @@
 # -*- coding: utf-8 -*-
 """足首パラレルリンクの実機姿勢を 3D で見るテストラン。
 
-    ros2 run feetech_servo leg_live_test --scan            # ← 先に ID を特定する
-    python3 src/feetech_servo/viz/serve_ankle_live.py --ids 5,6,10,1,2,3
+    python3 src/feetech_servo/viz/serve_ankle_live.py
 
 有線 LAN 越しに PC のブラウザから http://<Pi の IP>:8102/ で開く。
 SSH のポートフォワード (ssh -L 8102:localhost:8102 <pi>) でも同じ。
@@ -126,8 +125,10 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--ids', required=True,
-                    help='股ピッチ,股ロール,股ヨー,膝,足首上,足首下 の順の軸 ID')
+    # 既定は実機で確定した対応（docs/servo-registers.md）。ID 5 が長ロッド側なので
+    # 足首の 2 つは 6, 5 の順に並ぶ。ここを 5,6 にすると足首の 2 軸が入れ替わる。
+    ap.add_argument('--ids', default='1,2,3,4,6,5',
+                    help='股ピッチ,股ロール,股ヨー,膝,足首鎖1(短),足首鎖2(長) の軸 ID')
     ap.add_argument('--leg', default='L', choices=['L', 'R', 'l', 'r'])
     ap.add_argument('--hz', type=float, default=30.0)
     ap.add_argument('--relax', action='store_true',
