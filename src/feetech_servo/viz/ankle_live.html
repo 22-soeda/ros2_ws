@@ -75,10 +75,22 @@ td.c1{color:var(--chain1)} td.c2{color:var(--chain2)}
   </section>
 
   <section>
+    <h2>T ポーズからのずれ [deg]</h2>
+    <p class="sub" style="margin:-2px 0 8px">servo_home.yaml の原点は T ポーズで取ってある。
+      ここが全部 0 なら、脚は垂直・足裏は水平になる。</p>
+    <table><tbody>
+      <tr><td>ID 6　鎖1（短 80mm）</td><td class="v c1" id="d4">—</td></tr>
+      <tr><td>ID 5　鎖2（長 115mm）</td><td class="v c2" id="d5">—</td></tr>
+      <tr><td>ID 4　膝</td><td class="v" id="d3">—</td></tr>
+    </tbody></table>
+  </section>
+
+  <section>
     <h2>クランク角 [deg]</h2>
     <table><tbody>
-      <tr><td>鎖 1（下・短ロッド）</td><td class="v c1" id="q0">—</td></tr>
-      <tr><td>鎖 2（上・長ロッド）</td><td class="v c2" id="q1">—</td></tr>
+      <tr><td>鎖 1（短）</td><td class="v c1" id="q0">—</td></tr>
+      <tr><td>鎖 2（長）</td><td class="v c2" id="q1">—</td></tr>
+      <tr><td>T ポーズでの値</td><td class="v" id="qn">—</td></tr>
     </tbody></table>
   </section>
 
@@ -91,9 +103,14 @@ td.c1{color:var(--chain1)} td.c2{color:var(--chain2)}
     </tbody></table>
   </section>
 
-  <p class="note">初期位置（全関節 0）で脚が垂直に伸びる。原点は servo_home.yaml の
-    T ポーズなので、サーボ実測がそのまま 0 deg になる姿勢がこの図の直立状態にあたる。
-    トルクは入れていないので、手で関節を動かせばそのまま追随する。</p>
+  <p class="note"><strong>破線が T ポーズ</strong>（servo_home.yaml の原点の姿勢）。
+    各 ID の原点はこの姿勢でのサーボ値として取ってあるので、脚をまっすぐ真上に伸ばすと
+    実線が破線に重なり、上の「T ポーズからのずれ」が全部 0 になる。重ならなければ
+    原点か ID の対応がずれている。<br><br>
+    クランク角は T ポーズでも 0 ではなく (-0.15, +1.45) deg。クランクとロッドが
+    ほぼ直交する配置に組んであるためで、この差は変換層が自動で持っている。<br><br>
+    トルクは入れていないので、手で関節を動かせばそのまま追随する。T キーで破線の表示を
+    切り替えられる。</p>
 </aside>
 
 <script>
@@ -103,7 +120,7 @@ const css = getComputedStyle(document.documentElement);
 const C = n => css.getPropertyValue(n).trim();
 
 // ---- 状態（C++ から来る点をそのまま持つ。ここで幾何計算はしない）----
-let S = null, lastFrame = -1, recv = 0, fps = 0;
+let S = null, lastFrame = -1, recv = 0, fps = 0, showGhost = true;
 setInterval(() => { fps = recv; recv = 0; }, 1000);
 
 // ---- カメラ（方位角・仰角・拡大率のみ）----
@@ -122,6 +139,7 @@ cv.addEventListener('wheel', e => {
   cam.scale = Math.max(0.6, Math.min(6, cam.scale * (e.deltaY > 0 ? 0.92 : 1.087)));
 }, {passive:false});
 cv.addEventListener('dblclick', () => { cam.yaw = -Math.PI/2; cam.pitch = 0; });
+addEventListener('keydown', e => { if (e.key === 't' || e.key === 'T') showGhost = !showGhost; });
 
 // Σ_s (x 前 / y 左 / z 上) → 画面。原点 o5 は画面のやや上に置き、脚が下に伸びる形にする。
 function project(p){
@@ -185,6 +203,22 @@ function draw(){
   ctx.globalAlpha = 1;
   label([0,0,150], '下腿', faint, 10, -4);
 
+  // T ポーズ（servo_home.yaml の原点）を薄く重ねる。
+  // **原点の取り方が正しければ、全軸が原点のとき現在の形とぴったり重なる。**
+  if (showGhost && P.neutral){
+    const N = P.neutral;
+    ctx.globalAlpha = .30;
+    ctx.setLineDash([5*dpr, 4*dpr]);
+    const n4 = N.sole;
+    ctx.beginPath();
+    n4.forEach((p, i) => { const q = project(p); i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); });
+    ctx.closePath(); ctx.strokeStyle = faint; ctx.lineWidth = 1.6*dpr; ctx.stroke();
+    line([0,0,0], N.o6, faint, 1.6);
+    N.chain.forEach(ch => { line(ch.O, ch.K, faint, 2.4); line(ch.K, ch.B, faint, 1.4); });
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+  }
+
   // 足裏
   const s4 = P.sole;
   ctx.beginPath();
@@ -217,6 +251,11 @@ function draw(){
   }
   ctx.fillStyle = acc; ctx.font = `${11.5*dpr}px ui-monospace, monospace`;
   ctx.fillText('Σs  x 前 / y 左 / z 上   [mm]', 14*dpr, cv.height - 14*dpr);
+  if (showGhost){
+    ctx.fillStyle = faint;
+    ctx.fillText('破線 = T ポーズ（servo_home.yaml の原点）   T キーで表示切替',
+      14*dpr, cv.height - 30*dpr);
+  }
 }
 let lastW = 0, lastH = 0;
 function resizeIfNeeded(){
@@ -232,6 +271,11 @@ function paintPanel(){
   for (let i = 0; i < 6; ++i) $('t'+i).textContent = S.theta_deg[i].toFixed(2);
   $('q0').textContent = S.crank_deg[0].toFixed(2);
   $('q1').textContent = S.crank_deg[1].toFixed(2);
+  if (S.pts && S.pts.q_neutral)
+    $('qn').textContent = S.pts.q_neutral.map(v => v.toFixed(2)).join(' , ');
+  $('d3').textContent = S.servo_deg[3].toFixed(2);
+  $('d4').textContent = S.servo_deg[4].toFixed(2);
+  $('d5').textContent = S.servo_deg[5].toFixed(2);
   $('volt').textContent = S.volt.toFixed(2) + ' V';
   $('frame').textContent = S.frame;
   $('fps').textContent = fps + ' /s';
@@ -246,6 +290,8 @@ function paintPanel(){
   if (S.status !== 0 && ankleOk) {
     parts.push('<span class="badge ng">膝・股は未取得</span>');
   }
+  const atT = S.servo_deg.every(v => Math.abs(v) < 2.0);
+  if (atT) {parts.push('<span class="badge ok">T ポーズ</span>');}
   $('state').innerHTML = parts.join(' ');
 }
 

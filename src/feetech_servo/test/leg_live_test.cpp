@@ -315,7 +315,27 @@ int main(int argc, char ** argv)
             std::printf("%s[%.3f,%.3f,%.3f]", k ? "," : "",
               rx, c5 * ry - s5 * rz, s5 * ry + c5 * rz);
           }
-          std::printf("]}");
+          std::printf("]");
+
+          // T ポーズ（θ5 = θ6 = 0）の同じ点。servo_home.yaml の原点がこの姿勢で
+          // 取られているので、**画面上でここからのずれを見れば原点が合っているか
+          // 分かる**。全軸が原点にあるとき、下の neutral と現在の形が重なる。
+          const double qn[rk::kAnkleChains] = {ap.qNeutral[0], ap.qNeutral[1]};
+          std::printf(",\"neutral\":{\"o6\":[0,0,%.3f],\"chain\":[", ap.p5.z);
+          for (int i = 0; i < rk::kAnkleChains; ++i) {
+            const rk::Vec3 O = ap.c[i];
+            const rk::Vec3 K = rk::ankleCrank(ap, i, qn[i]);
+            const rk::Vec3 B = rk::ankleBall(ap, i, 0.0, 0.0);
+            std::printf("%s{\"O\":[%.3f,%.3f,%.3f],\"K\":[%.3f,%.3f,%.3f],"
+              "\"B\":[%.3f,%.3f,%.3f]}", i ? "," : "",
+              O.x, O.y, O.z, K.x, K.y, K.z, B.x, B.y, B.z);
+          }
+          std::printf("],\"sole\":[");
+          for (int k = 0; k < 4; ++k) {
+            std::printf("%s[%.3f,%.3f,%.3f]", k ? "," : "",
+              corner[k][0], corner[k][1], corner[k][2] + ap.p5.z);
+          }
+          std::printf("]},\"q_neutral\":[%.4f,%.4f]}", qn[0] * kDeg, qn[1] * kDeg);
         }
         std::printf(",\"volt\":%.2f}\n", st.empty() ? 0.0 : st[0].volt);
         std::fflush(stdout);

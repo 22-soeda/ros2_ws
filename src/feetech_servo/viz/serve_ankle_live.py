@@ -123,6 +123,38 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, 'text/plain; charset=utf-8', b'not found')
 
 
+def access_urls(port: int) -> list:
+    """ブラウザから開ける URL を、使えそうな順に並べて返す。
+
+    既定経路 (8.8.8.8 への UDP) だけを見ると、Wi-Fi と有線が両方生きている機体で
+    Wi-Fi 側のアドレスが出る。SSH で入っているならその接続が着いている側の
+    アドレスが確実に届くので、**SSH_CONNECTION を最優先**にする。
+    """
+    urls, seen = [], set()
+
+    def add(ip: str, note: str) -> None:
+        if ip and ip not in seen:
+            seen.add(ip)
+            urls.append(f'http://{ip}:{port}/{note}')
+
+    # 1) SSH で入ってきた先のアドレス（この経路は確実に通っている）
+    conn = os.environ.get('SSH_CONNECTION', '').split()
+    if len(conn) >= 3:
+        add(conn[2], '   ← SSH と同じ経路')
+
+    # 2) 既定経路のアドレス
+    try:
+        sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sk.connect(('8.8.8.8', 1))
+        add(sk.getsockname()[0], '')
+        sk.close()
+    except OSError:
+        pass
+
+    add('127.0.0.1', f'   ← ssh -L {port}:localhost:{port} 越しならこちら')
+    return urls
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     # 既定は実機で確定した対応（docs/servo-registers.md）。ID 5 が長ロッド側なので
@@ -144,15 +176,9 @@ def main() -> None:
     threading.Thread(target=reader, args=(cmd,), daemon=True).start()
 
     srv = ThreadingHTTPServer(('0.0.0.0', args.port), Handler)
-    ip = '127.0.0.1'
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(('8.8.8.8', 1))
-        ip = s.getsockname()[0]
-        s.close()
-    except OSError:
-        pass
-    print(f'  http://{ip}:{args.port}/   （Ctrl-C で終了）', file=sys.stderr)
+    for url in access_urls(args.port):
+        print(f'  {url}', file=sys.stderr)
+    print('  （Ctrl-C で終了）', file=sys.stderr)
 
     def bye(*_a):
         if _proc is not None:
