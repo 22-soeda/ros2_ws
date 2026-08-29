@@ -59,6 +59,11 @@
     # /cmd_motion "home" でホーム姿勢へ移る時間。
     home_move_time: 1.5
 
+    # /cmd_motion "hold" (その場保持) で武装するときの補間時間。実測姿勢をそのまま
+    # 保持姿勢にするので補間距離はゼロ。短くてよいが、0 にはしない (player の最短 0.05s)。
+    # 転倒 → 脱力 → その場保持 → 起き上がり の経路 (docs/無線操縦_不足項目レビュー.md §4.3)。
+    hold_arm_time: 0.5
+
     # 起動直後の latched な /estop false では武装しない。teleop は起動時に
     # estop=false を撒くので、これが false だと launch しただけでサーボに電気が
     # 入ってホーム姿勢へ動き出す。/cmd_motion を 1 回受けるまで脱力のままにする

@@ -39,6 +39,19 @@
 // ホームポジション操作 (Options 長押し) は home -> estop false の順に来るので、
 // 通常の操作手順はそのまま通る。
 //
+// **その場保持 (hold)。** /cmd_motion "hold" は「今の実測姿勢のまま」トルクを入れる
+// 予約で、home と同じ 2 段 (hold -> estop false) で来る。武装時に保持姿勢を実測姿勢に
+// 差し替えるので補間距離がゼロになり、その場で固まるだけ。武装が終わったら HOLD では
+// なく STAY に入る (HOLD は tickWalk が足先を立位のスタンスへ上書きするので、寝た
+// 姿勢からだと跳ねる)。転倒 -> 脱力のあと、寝た姿勢で武装して起き上がりに繋ぐ経路
+// (docs/無線操縦_不足項目レビュー.md §4.3)。既にトルクが入っていれば、今の目標姿勢で
+// 止まる (歩行も技も打ち切り)。
+//
+// ★寝た姿勢が IK の到達域の外だと、実測姿勢を IK で往復した目標がクランプされて
+//   武装の瞬間にその軸が跳ねる。既存の武装 (ホームへの補間の起点) と同じ性質だが、
+//   寝た姿勢で初めて効いてくる。初回は allow_torque:=false で STAY に入れ、
+//   /motion/joint_commands と /joint_states を見比べてから使うこと。
+//
 // ===========================================================================
 // 歩行と旋回
 // ===========================================================================
@@ -92,7 +105,10 @@ rclcpp::QoS latchedQos()
   return rclcpp::QoS(1).reliable().transient_local();
 }
 
-enum class State { RELAX, ARMING, HOLD, WALK, MOTION };
+enum class State { RELAX, ARMING, HOLD, WALK, MOTION, STAY };
+
+//! その場保持の技名。teleop の hold_motion と合わせる (motions.yaml には書かない)
+constexpr char kHoldMotion[] = "hold";
 
 const char * stateName(State s)
 {
@@ -101,6 +117,7 @@ const char * stateName(State s)
     case State::ARMING: return "ARMING";
     case State::HOLD: return "HOLD";
     case State::WALK: return "WALK";
+    case State::STAY: return "STAY";
     default: return "MOTION";
   }
 }
@@ -161,6 +178,8 @@ public:
     cmd_timeout_ = declare_parameter<double>("cmd_timeout", 0.5);
     torque_on_time_ = declare_parameter<double>("torque_on_time", 2.0);
     home_move_time_ = declare_parameter<double>("home_move_time", 1.5);
+    // その場保持 (hold) で武装するときの補間時間。距離ゼロなので短くてよい
+    hold_arm_time_ = declare_parameter<double>("hold_arm_time", 0.5);
     stance_y_offset_ = declare_parameter<double>("stance_y_offset", 0.0);
     walk_enable_ = declare_parameter<bool>("walk_enable", true);
     // 歩行エンジンが IDLE になってから、これだけ続いたら HOLD へ落とす（ばたつき止め）。
@@ -654,6 +673,8 @@ private:
           player_.stop();
           walk_.reset();
           want_torque_.store(false);
+          arm_in_place_ = false;
+          stay_after_arm_ = false;
         }
       } else if (state_ == State::RELAX && canArm()) {
         // ★実測姿勢が 1 度も取れていないうちは武装しない。
@@ -677,13 +698,27 @@ private:
             bool ok = false;
             const rmn::BodyPose meas = measuredPose(ok);
             if (ok) {cur_pose_ = meas;}
-            startBlend(hold_pose_, torque_on_time_, now, "arming");
-            setState(State::ARMING);
-            RCLCPP_INFO(
-              get_logger(),
-              "トルクオン。実測姿勢 R[%.1f, %.1f, %.1f] から %.1fs かけて保持姿勢へ移る",
-              cur_pose_.foot[rmn::kRight].p.x, cur_pose_.foot[rmn::kRight].p.y,
-              cur_pose_.foot[rmn::kRight].p.z, torque_on_time_);
+            if (arm_in_place_) {
+              // hold: 実測姿勢をそのまま保持姿勢にする。補間距離ゼロ = その場で固まる
+              arm_in_place_ = false;
+              stay_after_arm_ = true;
+              hold_pose_ = cur_pose_;
+              startBlend(hold_pose_, hold_arm_time_, now, "hold");
+              setState(State::ARMING);
+              RCLCPP_INFO(
+                get_logger(),
+                "トルクオン (その場保持)。実測姿勢 R[%.1f, %.1f, %.1f] のまま動かない",
+                cur_pose_.foot[rmn::kRight].p.x, cur_pose_.foot[rmn::kRight].p.y,
+                cur_pose_.foot[rmn::kRight].p.z);
+            } else {
+              startBlend(hold_pose_, torque_on_time_, now, "arming");
+              setState(State::ARMING);
+              RCLCPP_INFO(
+                get_logger(),
+                "トルクオン。実測姿勢 R[%.1f, %.1f, %.1f] から %.1fs かけて保持姿勢へ移る",
+                cur_pose_.foot[rmn::kRight].p.x, cur_pose_.foot[rmn::kRight].p.y,
+                cur_pose_.foot[rmn::kRight].p.z, torque_on_time_);
+            }
           }
         }
       }
@@ -710,13 +745,25 @@ private:
         case State::MOTION:
           if (!player_.sample(now, cur_pose_)) {
             hold_pose_ = cur_pose_;
-            setState(State::HOLD);
+            if (stay_after_arm_) {
+              // その場保持の武装が終わった。HOLD にすると tickWalk が足先を立位の
+              // スタンスへ上書きして跳ねるので、目標を作らない STAY で止める
+              stay_after_arm_ = false;
+              setState(State::STAY);
+            } else {
+              setState(State::HOLD);
+            }
           }
           break;
 
         case State::HOLD:
         case State::WALK:
           tickWalk(now, dt);
+          break;
+
+        case State::STAY:
+          // その場保持。目標は作らず cur_pose_ をそのまま出し続ける。
+          // 抜けるのは技 (起き上がり) か home か脱力。/cmd_walk は効かない
           break;
       }
 
@@ -765,6 +812,21 @@ private:
 
   void handleMotionRequest(const std::string & name, double now)
   {
+    if (name == kHoldMotion) {
+      // その場保持 (冒頭の説明)。脱力中なら「次の武装は実測姿勢のまま」の予約、
+      // トルクが入っていれば今の目標姿勢で止まる
+      if (state_ == State::RELAX) {
+        arm_in_place_ = true;
+        RCLCPP_INFO(get_logger(), "その場保持を予約した (トルクが入っても動かず、実測姿勢を保持する)");
+        return;
+      }
+      walk_.reset();
+      player_.stop();
+      hold_pose_ = cur_pose_;
+      setState(State::STAY);
+      RCLCPP_INFO(get_logger(), "その場保持 (今の目標姿勢で止まる)");
+      return;
+    }
     if (name != "home" && !lib_.find(name)) {
       RCLCPP_WARN(get_logger(), "知らない技 \"%s\" (motions.yaml に無い)", name.c_str());
       return;
@@ -774,6 +836,7 @@ private:
       // ホームは「保持したい姿勢」を差し替えるのが本体。脱力中ならそれだけ。
       // トルクが入っていれば、そこへ home_move_time 秒かけて移る。
       hold_pose_ = home_pose_;
+      arm_in_place_ = false;   // hold の予約は home で上書き
       if (state_ == State::RELAX) {
         RCLCPP_INFO(get_logger(), "ホーム姿勢を予約した (トルクが入ったらそこへ移る)");
         return;
@@ -1138,7 +1201,9 @@ private:
 
   /// /motion/state の書式。**behavior が読み方をテストで固定しているので変えない。**
   ///
-  ///     <状態>              RELAX / ARMING / HOLD / WALK
+  ///     <状態>              RELAX / ARMING / HOLD / WALK / STAY
+  ///                         (STAY = その場保持。behavior の ready_states に無いので
+  ///                          「歩けない」扱いになる。寝ている間はそれで正しい)
   ///     MOTION:<技名>       再生中だけ。技名はコロンの後ろ ("MOTION:punch_r")
   ///
   /// 先頭語が状態で、コロン区切りの後置は MOTION のときの技名だけ。将来ここに
@@ -1285,6 +1350,9 @@ private:
   std::vector<std::string> arm_invert_;
   double loop_hz_ = 200.0, read_hz_ = 50.0, joint_state_hz_ = 10.0;
   double cmd_timeout_ = 0.5, torque_on_time_ = 2.0, home_move_time_ = 1.5;
+  double hold_arm_time_ = 0.5;
+  bool arm_in_place_ = false;    // hold を受けた: 次の武装は実測姿勢のまま
+  bool stay_after_arm_ = false;  // その武装が終わったら HOLD ではなく STAY へ
   double stance_y_offset_ = 0.0;
   double walk_idle_hold_ = 0.25;
   bool walk_enable_ = true, motion_interrupts_walk_ = true;

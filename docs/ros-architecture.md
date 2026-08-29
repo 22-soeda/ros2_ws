@@ -36,10 +36,10 @@
 | realsense2_camera | 既製（realsense-ros） | D435ifから点群・IMUを出す | — | 点群、IMU生値 |
 | opponent_detector | **自作** | RANSAC床面除去＋最近接クラスタ重心で相手位置を出す（厚木で検証済みのアルゴリズムをノード化） | 点群 | /opponent |
 | imu_filter | 既製（imu_filter_madgwick） | ジャイロ＋加速度から機体の傾きを推定 | IMU生値 | /imu/data |
-| behavior | **自作** | 戦略ステートマシン。探索→接近→攻撃の状態遷移で、歩行指令と技指令を出す | /opponent, /motion/state | /cmd_walk, /cmd_motion |
+| behavior | **自作** | 戦略ステートマシン。探索→接近→攻撃の状態遷移で、歩行指令と技指令を出す。/autonomy が true の間だけ出す | /opponent, /ring_edge, /motion/state, /autonomy | /cmd_walk, /cmd_motion, /behavior/state |
 | motion | **自作** | 歩行パターン生成・技（キーフレームモーション）再生・IK・IMUバランス補正・サーボ送信。**200Hzループ、この機体の心臓部** | /cmd_walk, /cmd_motion, /imu/data, /estop | /joint_states, /motion/state |
 | joy_node | 既製（joy） | PS3コントローラのボタンを読む | — | /joy |
-| teleop | **自作** | ボタン→指令変換。非常停止と、開発中の手動操作 | /joy | /estop, /cmd_walk |
+| teleop | **自作** | ボタン→指令変換。非常停止と、開発中の手動操作。自律動作の開始/停止と状態表示 | /joy | /estop, /cmd_walk, /cmd_motion, /autonomy, /ui/* |
 | ui | **自作** | OLED(QT095B)・RGB LED・ブザーで状態を提示（電圧・状態・検知の有無など。実体は下の表） | /motion/state, /joint_states | — |
 
 補足:
@@ -111,13 +111,18 @@ uiノードが握る2つの出力デバイス。どちらもトピックの先�
 | /camera/…/points | sensor_msgs/PointCloud2 | realsense2_camera → opponent_detector | 15–30Hz |
 | /camera/imu | sensor_msgs/Imu | realsense2_camera → imu_filter | 200Hz |
 | /imu/data | sensor_msgs/Imu（姿勢入り） | imu_filter → motion | 200Hz |
-| /opponent | geometry_msgs/PointStamped | opponent_detector → behavior | 約15Hz※ |
+| /opponent | roboone_interfaces/Opponent（位置・上端高さ・速度） | opponent_detector → behavior | 約15Hz※ |
 | /cmd_walk | geometry_msgs/Twist | behavior・teleop → motion | 20Hz |
 | /cmd_motion | std_msgs/String（技名） | behavior・teleop → motion | イベント時 |
 | /estop | std_msgs/Bool | teleop → motion | イベント時 |
 | /motion/state | std_msgs/String | motion → behavior・ui | 状態変化時 |
 | /joint_states | sensor_msgs/JointState | motion → ui・記録 | 10Hz |
 | /joy | sensor_msgs/Joy | joy_node → teleop | 入力時 |
+| /autonomy | std_msgs/Bool（latched） | teleop → behavior | イベント時。true の間だけ behavior が /cmd_walk・/cmd_motion を出す（2026-08-28 追加） |
+| /ring_edge | std_msgs/Float32MultiArray | opponent_detector → behavior | 約15Hz。方位別のリング縁までの距離（2026-08-28 追加） |
+| /ui/oled/text, /ui/led/pattern, /ui/buzzer | roboone_interfaces/OledText, std_msgs/String ×2（latched） | teleop → ui | 状態変化時（2026-08-28 追加） |
+| /motion/joint_commands, /motion/servo_states, /motion/diagnostics | sensor_msgs/JointState ×2, diagnostic_msgs/DiagnosticArray | motion → 記録 | 10Hz。指令と実測の差を追うため（2026-08-28 追加） |
+| /odom | nav_msgs/Odometry | motion → behavior | **未実装**。behavior は無くても動く（自分の指令から推定） |
 
 補足:
 
