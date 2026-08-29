@@ -842,6 +842,7 @@ private:
         return;
       }
       walk_.reset();
+      stay_after_arm_ = false;   // hold の武装中に home が来たら、終わりは HOLD でよい
       startBlend(home_pose_, home_move_time_, now, "home");
       setState(State::MOTION);
       RCLCPP_INFO(get_logger(), "ホームポジションへ (%.1fs)", home_move_time_);
@@ -864,6 +865,7 @@ private:
       RCLCPP_WARN(get_logger(), "歩行を打ち切って技 \"%s\" に入る", name.c_str());
     }
     walk_.reset();
+    stay_after_arm_ = false;     // 技のあとは HOLD (return_home で立位へ戻る)
     player_.start(*lib_.find(name), cur_pose_, home_pose_, now);
     setState(State::MOTION);
     RCLCPP_INFO(get_logger(), "技 \"%s\" 再生 (%.2fs)", name.c_str(), player_.duration());
