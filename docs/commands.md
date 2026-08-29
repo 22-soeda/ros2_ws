@@ -40,6 +40,8 @@ python3 -m pytest src/roboone_behavior/test/test_behavior.py -q
 # Python リファレンス実装
 python3 -m pytest scripts/test_knee_fourbar.py -q
 python3 -m pytest src/roboone_motion/test/test_walk_core.py
+python3 -m pytest src/roboone_teleop/test/test_params.py -q   # teleop の調整表と config の整合（ROS 不要）
+colcon test --packages-select roboone_teleop                     # 結線テスト + 走らせたままの調整
 
 # C++ と Python の突き合わせ
 python3 scripts/crosscheck_knee.py
@@ -48,6 +50,38 @@ python3 scripts/crosscheck_cpp.py
 # Python 単体での自己検算
 python3 scripts/knee_fourbar.py
 python3 scripts/leg_servo.py
+```
+
+## teleop の調整（人の手で値を変える）
+
+手順書は [docs/teleop_tuning.md](teleop_tuning.md)（PDF 同名）。項目の一覧は
+`src/roboone_teleop/roboone_teleop/params.py` の表が出どころで、
+`config/ps5_dualsense.yaml` はその全項目を並べたもの。
+
+```bash
+# 項目の一覧（意味・単位・既定・範囲）と、編集した config の検査
+ros2 run roboone_teleop teleop_params
+ros2 run roboone_teleop teleop_params --check src/roboone_teleop/config/ps5_dualsense.yaml
+ros2 run roboone_teleop teleop_params --check ~/teleop_overrides.yaml
+# 割り当てた技名が motions.yaml に本当にあるか (無いものは NG。起動時にも警告が出る)
+ros2 run roboone_teleop teleop_params --check src/roboone_teleop/config/ps5_dualsense.yaml \
+    --motions src/roboone_motion_node/config/motions.yaml
+
+# 走らせたまま試す（ノードを再起動すると消える。決まったら YAML に写す）
+ros2 param list /teleop
+ros2 param describe /teleop scale.x
+ros2 param get /teleop scale.x
+ros2 param set /teleop scale.x 0.08
+ros2 param dump /teleop                      # いま効いている全値を YAML の形で出す
+
+# 自分用の差分 YAML を config の上に重ねて起動する（変えたいキーだけ書く）
+ros2 launch roboone_teleop teleop.launch.py overrides:=~/teleop_overrides.yaml
+ros2 launch roboone_bringup roboone.launch.py teleop_overrides:=~/teleop_overrides.yaml
+
+# YAML / Python を直しても再ビルド不要にする（初回 1 回。build と install を消してから symlink で入れ直す）
+rm -rf build/roboone_teleop install/roboone_teleop
+colcon build --packages-select roboone_teleop --symlink-install
+source install/setup.bash
 ```
 
 ## 立ち上げ（launch）
@@ -97,6 +131,9 @@ ros2 topic pub -t 3 --qos-durability transient_local --qos-reliability reliable 
 ros2 topic pub -t 3 --qos-durability transient_local --qos-reliability reliable \
   /estop std_msgs/msg/Bool "{data: true}"           # 脱力
 ros2 topic pub -t 3 /cmd_motion std_msgs/msg/String "{data: squat}"   # 動作確認用の技
+# その場保持で武装（転倒 → 脱力 のあと、寝た姿勢のままトルクを入れて起き上がりに繋ぐ）。
+# コントローラからは L3 長押し。手で叩くなら hold → estop false の順
+ros2 topic pub -t 3 /cmd_motion std_msgs/msg/String "{data: hold}"
 # ↑ コントローラからは R1（デッドマン）を押しながら十字キー 下 でも出せる
 
 # パンチ（★機体が動く。腰を回すので足裏が地面をこする。足元を空けておくこと）
@@ -410,3 +447,31 @@ python3 src/realsense_bringup/viz/serve_imu3d.py --port 8104 --bind 0.0.0.0
 確認のしかた: 右を下げる→roll +、お辞儀→pitch +、左へ回す→yaw +。
 ヨーは 6 軸 IMU では観測できないのでドリフトする（詳細は
 `src/realsense_bringup/README.md`）。
+
+## ドキュメント（md → PDF）
+
+Windows の開発 PC で回す（pandoc と Edge/Chrome が要る）。Pi 上では使わない。
+出力は入力と同じ場所に同名 `.pdf`（`docs/` の PDF はそこに置く約束）。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File docs/build_md_pdf.ps1 docs/teleop_tuning.md
+```
+
+## ROS の無い開発 PC で確かめる（tools/）
+
+Pi に繋げないときの手元検証。**最終判定は Pi の `colcon test`。** 詳細は [tools/README.md](../tools/README.md)。
+
+```bash
+# 準備（1 回）
+python -m venv tools/.venv
+tools/.venv/Scripts/python.exe -m pip install -r tools/requirements-dev.txt   # Windows
+tools/.venv/bin/python -m pip install -r tools/requirements-dev.txt           # Mac / Linux
+
+# ament_flake8 / ament_pep257 と同じ規約で lint
+python tools/lint_like_ament.py                       # roboone_teleop
+python tools/lint_like_ament.py src/roboone_behavior  # 別のパッケージ
+
+# roboone_teleop の結線テストを最小の rclpy 代替 (tools/fakeros) で回す
+python tools/run_teleop_tests_without_ros.py
+python tools/run_teleop_tests_without_ros.py -k hold  # pytest の引数はそのまま通る
+```
