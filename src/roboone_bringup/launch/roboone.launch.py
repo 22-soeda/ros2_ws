@@ -22,6 +22,7 @@
 
     joy_backend:=game_controller|joy    teleop へそのまま渡す
     teleop_config:=<path>               teleop の割り当て YAML
+    teleop_overrides:=<path>            teleop の差分 YAML。config の上に重ねる (省略可)
 
 起動順と落ち方の設計:
 
@@ -106,6 +107,8 @@ def generate_launch_description():
             'teleop_config',
             default_value=os.path.join(teleop_share, 'config', 'ps5_dualsense.yaml'),
             description='teleop の割り当て YAML'),
+        DeclareLaunchArgument('teleop_overrides', default_value='',
+                              description='teleop の差分 YAML。config の上に重ねる (省略可)'),
 
         # --- 1) 表示を最初に上げる ------------------------------------------
         # ui ノードはデバイス単位で初期化失敗を握り潰すので、OLED が挿さって
@@ -121,6 +124,7 @@ def generate_launch_description():
             launch_arguments={
                 'joy_backend': LaunchConfiguration('joy_backend'),
                 'config': LaunchConfiguration('teleop_config'),
+                'overrides': LaunchConfiguration('teleop_overrides'),
             }.items()),
 
         # --- 3) motion -------------------------------------------------------

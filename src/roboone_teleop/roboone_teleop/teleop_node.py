@@ -20,6 +20,8 @@ ros-architecture §2/§4 の約束事:
     起き上がり      /cmd_motion "getup_front" / "getup_back"
     脱力            /estop true   … ラッチする。ウォッチドッグの発報先もここ
     ホームポジション /cmd_motion "home" → 少し置いて /estop false
+    その場保持      /cmd_motion "hold" → 少し置いて /estop false … 今の姿勢のままトルクを入れる
+                                   (転倒 → 脱力 → 起き上がり の経路。ホームは立位へ動き出すので使えない)
     自律動作        /autonomy true … behavior ノードに指令権を渡す
     無線テスト      押している間だけブザーを鳴らし LED の色を変える
 
@@ -41,8 +43,8 @@ ros-architecture §2/§4 の約束事:
     奪い合いになる (ros-architecture §2 の「同時に起動しない」運用を、起動したまま
     実現するのがこのトピック)
   * スティックとパンチは効かない。指令権は behavior にある
-  * 下の 4 つだけは割り込みとして効き、**押した時点で自律動作を止める**:
-      起き上がり / 脱力 / 無線確認ブザー / ホームポジション
+  * 下の 5 つだけは割り込みとして効き、**押した時点で自律動作を止める**:
+      起き上がり / 脱力 / 無線確認ブザー / ホームポジション / その場保持
 
 安全側の設計 (無線なので、ここが本体):
 
@@ -81,13 +83,22 @@ ros-architecture §2/§4 の約束事:
   色は teleop 側に持たない。ui のプリセット名だけを送り、実際の色は ui が決める
   (roboone_ui の LED_PATTERNS)。1 箇所で色を管理できるのと、無線テストが終わった
   ときに「元の状態のプリセットをもう一度送る」だけで復帰できる利点がある。
+
+調整 (人が手で値を変える):
+
+  項目の一覧・意味・単位・範囲は params.py の表が唯一の出どころで、
+  config/ps5_dualsense.yaml はその表の全項目を並べたもの。走らせたまま
+  `ros2 param set /teleop scale.x 0.08` で試せて、決まったら YAML に写す。
+  表にない名前を config に書くと起動時に警告が出る。手順は docs/teleop_tuning.md。
 """
 
 import math
+import os
 import signal
 import time
 
 from geometry_msgs.msg import Twist
+from rcl_interfaces.msg import SetParametersResult
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -96,6 +107,7 @@ from roboone_interfaces.msg import OledText
 from sensor_msgs.msg import Joy
 from std_msgs.msg import Bool, String
 
+from . import params as tunables
 from .bindings import apply_deadzone, Binding, parse_motion_bindings
 
 #: /estop と /autonomy は latched。teleop より後に motion・behavior を起動しても、
@@ -118,76 +130,15 @@ class TeleopNode(Node):
         super().__init__('teleop', **kwargs)
 
         # --- パラメータ -----------------------------------------------------
-        p = self.declare_parameter
-        self._rate_hz = p('rate_hz', 20.0).value              # /cmd_walk の送信周期
-        self._joy_timeout = p('joy_timeout', 0.5).value       # これだけ無通信で脱力
-        self._deadzone = p('deadzone', 0.12).value
-
-        self._ax = {
-            'x':   p('axes.walk_x', 1).value,                 # 左スティック 上下 → 前後
-            'y':   p('axes.walk_y', 0).value,                 # 左スティック 左右 → 横歩き
-            'yaw': p('axes.walk_yaw', 2).value,               # 右スティック 左右 → 旋回
-        }
-        self._inv = {
-            'x':   p('invert.walk_x', True).value,
-            'y':   p('invert.walk_y', True).value,
-            'yaw': p('invert.walk_yaw', True).value,
-        }
-        self._scale = {
-            'x':   p('scale.x', 0.06).value,                  # m/s
-            'y':   p('scale.y', 0.03).value,                  # m/s
-            'yaw': p('scale.yaw', 0.40).value,                # rad/s
-        }
-        self._accel = {
-            'x':   p('accel.x', 0.15).value,                  # m/s^2
-            'y':   p('accel.y', 0.10).value,
-            'yaw': p('accel.yaw', 1.50).value,                # rad/s^2
-        }
-
-        self._b_deadman = Binding(p('buttons.deadman', 'b10').value)      # R1
-        self._b_relax = Binding(p('buttons.relax', 'b9').value)           # L1 脱力
-        self._b_home = Binding(p('buttons.home', 'b6').value)             # Options
-        self._b_link = Binding(p('buttons.link_test', 'b4').value)        # Create
-        self._b_auto = Binding(p('buttons.autonomy', 'b11').value)        # 十字 上
-
-        self._home_hold = p('home_hold', 1.0).value
-        self._home_motion = p('home_motion', 'home').value
-        self._home_delay = p('home_torque_delay', 0.1).value
-        self._auto_hold = p('autonomy_hold', 1.0).value
-        self._auto_stop_on_loss = p('autonomy.stop_on_joy_loss', True).value
-
-        self._motion_bindings = parse_motion_bindings(
-            p('motion_bindings',
-              ['b1:punch_r', 'b2:punch_l', 'b3:getup_front', 'b0:getup_back']).value)
-        #: 割り込み扱いの技。デッドマン不要で、押すと自律動作を止める。
-        self._motion_interrupts = set(
-            p('motion_interrupts', ['getup_front', 'getup_back']).value)
-        self._motion_needs_deadman = p('motion_requires_deadman', True).value
-        self._motion_cooldown = p('motion_cooldown', 0.5).value
-
-        # 無線テスト。押している間だけブザーと LED で「届いている」ことを示す。
-        self._link_buzzer = p('link_test.buzzer', 'beep').value
-        self._link_hz = p('link_test.buzzer_hz', 15.0).value
-        # 無線テストだけは joy_timeout (0.5s) では遅い。電波の切れ目を耳で探すのが
-        # 目的なので、数フレーム落ちた時点で鳴り止ませる。20Hz の autorepeat なら
-        # 0.15s = 3 フレームぶん。
-        self._link_stale = p('link_test.stale', 0.15).value
-
-        # 状態表示。色は持たず ui のプリセット名だけを送る (docstring 参照)。
-        self._ui_enable = p('ui.enable', True).value
-        self._ui_pattern = {
-            'nolink': p('ui.pattern.nolink', 'dark').value,
-            'relax':  p('ui.pattern.relax', 'estop').value,
-            'unarmed': p('ui.pattern.unarmed', 'warn').value,
-            'manual': p('ui.pattern.manual', 'ready').value,
-            'auto':   p('ui.pattern.auto', 'auto').value,
-            'link':   p('ui.pattern.link', 'link').value,
-        }
-        self._ui_beep = {
-            'relax': p('ui.buzzer.relax', 'error').value,
-            'auto':  p('ui.buzzer.auto', 'ack').value,
-            'manual': p('ui.buzzer.manual', 'beep').value,
-        }
+        # 項目の一覧・意味・単位・既定値・範囲は params.py の表に全部ある (人が触る値は
+        # そこだけ)。ここでは表どおりに宣言して読むだけ。走らせたまま
+        # `ros2 param set` で変えると _on_set_params が検査し、次の周期に
+        # _reload_params が反映する (手順は docs/teleop_tuning.md)。
+        tunables.declare_all(self)
+        self._apply(tunables.read_all(self))
+        self._params_dirty = False
+        self.add_on_set_parameters_callback(self._on_set_params)
+        self._warn_unknown_overrides()
 
         # --- 状態 -----------------------------------------------------------
         self._joy = None            # 最新の Joy。まだ一度も来ていなければ None
@@ -195,8 +146,8 @@ class TeleopNode(Node):
         self._estop = False
         self._auto = False          # 自律動作中か
         self._armed = False         # デッドマンを一度離すまで False
-        self._home_since = None     # ホームポジションのボタンを押し始めた時刻
-        self._home_fired = False    # 長押し成立済み。離すまで再発火させない
+        self._arm_since = {}        # 'home' / 'hold': ボタンを押し始めた時刻
+        self._arm_fired = {}        # 同: 長押し成立済み。離すまで再発火させない
         self._auto_since = None     # 自律動作のボタンを押し始めた時刻
         self._auto_fired = False
         self._torque_at = None      # ホーム送信後、トルクを入れる時刻
@@ -232,12 +183,139 @@ class TeleopNode(Node):
         self.get_logger().info(
             f'teleop 起動。デッドマン={self._b_deadman.spec} 脱力={self._b_relax.spec} '
             f'ホーム={self._b_home.spec}({self._home_hold:.1f}s 長押し) '
+            f'その場保持={self._b_hold.spec}({self._hold_hold:.1f}s 長押し) '
             f'自律={self._b_auto.spec}({self._auto_hold:.1f}s 長押し) '
             f'無線テスト={self._b_link.spec} joy_timeout={self._joy_timeout:.2f}s')
+        self._log_effective()
+        self._check_motion_names()
 
     # ------------------------------------------------------------------ 時刻
     def _now(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
+
+    # ------------------------------------------------------------ パラメータ
+    def _apply(self, cfg):
+        """表 (params.py) から読んだ値を、この node の設定に写す。状態は触らない。"""
+        self._rate_hz = cfg['rate_hz']
+        self._joy_timeout = cfg['joy_timeout']
+        self._deadzone = cfg['deadzone']
+        self._ax = {k: cfg[f'axes.walk_{k}'] for k in ('x', 'y', 'yaw')}
+        self._inv = {k: cfg[f'invert.walk_{k}'] for k in ('x', 'y', 'yaw')}
+        self._scale = {k: cfg[f'scale.{k}'] for k in ('x', 'y', 'yaw')}
+        self._accel = {k: cfg[f'accel.{k}'] for k in ('x', 'y', 'yaw')}
+        self._b_deadman = Binding(cfg['buttons.deadman'])
+        self._b_relax = Binding(cfg['buttons.relax'])
+        self._b_home = Binding(cfg['buttons.home'])
+        self._b_link = Binding(cfg['buttons.link_test'])
+        self._b_auto = Binding(cfg['buttons.autonomy'])
+        self._b_hold = Binding(cfg['buttons.hold'])
+        self._home_hold = cfg['home_hold']
+        self._home_motion = cfg['home_motion']
+        self._home_delay = cfg['home_torque_delay']
+        self._hold_hold = cfg['hold_hold']
+        self._hold_motion = cfg['hold_motion']
+        self._auto_hold = cfg['autonomy_hold']
+        self._auto_stop_on_loss = cfg['autonomy.stop_on_joy_loss']
+        self._motion_bindings = parse_motion_bindings(cfg['motion_bindings'])
+        #: 割り込み扱いの技。デッドマン不要で、押すと自律動作を止める。
+        self._motion_interrupts = set(cfg['motion_interrupts'])
+        self._motion_needs_deadman = cfg['motion_requires_deadman']
+        self._motion_cooldown = cfg['motion_cooldown']
+        self._motions_yaml = cfg['motions_yaml']
+        # 無線テスト。joy_timeout (0.5s) では遅いので、数フレーム落ちた時点で鳴り止ませる。
+        self._link_buzzer = cfg['link_test.buzzer']
+        self._link_hz = cfg['link_test.buzzer_hz']
+        self._link_stale = cfg['link_test.stale']
+        # 状態表示。色は持たず ui のプリセット名だけを送る (docstring 参照)。
+        self._ui_enable = cfg['ui.enable']
+        self._ui_pattern = {k: cfg[f'ui.pattern.{k}']
+                            for k in ('nolink', 'relax', 'unarmed', 'manual', 'auto', 'link')}
+        self._ui_beep = {k: cfg[f'ui.buzzer.{k}'] for k in ('relax', 'auto', 'manual')}
+
+    def _on_set_params(self, plist):
+        """`ros2 param set` の検査。表の範囲・書式に外れた値は拒否して理由を返す。
+
+        受けた値はここでは使わず、次の周期に _reload_params がまとめて読み直す
+        (rclpy はこのコールバックの後で値を確定するので、ここで読むと古い値になる)。
+        """
+        known = tunables.by_name()
+        for p in plist:
+            t = known.get(p.name)
+            if t is None:
+                continue        # use_sim_time など、表にないものは関知しない
+            err = tunables.validate(t, p.value)
+            if err:
+                self.get_logger().error(f'調整を拒否: {p.name} = {p.value!r} — {err}')
+                return SetParametersResult(successful=False, reason=f'{p.name}: {err}')
+            self.get_logger().info(f'調整: {p.name} = {p.value!r} (次の周期から効く)')
+            self._params_dirty = True
+        return SetParametersResult(successful=True)
+
+    def _reload_params(self):
+        """変更されたパラメータを読み直して反映する。周期が変わったらタイマーも作り直す。"""
+        self._params_dirty = False
+        old_rate = self._rate_hz
+        self._apply(tunables.read_all(self))
+        if self._rate_hz != old_rate:
+            old = self._timer
+            self._timer = self.create_timer(1.0 / self._rate_hz, self._tick)
+            old.cancel()
+        self._log_effective()
+        self._check_motion_names()
+
+    def _warn_unknown_overrides(self):
+        """設定に表にない名前があれば起動時に言う。ROS は黙って捨てるので、ここで拾う。"""
+        overrides = getattr(self, '_parameter_overrides', None) or {}
+        for name in tunables.unknown_keys(overrides.keys()):
+            hint = tunables.suggest(name)
+            self.get_logger().warn(
+                f'config の "{name}" は teleop に無い項目なので効いていない'
+                + (f' ("{hint}" の打ち間違い?)' if hint else '')
+                + '。一覧: ros2 run roboone_teleop teleop_params')
+
+    def _log_effective(self):
+        """いま効いている調整値を 1 行で出す。"""
+        s, a = self._scale, self._accel
+        self.get_logger().info(
+            '調整値: scale x/y/yaw=%.3f/%.3f/%.2f accel=%.2f/%.2f/%.2f deadzone=%.2f '
+            'joy_timeout=%.2fs rate=%.0fHz hold home/auto=%.1f/%.1fs' % (
+                s['x'], s['y'], s['yaw'], a['x'], a['y'], a['yaw'], self._deadzone,
+                self._joy_timeout, self._rate_hz, self._home_hold, self._auto_hold))
+
+    # ------------------------------------------------------------ 技名の照合
+    def _check_motion_names(self):
+        """割り当てた技名が motions.yaml に本当にあるかを照合し、無ければ警告する。
+
+        motion ノードは /cmd_motion を受けた瞬間に「知らない技」と言うだけなので、
+        ここで言わないと試合中にボタンを押すまで分からない
+        (docs/無線操縦_不足項目レビュー.md §3.1)。
+        """
+        path = self._motions_yaml or self._default_motions_yaml()
+        if not path or not os.path.exists(path):
+            self.get_logger().info(
+                f'motions.yaml が見つからないので技名の照合は飛ばす (motions_yaml={path!r})')
+            return
+        try:
+            defined = tunables.load_motion_names(path)
+        except Exception as e:      # 読めない理由をそのまま見せる
+            self.get_logger().warn(f'motions.yaml を読めないので技名の照合は飛ばす ({path}): {e}')
+            return
+        used = [name for _, name in self._motion_bindings]
+        missing = tunables.missing_motions(
+            used, defined, builtin=(self._home_motion, self._hold_motion))
+        for name in missing:
+            self.get_logger().warn(
+                f'技 "{name}" は motions.yaml に無い。割り当てたボタンを押しても何も起きない ({path})')
+        if not missing:
+            self.get_logger().info(f'技名の照合 OK ({len(used)} 件、{path})')
+
+    def _default_motions_yaml(self):
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            share = get_package_share_directory('roboone_motion_node')
+        except Exception:           # パッケージが無い環境 (teleop 単体) では照合しない
+            return ''
+        return os.path.join(share, 'config', 'motions.yaml')
 
     # -------------------------------------------------------------- Joy 受信
     def _on_joy(self, msg: Joy):
@@ -250,6 +328,8 @@ class TeleopNode(Node):
 
     # ------------------------------------------------------------ 周期処理
     def _tick(self):
+        if self._params_dirty:
+            self._reload_params()
         now = self._now()
 
         # 1) ウォッチドッグ。一度でも /joy が来たあとで途切れたら脱力。
@@ -274,7 +354,10 @@ class TeleopNode(Node):
             if self._b_relax.pressed(axes, buttons):
                 self._interrupt('脱力')
                 self._set_estop('脱力ボタン')
-            self._handle_home(axes, buttons, now)
+            self._handle_arm('home', self._b_home, self._home_hold, self._home_motion,
+                             axes, buttons, now)
+            self._handle_arm('hold', self._b_hold, self._hold_hold, self._hold_motion,
+                             axes, buttons, now)
             link = (self._b_link.pressed(axes, buttons)
                     and now - self._joy_stamp <= self._link_stale)
 
@@ -339,7 +422,7 @@ class TeleopNode(Node):
         need_bt = max((b.index for b, _ in self._motion_bindings), default=0)
         need_bt = max([need_bt] + [b.index for b in
                                    (self._b_deadman, self._b_relax, self._b_home,
-                                    self._b_link, self._b_auto) if not b.is_axis])
+                                    self._b_link, self._b_auto, self._b_hold) if not b.is_axis])
         short = []
         if need_ax >= len(axes):
             short.append(f'軸 {len(axes)} 本 < index {need_ax}')
@@ -377,7 +460,7 @@ class TeleopNode(Node):
         self._publish_auto()
         self.get_logger().warn(
             '*** 自律動作 開始 *** /cmd_walk は behavior に渡した。'
-            '止めるには 起き上がり / 脱力 / 無線確認 / ホームポジション のいずれか')
+            '止めるには 起き上がり / 脱力 / 無線確認 / ホーム / その場保持 のいずれか')
 
     def _interrupt(self, reason: str):
         """自律動作を止める。既に手動なら何もしない。"""
@@ -400,39 +483,43 @@ class TeleopNode(Node):
         self._estop = True
         self._armed = False
         self._cmd = [0.0, 0.0, 0.0]   # 減速ではなく即ゼロ。脱力なので。
-        self._home_since = None
+        self._arm_since.clear()
         self._torque_at = None        # 保留中のトルクオンは取り消す
         self._estop_beat = 0
         self._publish_estop()
         self.get_logger().error(f'*** 脱力 (トルクOFF) *** 理由: {reason}')
 
-    def _handle_home(self, axes, buttons, now):
-        """ホームポジション — 全軸にホームの目標角を送ってからトルクを入れる。
+    def _handle_arm(self, key, binding, hold, motion, axes, buttons, now):
+        """長押しで「技名を送ってからトルクを入れる」2 段送信。ホームとその場保持の共通部。
 
-        長押しなのは、誤って触ったときに急にトルクが入らないようにするため。
-        脱力中かどうかに関わらず効く (脱力から復帰する唯一の手段でもある)。
+        key     'home' / 'hold'。押し始め時刻と発火済みフラグの置き場
+        hold    長押し時間 [s]。誤って触ったときに急にトルクが入らないようにするため
+        motion  先に /cmd_motion へ送る名前。home はホーム姿勢へ動き出し、hold は
+                今の実測姿勢のまま固まる (motion ノード側の約束)
+
+        脱力中かどうかに関わらず効く (脱力から復帰する手段でもある)。
         """
-        if not self._b_home.pressed(axes, buttons):
-            self._home_since = None
-            self._home_fired = False
+        if not binding.pressed(axes, buttons):
+            self._arm_since.pop(key, None)
+            self._arm_fired[key] = False
             return
-        if self._home_fired:
-            # 押しっぱなしのまま長押し判定を繰り返すと home が連射される
+        if self._arm_fired.get(key):
+            # 押しっぱなしのまま長押し判定を繰り返すと連射される
             # (2026-08-28 実機で 1 秒ごとに再送されるのを確認)。一度離すこと。
             return
-        if self._home_since is None:
-            self._home_since = now
+        since = self._arm_since.get(key)
+        if since is None:
+            self._arm_since[key] = now
             return
-        if now - self._home_since < self._home_hold:
+        if now - since < hold:
             return
-        self._home_since = None
-        self._home_fired = True
-        self._interrupt('ホームポジション')
-        self._pub_motion.publish(String(data=self._home_motion))
+        self._arm_since.pop(key, None)
+        self._arm_fired[key] = True
+        self._interrupt('ホームポジション' if key == 'home' else 'その場保持')
+        self._pub_motion.publish(String(data=motion))
         self._torque_at = now + self._home_delay
         self.get_logger().info(
-            f'/cmd_motion → {self._home_motion} '
-            f'({self._home_delay:.2f}s 後にトルクオン)')
+            f'/cmd_motion → {motion} ({self._home_delay:.2f}s 後にトルクオン)')
 
     def _handle_torque_on(self, now):
         """ホームの目標角が届いたころにトルクを入れる。"""
@@ -515,7 +602,7 @@ class TeleopNode(Node):
         if self._estop:
             return ('relax', 'RELAX', 'OPTIONS=home', (255, 60, 60))
         if self._auto:
-            return ('auto', 'AUTO', 'any 4 = stop', (60, 140, 255))
+            return ('auto', 'AUTO', 'any 5 = stop', (60, 140, 255))
         if not self._armed:
             return ('unarmed', 'MANUAL', 'release R1', (255, 180, 0))
         return ('manual', 'MANUAL', 'R1 = walk', (0, 255, 0))

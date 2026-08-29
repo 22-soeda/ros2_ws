@@ -31,6 +31,7 @@ setup(
         'console_scripts': [
             'teleop_node = roboone_teleop.teleop_node:main',
             'joy_probe = roboone_teleop.joy_probe:main',
+            'teleop_params = roboone_teleop.params:main',
         ],
     },
 )

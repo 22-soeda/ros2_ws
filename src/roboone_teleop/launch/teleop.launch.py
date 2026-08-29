@@ -16,16 +16,29 @@
     autorepeat_rate:=20.0              ★0 にしないこと
         0 にするとスティックを動かさない限り /joy が来なくなり、teleop の無通信
         ウォッチドッグが「静止」と「Bluetooth 断」を区別できなくなる。
+    overrides:=<path>                  自分用の差分 YAML (省略可)
+        config の**上に**重ねる (後のファイルが勝つ)。変えたいキーだけ書けばよく、
+        パッケージの config を汚さずに手元の値を持てる。docs/teleop_tuning.md §3。
 """
 
 import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
+
+
+def _teleop_node(context, *args, **kwargs):
+    """本体の teleop ノード。config の上に overrides を重ねる (後のファイルが勝つ)。"""
+    params = [LaunchConfiguration('config').perform(context)]
+    overrides = LaunchConfiguration('overrides').perform(context).strip()
+    if overrides:
+        params.append(os.path.expanduser(overrides))
+    return [Node(package='roboone_teleop', executable='teleop_node', name='teleop',
+                 parameters=params, output='screen')]
 
 
 def generate_launch_description():
@@ -33,7 +46,6 @@ def generate_launch_description():
         get_package_share_directory('roboone_teleop'), 'config', 'ps5_dualsense.yaml')
 
     backend = LaunchConfiguration('joy_backend')
-    config = LaunchConfiguration('config')
     device_id = LaunchConfiguration('device_id')
     autorepeat = LaunchConfiguration('autorepeat_rate')
 
@@ -54,6 +66,7 @@ def generate_launch_description():
         DeclareLaunchArgument('config', default_value=default_config),
         DeclareLaunchArgument('device_id', default_value='0'),
         DeclareLaunchArgument('autorepeat_rate', default_value='20.0'),
+        DeclareLaunchArgument('overrides', default_value=''),
 
         # joy 側は respawn する。Bluetooth は切れるものなので、落ちたら上げ直す。
         # 切れている間は teleop の無通信ウォッチドッグが脱力を掛けるので、
@@ -65,6 +78,6 @@ def generate_launch_description():
              parameters=joy_params, output='screen', condition=IfCondition(is_joy),
              respawn=True, respawn_delay=2.0),
 
-        Node(package='roboone_teleop', executable='teleop_node', name='teleop',
-             parameters=[config], output='screen'),
+        # teleop 本体は引数の確定後に組む (overrides の有無で parameters が変わる)
+        OpaqueFunction(function=_teleop_node),
     ])
