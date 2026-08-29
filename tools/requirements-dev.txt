@@ -1,0 +1,14 @@
+# ament_flake8 / ament_pep257 と同じ linter 群 + pytest。tools/README.md を参照
+flake8
+flake8-blind-except
+flake8-builtins
+flake8-class-newline
+flake8-comprehensions
+flake8-deprecated
+flake8-docstrings
+flake8-import-order
+flake8-quotes
+pep8-naming
+pydocstyle
+pytest
+pyyaml
