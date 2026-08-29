@@ -65,7 +65,7 @@ import signal
 import subprocess
 import threading
 import time
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 _HERE = Path(__file__).resolve().parent
 _WS = _HERE.parents[3]
@@ -329,9 +329,8 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, obj, code=200):
         self._send(json.dumps(obj).encode('utf-8'), 'application/json', code)
 
-    def do_GET(self):
+    def do_GET(self):                     # noqa: N802 (http.server の約束)
         u = urlparse(self.path)
-        q = parse_qs(u.query)
         try:
             if u.path == '/favicon.ico':
                 self._send(b'', 'image/x-icon', 204)
@@ -443,7 +442,7 @@ def main() -> int:
     time.sleep(0.6)
 
     def shutdown(_sig, _frm):
-        """kill されても子プロセスを道連れにする（シリアルを掴んだまま残さない）。"""
+        """強制終了 (kill) されても子プロセスを道連れにする（シリアルを掴んだまま残さない）。"""
         if READER.proc:
             READER.proc.terminate()
         raise SystemExit(0)

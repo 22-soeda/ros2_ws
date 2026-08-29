@@ -60,6 +60,7 @@ def generate(out_path: Path, params: GaitParams, extra=None) -> Path:
 
 def serve(directory: Path, port: int):
     class Handler(http.server.SimpleHTTPRequestHandler):
+
         def __init__(self, *a, **kw):
             super().__init__(*a, directory=str(directory), **kw)
 

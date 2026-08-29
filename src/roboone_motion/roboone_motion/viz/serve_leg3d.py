@@ -169,6 +169,7 @@ def api_walk(q) -> dict:
         frames.append(m)
 
     bad = [f['t'] for f in frames if f['stL'] != 'ok' or f['stR'] != 'ok']
+
     # 機構層で弾かれたフレーム（IK は解けてもサーボに落とせない姿勢）
     def mech_bad(f):
         for key in ('mL', 'mR'):
@@ -200,7 +201,7 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, obj, code=200):
         self._send(json.dumps(obj).encode('utf-8'), 'application/json', code)
 
-    def do_GET(self):
+    def do_GET(self):                     # noqa: N802 (http.server の約束)
         u = urlparse(self.path)
         q = parse_qs(u.query)
         try:

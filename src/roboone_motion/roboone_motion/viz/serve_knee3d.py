@@ -61,7 +61,7 @@ _HERE = Path(__file__).resolve().parent
 _WS = _HERE.parents[3]
 sys.path.insert(0, str(_WS / 'scripts'))
 
-import knee_config as kcfg                                 # noqa: E402
+import knee_config as kcfg                                 # noqa: E402,I100
 import knee_fourbar                                        # noqa: E402
 import leg_ik                                              # noqa: E402
 from leg_servo import leg_angle_from_knee_bend             # noqa: E402
@@ -353,7 +353,7 @@ class KneeModel:
         def to3d(p) -> list[float]:
             return to_body(knee + p[0] * e1 + p[1] * e2)
 
-        L = self.link
+        L = self.link                       # noqa: N806
         out['link'] = {
             'O4': to3d((0.0, 0.0)), 'O2': to3d((L.r1, 0.0)),
             'A': to3d(pose.A), 'B': to3d(pose.B),
@@ -437,6 +437,7 @@ def api_set(q) -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
+
     def log_message(self, *a):        # アクセスログは出さない
         pass
 
@@ -448,7 +449,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_GET(self):
+    def do_GET(self):                     # noqa: N802 (http.server の約束)
         u = urlparse(self.path)
         q = parse_qs(u.query)
         try:
