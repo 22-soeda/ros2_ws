@@ -1,6 +1,6 @@
 // feetech_leg_stream: 両脚 12 軸のサーボ角を「読むだけ」で流し続ける。
 //
-// 両脚 3D ビジュアライザ (roboone_motion/viz/serve_legs3d.py) に渡す。
+// 両脚 3D ビジュアライザ (roboone_viz/serve_legs3d.py) に渡す。
 // 手で脚を動かしたときのサーボ角を読み取って、関節角と姿勢の表示に使う。
 //
 //   ros2 run feetech_servo feetech_leg_stream                 # 既定: 両バス, ID 1,2,3,4,6,5, 50Hz

@@ -80,7 +80,7 @@ void print_help()
     "  watch [秒]     位置を連続表示（既定5秒 / Ctrl-C で中断）\n"
     "  speed [N]      移動速度 step/s を設定／表示（0=最速）\n"
     "  acc [N]        加速度を設定／表示\n"
-    "  torque [N]     HLS系の目標トルク 0-1000 を設定／表示（0 だと駆動しない）\n"
+    "  torque [N]     HLS系の目標電流 reg44 0-2047 を設定／表示（0 だと駆動しない）\n"
     "  getb/getw A    生レジスタを読む (例: getw 9 = 角度リミット下限)\n"
     "  setb/setw A V  生レジスタに書く。EEPROM(addr<40) は自動で unlock/lock\n"
     "  limits [Lo Hi] 角度リミットを表示/設定。全軸 0 0 が既定（0 0 = 制限なし）\n"
@@ -100,7 +100,7 @@ void usage(const char * argv0)
     "  --id       起動時に選択するサーボID\n"
     "  --speed    移動速度 step/s（既定 600、0=最速）\n"
     "  --acc      加速度（既定 20）\n"
-    "  --torque   HLS系の目標トルク 0-1000（既定 1000）。0 だと駆動しない\n"
+    "  --torque   HLS系の目標電流 reg44 0-2047（既定 2047）。0 だと駆動しない\n"
     "  --family   hls | sms（既定 hls。実機は HLS 系 model 4618/5130）\n"
     "  --timeout  1トランザクションの受信タイムアウト ms（既定 20）\n",
     argv0);
@@ -117,7 +117,7 @@ int main(int argc, char ** argv)
   int sel_id = -1;
   int speed = 600;
   int acc = 20;
-  int goal_torque = 1000;
+  int goal_torque = 2047;   // reg44 = Target Current の上限（0-2047）
   auto family = feetech_servo::Family::kHls;
 
   for (int i = 1; i < argc; ++i) {
@@ -589,7 +589,8 @@ int main(int argc, char ** argv)
 
     } else if (cmd == "torque") {
       if (tok.size() > 1) {
-        goal_torque = std::clamp(arg_int(1, goal_torque), 0, 1000);
+        // reg44 は Target Current (0-2047)。トルクの 0.1% スケール (0-1000) ではない。
+        goal_torque = std::clamp(arg_int(1, goal_torque), 0, 2047);
         for (auto & e : buses) {
           if (e.bus) {
             e.bus->set_goal_torque(static_cast<uint16_t>(goal_torque));

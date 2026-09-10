@@ -66,8 +66,14 @@ public:
   const std::string & port() const { return port_; }
   Family family() const { return family_; }
 
-  // HLS 系のときに位置指令へ載せる目標トルク（0-1000）。0 だと駆動しない。
+  // HLS 系のときに位置指令へ載せる値（reg44/45）。0 だと駆動しない。
   // SMS/STS 系では無視され、常に GOAL_TIME=0 が書かれる。
+  //
+  // ★HLS の 44/45 は「目標トルク」ではなく **Target Current**（0-2047、addr28 と同じ単位）。
+  //   電源投入時に addr28 (Protection Current) からロードされるが、**位置指令を書くたびに
+  //   このブロックで上書きされる**ので、EEPROM の 28 をいくら変えても走行中の制限は
+  //   ここで決まる（2026-09-09 実機確認: 28=2000 でも on の直後に 44=1000 へ戻る）。
+  //   トルクの 0.1% スケール（reg16 / reg48 の 0-1000）とは別物。
   void set_goal_torque(uint16_t t) { goal_torque_ = t; }
   uint16_t goal_torque() const { return goal_torque_; }
 
@@ -129,7 +135,7 @@ private:
   uint8_t proto_end_;
   int timeout_ms_;
   Family family_;
-  uint16_t goal_torque_ = 1000;
+  uint16_t goal_torque_ = 2047;   // Target Current の上限値。制限を掛けない側に倒す
   bool is_open_ = false;
 
   std::unique_ptr<SMS_STS> sm_;       // 公式 SDK 本体

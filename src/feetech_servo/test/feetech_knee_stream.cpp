@@ -1,7 +1,7 @@
 // feetech_knee_stream: 膝サーボの角度を「読むだけ」で流し続ける。
 //
 // 膝 4 節リンクの動作確認用。手で膝を曲げたときのモータ回転を読み取って、
-// 3D ビジュアライザ (roboone_motion/viz/serve_knee3d.py) に渡す。
+// 3D ビジュアライザ (roboone_viz/serve_knee3d.py) に渡す。
 //
 //   ros2 run feetech_servo feetech_knee_stream                    # 既定: 右バス ID4, 50Hz
 //   ros2 run feetech_servo feetech_knee_stream --id 4 --rate 100
