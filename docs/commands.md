@@ -144,11 +144,14 @@ ros2 topic echo /joint_states --once
 # 手で叩く。★/estop は latched (TRANSIENT_LOCAL) なので QoS を合わせないと届かない
 ros2 topic pub -t 3 /cmd_motion std_msgs/msg/String "{data: home}"
 ros2 topic pub -t 3 --qos-durability transient_local --qos-reliability reliable \
-  /estop std_msgs/msg/Bool "{data: false}"          # トルクオン
+  /estop std_msgs/msg/Bool "{data: false}"          # トルクオン（★実測姿勢から
+                                                    #   torque_on_time かけてホーム姿勢へ移る）
 ros2 topic pub -t 3 --qos-durability transient_local --qos-reliability reliable \
   /estop std_msgs/msg/Bool "{data: true}"           # 脱力
 ros2 topic pub -t 3 /cmd_motion std_msgs/msg/String "{data: squat}"   # 動作確認用の技
 # その場保持で武装（転倒 → 脱力 のあと、寝た姿勢のままトルクを入れて起き上がりに繋ぐ）。
+# **今の姿勢のまま全軸一斉にトルクを入れたい**ならこれ。補間距離ゼロなので機体は動かない
+# （servo_bank が「実測位置を読む → それを目標に書く → トルクON」を左右バスで行う）。
 # コントローラからは L3 長押し。手で叩くなら hold → estop false の順
 ros2 topic pub -t 3 /cmd_motion std_msgs/msg/String "{data: hold}"
 # ↑ コントローラからは R1（デッドマン）を押しながら十字キー 下 でも出せる
@@ -208,6 +211,35 @@ ikpose R 16.518818 -89.3 -261.243436 0 -8 0
 
 ★ `motion_teach` で捕まえた姿勢は前傾込み（実機そのまま）で出る。`body_pitch` を入れた
 まま捕まえた行を `motions.yaml` へ貼ると再生時に二重に傾く。ティーチ中は 0 に戻すこと。
+
+## サーボを 1 軸ずつ見る（対話シェル）
+
+```bash
+# 1軸だけを選んで手で叩く対話 CLI（既定 2 ポートを開く）
+ros2 run feetech_servo feetech_shell
+ros2 run feetech_servo feetech_shell --bus 1 --id 5    # 最初から bus1 の ID5 を選ぶ
+echo -e "id 4\nstate\npos" | ros2 run feetech_servo feetech_shell   # パイプで 1 発
+
+# シェル内の「読むだけ」のコマンド（★これらはサーボに書き込まない）
+#   buses            バス一覧と接続状態
+#   scan [min max]   このバスの ID を総当たり ping（既定 1..20）
+#   id N / ping N    対象 ID の選択 / 応答確認
+#   pos              現在位置（0-4095 と deg）
+#   state            位置/速度/負荷/電圧/温度/電流/moving/エラー
+#   info             EEPROM（型番・モード・トルク・角度リミット・目標位置・目標トルク）
+#   watch [秒]       位置を連続表示（既定 5 秒、Ctrl-C で抜ける）
+#   stats            このバスの tx / rx_fail
+#   pos @7           行末に @ID を付けるとその行だけ別 ID を見る
+# ★書き込み系（on/off/go/jog/setb/setw/limits）は実機が動く。使う前に確認を取る。
+
+# バスに何が生きているかだけ見たい（シェルを開かずに列挙）
+ros2 run feetech_servo feetech_scan_test --id-max 12
+ros2 run feetech_servo feetech_scan_test --port /dev/feetech_right --id-max 12
+```
+
+前提: `colcon build --packages-select feetech_servo`。バスは udev 固定名
+（`/dev/feetech_left` / `/dev/feetech_right`）。ID7 があるほうが右半身。
+motion ノードが走っていると同じポートを掴めないので、先に止めること。
 
 ## サーボのゲイン / トルク上限
 
@@ -558,6 +590,29 @@ ros2 topic pub --once /autonomy std_msgs/Bool "data: false"
 ```bash
 ros2 bag info ~/roboone_logs/rosbag2_YYYY_MM_DD-HH_MM_SS
 ros2 bag play ~/roboone_logs/rosbag2_YYYY_MM_DD-HH_MM_SS
+
+# 生カウントが 0-4095 の外へ出ていないかを軸ごとに見る（多回転の巻き数ずれの検出）。
+# 足首 ID5/ID6 は servo_limits.yaml が [0, 0] = 多回転可。脱力で手早く動かすと巻き数が
+# ±4096 ぶん乗ることがあり、そのまま運動学へ流れて「実測姿勢が取れない」で武装しなくなる。
+# （2026-09-10 実機: R_ID6 -1672 / L_ID6 6103 = ちょうど ∓4096 ずれ）
+BAG=~/roboone_logs/rosbag2_YYYY_MM_DD-HH_MM_SS
+python3 -c '
+import sys, rosbag2_py
+from rclpy.serialization import deserialize_message
+from sensor_msgs.msg import JointState
+r = rosbag2_py.SequentialReader()
+r.open(rosbag2_py.StorageOptions(uri=sys.argv[1], storage_id="mcap"), rosbag2_py.ConverterOptions("",""))
+r.set_filter(rosbag2_py.StorageFilter(topics=["/motion/servo_states"]))
+lo, hi = {}, {}
+while r.has_next():
+    _, d, _ = r.read_next()
+    m = deserialize_message(d, JointState)
+    for n, p in zip(m.name, m.position):
+        lo[n] = min(lo.get(n, p), p); hi[n] = max(hi.get(n, p), p)
+for n in lo:
+    print("%-6s count %8.0f..%-8.0f%s" % (n, lo[n], hi[n],
+          "  <== 0-4095 の外" if lo[n] < 0 or hi[n] > 4095 else ""))
+' $BAG
 ```
 
 ## 実機まわり
