@@ -1,7 +1,7 @@
 // 脚 FK/IK を 1 行 1 リクエストの JSON サービスとして出す。
 //   ros2 run roboone_kinematics leg_service
 //
-// 可視化 (roboone_motion/viz/serve_leg3d.py) から起動され、ブラウザに出る形は
+// 可視化 (roboone_viz/serve_leg3d.py) から起動され、ブラウザに出る形は
 // すべてここを通る。つまり画面に見えているのは leg_kinematics.hpp そのものの
 // 出力で、可視化用に書き直した別実装ではない。
 //

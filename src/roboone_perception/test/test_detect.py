@@ -11,7 +11,7 @@ docs/opponent_detection.pdf が実測から導いた判断を、合成シーン 
     §5    傾いても相手の位置が動かない
     §9.2  「見えない」を 1 つに潰さない
 
-ROS は要らない。roboone_motion の walk_core と同じで、計算部分だけを直接叩く。
+ROS は要らない。roboone_walk_ref の walk_core と同じで、計算部分だけを直接叩く。
 """
 
 import math

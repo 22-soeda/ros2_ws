@@ -4,21 +4,36 @@
   <name>roboone_motion</name>
   <version>0.1.0</version>
   <description>
-    歩行計画 (walk_core) と、その計画過程を可視化するツール。
-    docs/ros2_walk_implementation.pdf の §11 手順 1〜2 に相当する。
-    walk_core は ROS 非依存で、motion ノード (今後実装) がプロセス内で呼ぶ。
+    motion ノード。ros-architecture §3 の「200Hz ループ」の実体で、
+    /cmd_walk・/cmd_motion・/estop を受けて歩行計画 (roboone_walk_core) と
+    キーフレームモーションを走らせ、IK (roboone_kinematics) を通して
+    Feetech サーボ (feetech_servo) へ送る。
+
+    歩行計画の仕様原本は roboone_walk_ref (Python) 側にある。こちらはその C++ 版
+    (roboone_walk_core) をプロセス内で呼ぶだけで、計画の式は持たない。
   </description>
   <maintainer email="soedayu.030622@gmail.com">soedayu</maintainer>
   <license>MIT</license>
 
-  <depend>python3-yaml</depend>
+  <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <test_depend>ament_copyright</test_depend>
-  <test_depend>ament_flake8</test_depend>
-  <test_depend>ament_pep257</test_depend>
-  <test_depend>python3-pytest</test_depend>
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>diagnostic_msgs</depend>
+  <depend>ament_index_cpp</depend>
+  <depend>yaml-cpp</depend>
+  <depend>feetech_servo</depend>
+  <depend>roboone_kinematics</depend>
+  <depend>roboone_walk_core</depend>
+  <!-- 歩行設定 (gait.yaml) とホーム姿勢 (home_pose.yaml) の置き場。share を読むだけ -->
+  <exec_depend>roboone_walk_ref</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_cmake_uncrustify</test_depend>
 
   <export>
-    <build_type>ament_python</build_type>
+    <build_type>ament_cmake</build_type>
   </export>
 </package>

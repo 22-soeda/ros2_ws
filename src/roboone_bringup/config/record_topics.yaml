@@ -26,7 +26,12 @@ topics:
   # の切り分けができる。★velocity は速度ではなく **目標カウント**（JointState に
   #   「目標」の場所が無いので借りている）。effort は負荷 (-1..1)。
   - /motion/servo_states
-  - /motion/diagnostics     # バスごとの電圧・最高温度・応答軸数・エラービット（低電圧の追跡用）
+  # 軸ごとの電流 [mA]。読み出しは 50Hz だが publish は 10Hz なので、**捨てずに区間の
+  #   最大と平均を持ち回して出している**（そのままだと接触の瞬間の突入電流を落とす）。
+  #   ★position = 区間の有効サンプル数 / velocity = 区間平均 / effort = 区間ピーク。
+  #   サンプル数が落ちている区間はピークも取りこぼしている（低電圧で応答が欠けた）。
+  - /motion/servo_current
+  - /motion/diagnostics     # バスごとの電圧・最高温度・応答軸数・エラービット・最大電流（低電圧の追跡用）
   - /imu/data
   # --- 判断層 ---
   - /opponent           # 敵機の位置・上端高さ・状態（roboone_interfaces/Opponent）

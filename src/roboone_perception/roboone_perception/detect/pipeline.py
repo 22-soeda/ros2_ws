@@ -21,7 +21,7 @@ docs/opponent_detection.pdf §3 の段の並びをそのまま実装したもの
 
 ROS には依存しない。入力は numpy の深度画像と内部パラメータと IMU サンプルだけで、
 同じ入力からは同じ出力が出る。単体テストは合成シーンを描いてここへ通す
-(roboone_motion の walk_core と同じ流儀)。
+(roboone_walk_ref の walk_core と同じ流儀)。
 """
 
 from dataclasses import dataclass, field

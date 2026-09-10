@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>roboone_viz</name>
+  <version>0.1.0</version>
+  <description>
+    可視化ツール置き場。**ROS ノードは持たない**（素の Python で起動する）。
+    歩行計画の過程 (gen_walk_viz / walkcore.js のライブシミュレータ) と、
+    脚・膝の機構 (serve_leg3d / serve_legs3d / serve_knee3d) を扱う。
+    脚と膝の側は roboone_kinematics の leg_service を子プロセスで叩くだけで、
+    可視化用に書き直した別実装は持たない。
+  </description>
+  <maintainer email="soedayu.030622@gmail.com">soedayu</maintainer>
+  <license>MIT</license>
+
+  <depend>python3-yaml</depend>
+  <depend>roboone_walk_ref</depend>
+  <!-- serve_leg3d / serve_legs3d が leg_service を子プロセスで起動する -->
+  <exec_depend>roboone_kinematics</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

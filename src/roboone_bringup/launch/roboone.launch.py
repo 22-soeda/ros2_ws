@@ -9,6 +9,9 @@
 引数:
 
     ui:=true|false        ui ノード（OLED / RGB LED / ブザー）
+                          ★2026-09-10 現在 /ui/* を出すノードが無いので、上げても
+                            何も表示されない（teleop の状態表示は teleop から外した。
+                            src/roboone_teleop/README.md §7）
     teleop:=true|false    joy + teleop ノード
     motion:=true|false    motion ノード（歩行 / 技 / IK / サーボ送信）
     allow_torque:=true|false  ★既定 true（機体が動く）。false で「読むだけ」の通し確認
@@ -22,20 +25,20 @@
 
     joy_backend:=game_controller|joy    teleop へそのまま渡す
     teleop_config:=<path>               teleop の割り当て YAML
+    motion_config:=<path>               motion のパラメータ YAML
     teleop_overrides:=<path>            teleop の差分 YAML。config の上に重ねる (省略可)
 
 起動順と落ち方の設計:
 
-  * **ui を先に上げる。** teleop の状態表示は latched なので順序に厳密な依存は
-    ないが、ui が先にいれば起動直後から「まだ /joy が来ていない」が画面に出る。
-    立ち上げ中に何も表示されない時間を作らない。
+  * **ui を先に上げる。** /ui/* は latched なので順序に厳密な依存はないが、購読側が
+    先にいれば取りこぼしを考えなくてよい。
   * **どのノードが落ちても launch 全体は落とさない。** 特に teleop が死んだときに
-    全部道連れにすると、記録が切れて原因が追えなくなり、OLED も消えて操作者が
-    状況を読めなくなる。teleop は終了時にゼロ指令と /estop true を置いていくので、
-    teleop だけが死んでも機体は脱力して止まる（motion 側の /cmd_walk タイムアウトも
-    効く）。**止めるより、止まったことが分かる状態を残すほうを採る。**
-  * teleop が死ぬと OLED は最後の RELAX 表示のまま固まり、LED は赤の点滅で残る。
-    ターミナルには "process has died" が出る。この 3 つで気付ける前提。
+    全部道連れにすると、記録が切れて原因が追えなくなる。teleop は終了時にゼロ指令と
+    /estop true を置いていくので、teleop だけが死んでも機体は脱力して止まる
+    （motion 側の /cmd_walk タイムアウトも効く）。
+    **止めるより、止まったことが分かる状態を残すほうを採る。**
+  * teleop が死んだことは、ターミナルの "process has died" と /estop true が
+    ラッチされたままになることで分かる。
 
 ★既定でサーボにトルクが入る（allow_torque:=true）。起動前に機体を支えておくこと。
 allow_torque:=false にすると、/cmd_walk → 歩行計画 → IK → 生カウント までは全部回って
@@ -104,6 +107,12 @@ def generate_launch_description():
         DeclareLaunchArgument('joy_backend', default_value='game_controller',
                               description='teleop へ渡す。game_controller | joy'),
         DeclareLaunchArgument(
+            'motion_config',
+            default_value=os.path.join(
+                get_package_share_directory('roboone_motion'),
+                'config', 'motion_node.yaml'),
+            description='motion ノードのパラメータ YAML'),
+        DeclareLaunchArgument(
             'teleop_config',
             default_value=os.path.join(teleop_share, 'config', 'ps5_dualsense.yaml'),
             description='teleop の割り当て YAML'),
@@ -137,11 +146,14 @@ def generate_launch_description():
         #   機体を動かさずに通し確認したいときは allow_torque:=false。
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
-                os.path.join(get_package_share_directory('roboone_motion_node'),
+                os.path.join(get_package_share_directory('roboone_motion'),
                              'launch', 'motion.launch.py')),
             condition=IfCondition(LaunchConfiguration('motion')),
             launch_arguments={
                 'allow_torque': LaunchConfiguration('allow_torque'),
+                # ★必ず明示的に渡す。渡さないと、上の teleop の include が置いていった
+                #   launch 設定を拾ってしまう（launch の設定値は兄弟へ漏れる）。
+                'motion_config': LaunchConfiguration('motion_config'),
             }.items()),
 
         # --- 4) カメラ（要るときだけ）----------------------------------------

@@ -22,8 +22,11 @@ ROS 2 Jazzy の colcon ワークスペース。ターゲットは Raspberry Pi 5
 | `feetech_servo` | Feetech サーボの C++ ドライバ（2 バス構成）。`vendor/scservo` は上流ベンダ |
 | `roboone_kinematics` | 脚 IK / 膝 4 節リンク / 足首パラレルリンク（C++）。`*_selftest` `*_dump` が実行形 |
 | `roboone_walk_core` | 歩行コア（C++）。`walk_selftest` `walk_dump` |
-| `roboone_motion` | 歩行の Python 実装と可視化（`viz/`） |
+| `roboone_walk_ref` | 歩行計画 walk_core の**仕様原本**（Python）と正準の設定 YAML。ノードなし |
+| `roboone_viz` | 歩行・脚・膝の可視化ツール。ノードなし（素の Python で起動） |
+| `roboone_motion` | **motion ノード**（C++）。200Hz ループの実体。歩行計画 → IK → サーボ送信。`motion_node` `motion_teach` `motion_selftest` |
 | `roboone_perception` | 相手検知（`detect/`） |
+| `roboone_behavior` | 自律の行動判断（`/autonomy` が true の間だけ `/cmd_walk` を出す） |
 | `roboone_teleop` | PS5 DualSense からの操縦 |
 | `roboone_ui` | OLED / RGB LED / ブザー |
 | `roboone_bringup` | 機体全体の立ち上げ launch |
@@ -49,7 +52,7 @@ ROS 2 Jazzy の colcon ワークスペース。ターゲットは Raspberry Pi 5
 - 検証で motion ノードを起動するときは `allow_torque:=false`（バスは開くが
   `enable_torque(id, true)` と位置指令を送らない。歩行計画・IK・モーション再生・
   `/joint_states` は全部回る）か、`dry_run:=true`（バスも開かない）を付ける。
-- `roboone_motion_node` の `allow_torque` の**既定は `true`**（通常運用）。
+- `roboone_motion` の `allow_torque` の**既定は `true`**（通常運用）。
   検証で落とすのは Claude 側の責任で、既定値を下げて誤魔化さない。
 - トルクを入れるコマンドを提案・実行するときは、毎回そう明言して確認を取る。
 - 新しくサーボへ書くツールを足すときは、既定を読み取り専用にして、書き込みは

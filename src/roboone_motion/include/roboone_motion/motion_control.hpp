@@ -1,0 +1,184 @@
+// 生成層 — 状態機械。「今この瞬間、機体はどの姿勢でいるべきか」だけを決める。
+//
+// **ROS もサーボも知らない。** 入力は実測姿勢と外からの指令、出力は目標姿勢 1 つ。
+// おかげで motion_selftest から実機なしで順序を検証できる（下の 4 つは全部
+// 実機でしか踏めなかったバグの修正で、テストが無いと再発しても気付けない）。
+//
+// ===========================================================================
+// 状態
+// ===========================================================================
+//   RELAX   脱力。目標を作らず、実測を追いかける（復帰時の補間の起点になる）
+//   ARMING  実測姿勢 -> 保持姿勢へ torque_on_time 秒かけて補間中
+//   HOLD    立位保持。/cmd_walk を待つ
+//   WALK    歩行中
+//   MOTION  技を再生中
+//   STAY    その場保持。目標を作らず cur_pose_ をそのまま出し続ける
+//
+// ===========================================================================
+// 順序の約束 — 崩すと実機で事故る 4 つ
+// ===========================================================================
+// [1] **技の要求を武装判定より先に捌く。** teleop のホームポジション操作は
+//     /cmd_motion "home" -> (0.1s) -> /estop false の順に来るので、先に home を
+//     捌いておけば hold_pose_ がホーム姿勢になった状態で武装に入れる。逆順に
+//     すると、最初の 1 本が「立ち上げ中なので出さない」で捨てられる。
+//
+// [2] **実測姿勢が 1 度も取れていないうちは武装しない。** 立ち上げは
+//     「実測姿勢 -> 保持姿勢」の補間なので、起点が分からないまま始めると補間に
+//     ならない。以前ここで hold_pose_ を起点に代用していたが、起点と終点が同じ
+//     = 補間が無いのと同じで、**トルクが入るだけで動かない** (2026-08-28 実機)。
+//     代用すると今度は保持姿勢へ一気に飛ぶので、どちらにしても代用してはいけない。
+//
+// [3] **WALK -> HOLD は少し待ってから。** 歩き始めは指令がレート制限で立ち上がる
+//     ので、歩行エンジンの状態が IDLE と START の間を数十 ms 単位で往復する
+//     (2026-08-28 実機で 55ms 周期のばたつきを確認)。そのたびに状態が変わると
+//     /motion/state が荒れ、hold_pose_ も上書きされ続ける。
+//
+// [4] **その場保持の武装後は HOLD ではなく STAY。** HOLD は tickWalk が足先を
+//     立位のスタンスへ上書きするので、寝た姿勢からだと跳ねる。転倒 -> 脱力のあと、
+//     寝た姿勢で武装して起き上がりに繋ぐ経路 (docs/無線操縦_不足項目レビュー.md §4.3)。
+//
+// ===========================================================================
+// 歩行と旋回
+// ===========================================================================
+// 歩行計画は roboone_walk_core (WalkEngine)。**平行移動のみ**で、機体は向きを
+// 変えない。/cmd_walk の angular.z は使わない (旋回はキーフレームモーション
+// turn_l / turn_r の担当)。angular.z が乗っていたら起動後 1 回だけ警告する。
+#ifndef ROBOONE_MOTION__MOTION_CONTROL_HPP_
+#define ROBOONE_MOTION__MOTION_CONTROL_HPP_
+
+#include <atomic>
+#include <mutex>
+#include <string>
+
+#include "roboone_motion/body_pose.hpp"
+#include "roboone_motion/event.hpp"
+#include "roboone_motion/motion_library.hpp"
+#include "roboone_motion/servo_map.hpp"
+#include "roboone_motion/side.hpp"
+#include "roboone_walk_core/walk_engine.hpp"
+
+namespace roboone_motion
+{
+
+namespace rwc = roboone_walk_core;
+
+enum class State { RELAX, ARMING, HOLD, WALK, MOTION, STAY };
+
+const char * stateName(State s);
+
+//! その場保持の技名。teleop の hold_motion と合わせる (motions.yaml には書かない)
+constexpr char kHoldMotion[] = "hold";
+
+class MotionController
+{
+public:
+  struct Options
+  {
+    double cmd_timeout = 0.5;         //!< /cmd_walk がこれだけ途切れたら指令ゼロ
+    double torque_on_time = 2.0;      //!< 実測姿勢 -> 保持姿勢の補間時間
+    double home_move_time = 1.5;      //!< /cmd_motion "home" でホームへ移る時間
+    double hold_arm_time = 0.5;       //!< その場保持で武装するときの補間時間
+    double stance_y_offset = 0.0;     //!< 歩行の足位置に足す左右オフセット [mm]
+    double walk_idle_hold = 0.25;     //!< IDLE がこれだけ続いたら HOLD（ばたつき止め）
+    double loop_hz = 200.0;           //!< 到達域の見張りの間引きに使う
+    bool walk_enable = true;
+    bool motion_interrupts_walk = true;
+    bool require_home_before_arm = true;
+  };
+
+  /// map / lib は寿命を通じて生きていること（ノードが持つ実体を指す）。
+  void configure(
+    const ServoMap * map, const MotionLibrary * lib, const rwc::GaitParams & gait,
+    const BodyPose & home, double body_pitch, const Options & opt);
+
+  // --- 外からの指令（購読スレッドから呼ばれる。ロックを持つ）-------------
+  void setEstop(bool v) {estop_.store(v);}
+  void setWalkCmd(double vx, double vy, double wz, double stamp);
+  void requestMotion(const std::string & name);
+
+  // --- 1 周期 -----------------------------------------------------------
+  struct Tick
+  {
+    State state = State::RELAX;
+    bool state_changed = false;
+    //! この周期の目標姿勢。**null なら指令を出さない**（RELAX）
+    const BodyPose * target = nullptr;
+    bool want_torque = false;
+  };
+
+  /// measured が null なら「実測姿勢が取れなかった」。why はその理由。
+  Tick step(
+    double now, double dt, const BodyPose * measured, const std::string & why,
+    bool torque_ready);
+
+  // --- 素性 -------------------------------------------------------------
+  State state() const {return state_;}
+
+  /// /motion/state の書式。**behavior が読み方をテストで固定しているので変えない。**
+  ///
+  ///     <状態>              RELAX / ARMING / HOLD / WALK / STAY
+  ///                         (STAY = その場保持。behavior の ready_states に無いので
+  ///                          「歩けない」扱いになる。寝ている間はそれで正しい)
+  ///     MOTION:<技名>       再生中だけ。技名はコロンの後ろ ("MOTION:punch_r")
+  ///
+  /// 先頭語が状態で、コロン区切りの後置は MOTION のときの技名だけ。将来ここに
+  /// 支持脚や位相を足すなら **空白区切りで後ろに足す** こと (behavior 側は
+  /// 空白以降を無視するように作られている)。先頭語の意味を変える・コロンの
+  /// 使い方を増やす変更は、behavior (roboone_behavior) と同時に直す。
+  ///
+  /// 転倒 (FALL 相当) はまだ無い。姿勢を知る手段が機体に無く、/imu/data を出す
+  /// ノードが存在しないため (RealSense が出すのは生の /camera/imu で、姿勢は
+  /// 入っていない)。入れるなら IMU フィルタが先。
+  std::string stateText() const;
+
+  const BodyPose & currentPose() const {return cur_pose_;}
+  const BodyPose & holdPose() const {return hold_pose_;}
+  bool haveMeasured() const {return have_measured_;}
+
+  bool popEvent(Event & e) {return ev_.pop(e);}
+
+  // --- テスト用（motion_selftest）----------------------------------------
+  /// 実測が取れた扱いにする。実機なしで武装の順序を確かめるときだけ使う。
+  void injectMeasured(const BodyPose & p);
+
+private:
+  bool canArm() const {return !opt_.require_home_before_arm || seen_motion_;}
+  void setState(State s);
+  /// 今の姿勢 (cur_pose_) から to へ time 秒で移る 1 区間の補間を仕込む。
+  void startBlend(const BodyPose & to, double time, double now, const char * what);
+  void handleMotionRequest(const std::string & name, double now);
+  /// 歩行計画を 1 周期進めて、足先目標を cur_pose_ に書く。
+  void tickWalk(double now, double dt);
+  void reportPlayerWarning();
+
+  const ServoMap * map_ = nullptr;
+  const MotionLibrary * lib_ = nullptr;
+  Options opt_;
+  double body_pitch_ = 0.0;
+
+  rwc::WalkEngine walk_{rwc::GaitParams{}};
+  MotionPlayer player_;
+  Motion blend_motion_;
+  BodyPose home_pose_, hold_pose_, cur_pose_;
+
+  std::atomic<bool> estop_{false};
+  std::mutex walk_mtx_, req_mtx_;
+  double walk_cmd_[2]{0.0, 0.0};
+  double walk_stamp_ = 0.0;
+  std::string motion_req_;
+  bool got_motion_ = false, seen_motion_ = false, warned_yaw_ = false;
+
+  //! サーボ層へ伝える「トルクを入れてよいか」。step() だけが書く
+  bool want_torque_ = false;
+  bool arm_in_place_ = false;      //!< hold を受けた: 次の武装は実測姿勢のまま
+  bool stay_after_arm_ = false;    //!< その武装が終わったら HOLD ではなく STAY へ
+  bool have_measured_ = false;     //!< 実測姿勢が 1 度でも取れたか
+  double idle_since_ = -1.0;
+  int reach_tick_ = 0;
+  State state_ = State::RELAX;
+  EventQueue ev_;
+};
+
+}  // namespace roboone_motion
+
+#endif  // ROBOONE_MOTION__MOTION_CONTROL_HPP_

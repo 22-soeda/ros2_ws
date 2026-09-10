@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>roboone_walk_ref</name>
+  <version>0.1.0</version>
+  <description>
+    歩行計画 walk_core の **仕様原本** (Python) と、正準の設定 YAML。
+    docs/ros2_walk_implementation.pdf の §11 手順 1〜2 に相当する。
+    ROS 非依存で、ノードは持たない。実機で走るのは C++ 移植の
+    roboone_walk_core で、motion ノード (roboone_motion) がそれをリンクする。
+    ロジックを変えたら compare_walk_engines.py で 3 実装の数値一致を確認すること。
+  </description>
+  <maintainer email="soedayu.030622@gmail.com">soedayu</maintainer>
+  <license>MIT</license>
+
+  <depend>python3-yaml</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

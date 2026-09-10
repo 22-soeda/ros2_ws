@@ -1,7 +1,7 @@
 # walk_core 仕様 — 歩行計画エンジン (平行移動・純フィードフォワード)
 
 - 対象: ROBO-ONE Auto 2026 機。`docs/ros2_walk_implementation.pdf` (以下、実装ノート) の §3〜§5 を実装したもの
-- 実装: Python (原本) `src/roboone_motion/roboone_motion/walk_core/`、C++ `src/roboone_walk_core/`、JS `src/roboone_motion/roboone_motion/viz/walkcore.js`
+- 実装: Python (原本) `src/roboone_walk_ref/roboone_walk_ref/walk_core/`、C++ `src/roboone_walk_core/`、JS `src/roboone_viz/roboone_viz/walkcore.js`
 - 作成: 2026-08-28。実機接続前 (実装ノート §11 の手順 1〜2 まで)
 
 ## 1. 範囲と前提
@@ -126,7 +126,7 @@ ESTOP: 全状態から。凍結し、復帰は reset() のみ
 
 | 検査 | 場所 |
 |---|---|
-| ẍ_C = ω²(x_C − p) の残差、ξ の閉形式、ZMP が接地足の上 | `roboone_motion/test/test_walk_core.py` |
+| ẍ_C = ω²(x_C − p) の残差、ξ の閉形式、ZMP が接地足の上 | `roboone_walk_ref/test/test_walk_core.py` |
 | 全方向 (前後左右斜め) で START→STEP→STOP が完走し、足間隔 W・x 揃い・ξ = 中点 | 同上 + `walk_selftest.cpp` |
 | 足の非交差、決定性、指令の飽和、クランプ域、遊脚高さ、ESTOP | 同上 |
 | **Python / C++ / JS の全 tick 数値一致** (許容 1e-6 m、実測 ~1e-15) | `roboone_walk_core/tools/compare_walk_engines.py` |
@@ -156,7 +156,7 @@ IK の足裏座標は**重心質点 = 運動学 Σ_B の原点**（股 3 軸の�
 相対位置で定義されている。walk_core の `pelvis` はこの点に一致させ（r_PC = 0）、
 `foot_targets_pelvis()` がそのまま IK の入力になる。
 
-### ホーム姿勢 (`roboone_motion/config/home_pose.yaml`)
+### ホーム姿勢 (`roboone_walk_ref/config/home_pose.yaml`)
 
 T ポーズから脚のピッチを 30° 曲げる: 股ピッチ −30°、膝 +60°、足首ピッチ (J6) −30°
 （大腿・下腿がそれぞれ鉛直から 30°、胴体直立・足裏水平。符号は FK で確認）。

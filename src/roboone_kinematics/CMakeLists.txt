@@ -30,7 +30,7 @@ add_executable(leg_dump src/leg_dump.cpp)
 target_link_libraries(leg_dump roboone_kinematics)
 target_compile_options(leg_dump PRIVATE -O2)
 
-# 可視化 (roboone_motion/viz/serve_leg3d.py) が起動する FK/IK サービス
+# 可視化 (roboone_viz/serve_leg3d.py) が起動する FK/IK サービス
 add_executable(leg_service src/leg_service.cpp)
 target_link_libraries(leg_service roboone_kinematics)
 target_compile_options(leg_service PRIVATE -O2)

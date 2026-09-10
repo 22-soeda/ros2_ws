@@ -99,7 +99,7 @@ teleop より後に上げても直前の状態が届くようにするためな�
 
 ## motion との接点
 
-`roboone_motion_node` の実装に合わせてある（`motion_node.cpp`）。文書が想定して
+`roboone_motion` の実装に合わせてある（`motion_node.cpp`）。文書が想定して
 いた歩行ノート(2) の状態名とは違うので、読み方をここに残す。
 
 `/motion/state` が出すのは `RELAX` / `ARMING` / `HOLD` / `WALK` / `MOTION:<技名>`

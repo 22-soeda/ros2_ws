@@ -25,6 +25,25 @@ colcon build --packages-select feetech_servo --cmake-args -DCMAKE_BUILD_TYPE=Rel
 
 ビルド後は `source install/setup.bash` を忘れない。
 
+### パッケージを改名したあとの後始末
+
+**colcon は旧名の `build/` `install/` を消さない。** 残っていると `ros2 run` /
+`ros2 launch` が古いほうを拾い、「直したのに変わらない」が起きる。改名を含む
+コミットを pull したら、旧名の残骸を消してから建て直す。
+
+```bash
+# 2026-09-10 の改名 (roboone_motion_node -> roboone_motion,
+#            旧 roboone_motion -> roboone_walk_ref + roboone_viz) の場合
+rm -rf build/roboone_motion_node install/roboone_motion_node
+rm -rf build/roboone_motion install/roboone_motion
+colcon build
+source install/setup.bash
+
+# 効いたかの確認 (旧名が消えて新名が出る)
+ros2 pkg list | grep roboone
+ros2 pkg executables roboone_motion       # motion_node motion_teach motion_selftest
+```
+
 ## テスト
 
 ```bash
@@ -39,9 +58,9 @@ python3 -m pytest src/roboone_behavior/test/test_behavior.py -q
 
 # Python リファレンス実装
 python3 -m pytest scripts/test_knee_fourbar.py -q
-python3 -m pytest src/roboone_motion/test/test_walk_core.py
+python3 -m pytest src/roboone_walk_ref/test/test_walk_core.py
 python3 -m pytest src/roboone_teleop/test/test_params.py -q   # teleop の調整表と config の整合（ROS 不要）
-colcon test --packages-select roboone_teleop                     # 結線テスト + 走らせたままの調整
+colcon test --packages-select roboone_teleop                     # 結線テスト（デッドマン / ウォッチドッグ / 2 段トルクオン / 自律の割り込み）
 
 # C++ と Python の突き合わせ
 python3 scripts/crosscheck_knee.py
@@ -63,16 +82,14 @@ python3 scripts/leg_servo.py
 ros2 run roboone_teleop teleop_params
 ros2 run roboone_teleop teleop_params --check src/roboone_teleop/config/ps5_dualsense.yaml
 ros2 run roboone_teleop teleop_params --check ~/teleop_overrides.yaml
-# 割り当てた技名が motions.yaml に本当にあるか (無いものは NG。起動時にも警告が出る)
+# 割り当てた技名が motions.yaml に本当にあるか（無いものは NG。teleop は起動時に照合しない）
 ros2 run roboone_teleop teleop_params --check src/roboone_teleop/config/ps5_dualsense.yaml \
-    --motions src/roboone_motion_node/config/motions.yaml
+    --motions src/roboone_motion/config/motions.yaml
 
-# 走らせたまま試す（ノードを再起動すると消える。決まったら YAML に写す）
+# 走っているノードの値を読む（★書き換えは受け付けない。YAML を直して上げ直す）
 ros2 param list /teleop
 ros2 param describe /teleop scale.x
 ros2 param get /teleop scale.x
-ros2 param set /teleop scale.x 0.08
-ros2 param dump /teleop                      # いま効いている全値を YAML の形で出す
 
 # 自分用の差分 YAML を config の上に重ねて起動する（変えたいキーだけ書く）
 ros2 launch roboone_teleop teleop.launch.py overrides:=~/teleop_overrides.yaml
@@ -109,9 +126,9 @@ ros2 launch roboone_behavior behavior.launch.py                    # 行動層�
 ros2 launch roboone_behavior behavior.launch.py detector:=true camera:=true
 ros2 launch roboone_behavior behavior.launch.py techniques:="[]"   # 技を出さない
 ros2 launch roboone_teleop teleop.launch.py
-ros2 launch roboone_motion_node motion.launch.py                      # motion だけ
-ros2 launch roboone_motion_node motion.launch.py allow_torque:=false  # 読むだけ
-ros2 launch roboone_motion_node motion.launch.py dry_run:=true        # バスも開かない
+ros2 launch roboone_motion motion.launch.py                      # motion だけ
+ros2 launch roboone_motion motion.launch.py allow_torque:=false  # 読むだけ
+ros2 launch roboone_motion motion.launch.py dry_run:=true        # バスも開かない
 ros2 launch realsense_bringup realsense.launch.py
 ros2 launch feetech_servo feetech_demo.launch.py                 # 動かさない確認用
 ros2 launch feetech_servo feetech_demo.launch.py enable_motion:=true   # 実機が動く
@@ -159,6 +176,39 @@ ros2 topic pub -r 20 /cmd_walk geometry_msgs/msg/Twist "{linear: {x: 0.05}}"
 起動直後は `require_home_before_arm` により、`/cmd_motion` を 1 回受けるまで脱力のまま
 （teleop の Options 長押しが `home` → `/estop false` の順に送るので操作は変わらない）。
 
+## 胴体の前傾（body_pitch）
+
+前傾角は `src/roboone_walk_ref/config/home_pose.yaml` の **`body_pitch`**（deg・+ が前傾）。
+股ピッチ ID1 に `-body_pitch` を足すのと厳密に等価で、**膝・足首の関節角は変わらない**
+（足首 θ6 の余裕を食わない）。`foot.rpy` の pitch とは別の操作で、あちらは足裏の位置を
+固定したまま姿勢だけ回すので足首が全部吸収する。前傾させたいだけなら `body_pitch` を使う。
+
+```bash
+# 1) 値を変える（yaml だけ。C++ は触らない）
+nano src/roboone_walk_ref/config/home_pose.yaml     # body_pitch: 8.0
+
+# 2) config を install へ入れ直す（--symlink-install 済みなら 1) だけで効く）
+colcon build --packages-select roboone_walk_ref
+source install/setup.bash
+
+# 3) 実機に触らずに到達域を確かめる（バスを開かない・トルクも入らない）
+ros2 run roboone_motion motion_node --ros-args -p dry_run:=true     -p allow_torque:=false     -p home_pose_yaml:=$PWD/src/roboone_walk_ref/config/home_pose.yaml
+#   起動ログの「胴体を +N deg 前傾させる」と「歩行の足先の箱」の 2 行を見る
+#   design / mech なら可。「**届かない**」が出たら入れすぎ（股ピッチの窓に当たる）
+
+# 4) 剛体回転であること（足首を食わないこと）の検算
+printf "ikpose R -20 -89.3 -261 0 0 0
+ikpose R 16.518818 -89.3 -261.243436 0 -8 0
+"   | ./build/roboone_kinematics/leg_service
+#   股ピッチだけが -8.000000 deg 動き、膝・足首・クランク余裕は一致する
+```
+
+走査結果（height 261 / x -20 / foot.rpy 0、2026-08-29）: **13 deg まで可、14 で届かなくなる**。
+`height` / `x` / `foot.rpy` を変えたら取り直すこと。
+
+★ `motion_teach` で捕まえた姿勢は前傾込み（実機そのまま）で出る。`body_pitch` を入れた
+まま捕まえた行を `motions.yaml` へ貼ると再生時に二重に傾く。ティーチ中は 0 に戻すこと。
+
 ## サーボのゲイン / トルク上限
 
 ```bash
@@ -183,6 +233,35 @@ ros2 run feetech_servo feetech_gains --ids 4 --set-i 4 --write     # I を入れ
 消すには P を上げるか、I（既定 0）を入れて時間積分で押し切る。上げすぎると軸が唸る。
 
 2026-08-28: 膝（R/L ID4）を `P=128`（既定 32 の 4 倍）にしてある。
+
+### 全軸のトルク上限 / 電流上限を一覧する
+
+```bash
+# 両バスを総当たりして、トルク上限と電流・保護のしきい値を表で出す
+# 読むだけ（write を一切呼ばない）ので、★トルクが切れたまま実行してよい
+ros2 run feetech_servo feetech_limits
+ros2 run feetech_servo feetech_limits --ids 4,5,6      # ID を絞る
+ros2 run feetech_servo feetech_limits --only left      # 片側だけ
+ros2 run feetech_servo feetech_limits --csv            # 差分を取りたいとき
+```
+
+2026-08-29 の実測（全 19 軸、トルク OFF のまま計測）。左右で値は完全に一致し、
+**型番ごとに 2 種類しかない**：
+
+| 型番 | 該当 ID | 最大トルク(16) / トルク上限(48) | 目標トルク(44) | 保護電流(28) | 入力電圧範囲 |
+|---|---|---|---|---|---|
+| 4618 | 1,2,3,4,7,8,9 | 980 (98%) | 1000 (100%) | 1000 = 6500mA | 8.0-16.0V |
+| 5130 | 5,6,10 | 1000 (100%) | 500 (50%) | 500 = 3250mA | 4.0-16.0V |
+
+全軸共通: 過電流時間(38) 200 = 2000ms、保護時間(35) 10 = 100ms、保護トルク(34)
+4618 は 30% / 5130 は 50%、温度上限 80℃、過負荷(36) は 255（HLS でこれが % か
+不明なので生値のまま出している）。起動最小力(24) は 4618 が 0、5130 が 16。
+
+トルク上限側は既にほぼ上限まで開いており、**上げる余地は無い**（上の節と同じ理由で、
+上げても定常偏差は変わらない）。電流側は 5130（足首 ID5/6・腕先 ID10）だけ
+しきい値が半分なので、詰まるとしたらここから。
+
+ID7 は右バスにしか無い（左は 9 軸）。
 
 ## ログを後から追う（沈み込み・追従誤差）
 
@@ -210,29 +289,64 @@ python3 scripts/bag_droop.py ~/roboone_logs/rosbag2_* --csv /tmp/d.csv
 
 ## モーションを作る（ティーチ）
 
-技（攻撃・旋回・起き上がり）は `roboone_motion_node/config/motions.yaml` に
-「時間間隔 + 足裏の位置姿勢 (p, R) x2 + ID7-10 の角度」で書く。値は手で構えて捕まえる。
+技（攻撃・旋回・起き上がり）は `roboone_motion/config/motions.yaml` に
+「時間間隔 + 脚 x2 + ID7-10 の角度」で書く。脚の書き方は 2 通りある。
+
+| 書き方 | キー | 中身 | 再生時 |
+|---|---|---|---|
+| 足裏 | `R_foot` / `L_foot` | 足裏の位置姿勢 (p, R) | IK を通る。寸法が変わっても追従する |
+| 角度 | `R_leg` / `L_leg` | サーボ角（T ポーズ基準 deg・ID 別） | IK も FK も通らずそのまま出る |
+
+角度書きは**IK で戻せない姿勢**（可動域の縁、足首の特異点の近く、寝た姿勢）を
+書くための逃げ道。歯止めは `servo_limits.yaml` の窓だけなので、届く姿勢は足裏で
+書いておく。値は手で構えて捕まえる。
 
 ```bash
 # 脱力させて、手で構えた姿勢を YAML のキーフレームとして捕まえる
 # ★サーボへの書き込みは起動時のトルク OFF 1 回だけ
-ros2 run roboone_motion_node motion_teach
-ros2 run roboone_motion_node motion_teach --out ~/draft.yaml   # ファイルにも追記
-ros2 run roboone_motion_node motion_teach --t 0.15             # 最初に出す t: の値
+ros2 run roboone_motion motion_teach
+ros2 run roboone_motion motion_teach --out ~/draft.yaml   # ファイルにも追記
+ros2 run roboone_motion motion_teach --t 0.15             # 最初に出す t: の値
+ros2 run roboone_motion motion_teach --format angle       # 脚をサーボ角で出す
+ros2 run roboone_motion motion_teach --format both        # 両方（角度側は # 付き）
 ```
 
 | キー | はたらき |
 |---|---|
 | スペース / `c` | 今の姿勢を `motions.yaml` の書式で出す |
 | `+` / `-` | 次に出す `t:`（区間の長さ [s]）を 0.05 ずつ増減 |
+| `f` | 出す書式を切り替える（`ik` → `angle` → `both`） |
 | `n` | 新しい技の見出し（`<技名>: / keyframes:`）を出す |
 | `q` | 終了 |
 
 画面は標準エラー・捕まえた YAML は標準出力に出るので、`> draft.yaml` で溜められる。
-捕まえるたびに「その姿勢を IK で戻せるか」を往復誤差で確かめ、駄目なら警告する
-（順変換で出せても IK で戻せるとは限らない。可動域の縁と足首の特異点の近くが危ない）。
+捕まえるたびに、`ik` なら「その姿勢を IK で戻せるか」を往復誤差で、`angle` なら
+「`servo_limits.yaml` の窓に収まっているか」を確かめ、駄目なら警告する
+（順変換で出せても IK で戻せるとは限らない。可動域の縁と足首の特異点の近くが危ない。
+そこは `--format angle` で捕まえればそのまま再生できる）。
 
 出た行を `motions.yaml` の `keyframes:` の下に貼り、`t:` を狙いの時間に直せば技になる。
+`--format both` で捕まえた場合は、角度で書きたい側の `#` を外して `R_foot` の行を消す。
+1 本の技の中で足裏書きと角度書きは混ぜてよい（混ざった区間は角度空間で補間する）。
+
+```bash
+# 姿勢まわりの自己検算（実機もサーボも要らない。config を書き換えたら 1 回通す）
+#   [1] 角の 3 つの表し方の一巡  [2] body_pitch の等価性  [3] motions.yaml
+#   [4] 脚の角度書き            [5] 状態機械の順序        [6] 設定の門
+ros2 run roboone_motion motion_selftest
+ros2 run roboone_motion motion_selftest --motions ~/draft.yaml   # 下書きを読ませる
+
+# ★gait.yaml / home_pose.yaml を書き換えたら --strict。**実機を起こす前にここで見る。**
+#   ホーム姿勢が IK で解けるか / 遊脚が床に届くか / 歩行の足先の箱が到達域に収まるか、
+#   を motion ノードの起動時と同じ門で確かめる（以前は実機で立ち上げるしかなかった）。
+ros2 run roboone_motion motion_selftest --strict
+ros2 run roboone_motion motion_selftest --strict \
+    --gait /tmp/g.yaml --home-pose /tmp/h.yaml
+```
+
+既定では [6] の門はエラーを**表示するだけで落とさない**（config の調整途中なら当然
+エラーが出る。[1]-[5] のコードの赤に気付けなくなるので混ぜない）。`--strict` で落ちる。
+
 技名は `roboone_teleop/config/ps5_dualsense.yaml` の `motion_bindings` と一致させる
 （`punch_r` `punch_l` `turn_l` `turn_r` `getup_front` `getup_back`）。
 定義していない技名を押しても、motion ノードが「知らない技」と出すだけで何も起きない。
@@ -241,23 +355,86 @@ ros2 run roboone_motion_node motion_teach --t 0.15             # 最初に出す
 
 ```bash
 # 歩行
-python3 src/roboone_motion/roboone_motion/viz/gen_walk_viz.py --serve 8100
+python3 src/roboone_viz/roboone_viz/gen_walk_viz.py --serve 8100
 python3 src/roboone_walk_core/tools/compare_walk_engines.py
 
 # ホーム姿勢 (脚ピッチ曲げ角) から z_c と到達域を出し、gait.yaml の目安を印字する
 # --map で到達域の ASCII マップ、--bend で曲げ角 [deg]、--t-step で歩周期を変える
 ./build/roboone_walk_core/gait_from_kinematics --bend 30 --map
 
+# 歩周期 T を変えるときの下敷き。T ごとの e^{ωT} / a_max 上限 / v_max を並べて見る
+for T in 0.40 0.30 0.28 0.25; do echo "== T=$T"; \
+  install/roboone_walk_core/lib/roboone_walk_core/gait_from_kinematics --t-step $T \
+  | sed -n '/歩行パラメータの目安/,$p'; done
+```
+
+### 歩周期 (t_step) / 遊脚高さ (swing_height) を変えるときの手順
+
+`t_step` は **4 か所に同じ値がある**（Python が原本、他はその写し）。1 つでも
+食い違うと `compare_walk_engines.py` が落ちる。
+
+1. `roboone_walk_ref/roboone_walk_ref/walk_core/params.py`（原本）
+2. `roboone_walk_ref/config/gait.yaml`（実機が実際に読む値）
+3. `roboone_walk_core/include/roboone_walk_core/gait_params.hpp`（C++ の既定）
+4. `roboone_viz/roboone_viz/walkcore.js`（可視化 JS の既定）
+
+T を変えたら**連動して直す値**（放置すると別の壊れ方をする）:
+
+- `td_speed_max` > `(swing_height + td_overdrive) / (0.55 T)`
+  下回ると遊脚が床に届かないまま歩の境界を迎える。
+- `step_clamp_in` > `(foot_spacing/2) / e^{ωT}`（＝停止準備歩の `b_stop`）
+  下回ると準備歩の着地が必ずクランプに当たり、横歩きから止まると公称より
+  広い立位で止まる。
+- `a_max` は `a·T² (1 + 1/(e^{ωT}∓1)) < クランプ` の 6 割。
+  `gait_from_kinematics --t-step <T>` が上限を印字する。
+- **`v_max` は T に比例して歩幅になる (`歩幅 = v * T`)。T を伸ばしたら下げる。**
+  `gait_from_kinematics` が出す `v_max` は**接地面 (z = -z_c) の到達域だけ**から
+  逆算した値で、遊脚頂点での前後到達域を見ていない。頂点は接地面よりずっと狭い
+  （50 mm で 前 56 / 後 37 mm、接地面は 前 148 / 後 142 mm）ので、
+  T が長いときはツールの値をそのまま入れると足先が到達域を出る。
+  例: T=0.60 で `v_max=[0.15,0.08]` にすると頂点の前後が ±49 mm になり後ろが届かない。
+- **`t_step` の下限は `swing_height` を出せるサーボ速度で決まる。**
+  上昇区間は `0.45 T` しかない。膝サーボは足先 1 mm の持ち上げに約 0.31 deg 動く
+  （`gait_from_kinematics --bend N` を振ると出る。曲げ角を変えると足先はほぼ真上に
+  動き、前後には 50 mm あたり 1.4 mm しかずれない）。5 次多項式のピークは平均の
+  1.875 倍なので
+
+      ピーク角速度 = 1.875 * (0.0054 rad/mm * h_sw[mm]) / (0.45 T)
+
+  無負荷 4.7 rad/s に対し、支持脚の設計則は「半分以下」。遊脚は体重が乗らないので
+  8 割程度までは実用範囲。h_sw=50mm なら T=0.30 で 3.73 rad/s (79%)、
+  T=0.25 では 4.48 rad/s (95%) になり追従せず、**足が上がりきらずに床を擦る**。
+
+`t_step` を**伸ばす**側の上限は `e^{ωT}` (純 FF の増幅率)。T=0.30 で 6.3、
+T=0.60 で 39.6、T=1.00 で 460。静歩行に寄せるほど「重心が支持足の真上に来る」
+（単脚支持の中央での重心と支持足の距離 = `(W/2) sech(ωT/2)`、T=0.30 で 61.4 mm、
+T=0.60 で 27.7 mm）が、同時に計画と実機のずれが 1 歩で `e^{ωT}` 倍に増える。
+**推定 ξ (IMU / 状態推定) を入れるまで T=0.60 より伸ばさないこと。**
+なお walk_core は両脚支持期を持たない（支持脚の交代は瞬時）ので、T を伸ばしても
+厳密な静歩行にはならない。
+
+`swing_height` を上げると、起動ログの `歩行の足先の箱の隅に **届かない**` が出る
+ことがある。これはチェックが `x = ±step_clamp_x` と `z = +swing_height` を
+**同時に**満たす隅を見ているためで、実際にはその高さで前後に振れるのは ±20 mm
+程度（歩の中央で頂点を通るので）。実行時の警告
+（`足先が機構の到達域の外`）が出ていなければ、指令自体は到達域の内側にある。
+
+```bash
+# 直したら必ずこの 3 つ
+colcon build --packages-select roboone_walk_core roboone_walk_ref roboone_motion
+python3 -m pytest src/roboone_walk_ref/test/test_walk_core.py
+python3 src/roboone_walk_core/tools/compare_walk_engines.py   # 「照合: 全て一致」
+
 # 膝 4 節リンク 3D（デモ / 実機追従）
-python3 src/roboone_motion/roboone_motion/viz/serve_knee3d.py --demo
-python3 src/roboone_motion/roboone_motion/viz/serve_knee3d.py --side right
-python3 src/roboone_motion/roboone_motion/viz/serve_knee3d.py --port /dev/feetech_right --id 4
+python3 src/roboone_viz/roboone_viz/serve_knee3d.py --demo
+python3 src/roboone_viz/roboone_viz/serve_knee3d.py --side right
+python3 src/roboone_viz/roboone_viz/serve_knee3d.py --port /dev/feetech_right --id 4
 
 # 脚 IK 3D（既定 :8101。実機不要）。関節 / 足先 IK / 歩行の 3 モード。
 # 膝 4 節リンクと足首パラレルリンクの組み方、サーボ指令角（T ポーズ基準の差分）も出る。
 # 先に colcon build --packages-select roboone_kinematics（子プロセスの leg_service を使う）
-python3 src/roboone_motion/roboone_motion/viz/serve_leg3d.py
-python3 src/roboone_motion/roboone_motion/viz/serve_leg3d.py --port 8101
+python3 src/roboone_viz/roboone_viz/serve_leg3d.py
+python3 src/roboone_viz/roboone_viz/serve_leg3d.py --port 8101
 
 # leg_service を単体で叩く（1 行 1 リクエスト・1 行 1 JSON。サーボには繋がらない）
 printf 'ik R 0 -89.3 -260\nfk L 0 0 0 30 0 0\n' | ./build/roboone_kinematics/leg_service
@@ -276,8 +453,8 @@ for l in sys.stdin:
           "hip=%.1f"%r["theta"][0], "ankle=%s clamped=%d"%(m["status"],m["ankle"]["clamped"]))'
 
 # 両脚 3D（既定 :8103。実機なしで見るなら --demo、片脚だけなら --only right）
-python3 src/roboone_motion/roboone_motion/viz/serve_legs3d.py
-python3 src/roboone_motion/roboone_motion/viz/serve_legs3d.py --demo
+python3 src/roboone_viz/roboone_viz/serve_legs3d.py
+python3 src/roboone_viz/roboone_viz/serve_legs3d.py --demo
 
 # 足首パラレルリンク 3D（既定 :8102・左脚）。サーボには書き込まない
 python3 src/feetech_servo/viz/serve_ankle_live.py
@@ -321,11 +498,35 @@ ros2 run feetech_servo feetech_set_limits --dry-run
 ros2 run feetech_servo feetech_set_limits          # 書き込み（確認プロンプトあり）
 ```
 
+### ホーム姿勢の足裏ピッチ（後傾の補正）を決める
+
+機体が後傾するとき `home_pose.yaml` の `foot.rpy` の pitch を負にして胴体を前へ戻す。
+入れすぎると遊脚の隅で足首パラレルリンクのロッドが届かなくなるので、**実機に触る前に
+到達域を走査して決める**。バスを開かないので★トルクは入らない。
+
+```bash
+# 今の config のまま到達域チェックだけ見る（起動ログの「歩行の足先の箱」の行）
+ros2 run roboone_motion motion_node --ros-args \
+  -p dry_run:=true -p allow_torque:=false
+
+# 候補の yaml を当てて走査する（home_pose と gait は別々に差し替えられる）
+ros2 run roboone_motion motion_node --ros-args \
+  -p dry_run:=true -p allow_torque:=false \
+  -p home_pose_yaml:=/tmp/h261_p-8.yaml -p gait_yaml:=/tmp/gait_261.yaml
+```
+
+判定は 3=design 域 / 2=mech 域（歩ける）/「届かない」=不可。**到達域チェックが見る
+高さは `gait.yaml` の `z_c` であって `home_pose.yaml` の `height` ではない**ので、
+高さを振るときは両方を揃えて差し替えること（片方だけだと表がまったく動かない）。
+
+2026-08-29: 後傾 10 deg に対し `z_c=0.261` のままで入るのは **pitch -8 まで**
+（-10 は届かない）。走査結果の表は `home_pose.yaml` の `rpy` のコメントにある。
+
 ## 自律動作（behavior）
 
 **behavior は上げただけでは機体を動かさない。** `/autonomy` が true の間しか
 `/cmd_walk` を出さず、それを立てるのは PS5 コントローラの長押し（teleop）。
-止めるのも teleop の割り込み（起き上がり / 脱力 / 無線確認 / ホームポジション）。
+止めるのも teleop の割り込み（起き上がり / 脱力 / ホームポジション / その場保持）。
 
 ```bash
 # 今どの状態か・なぜそこに入ったか
@@ -474,4 +675,55 @@ python tools/lint_like_ament.py src/roboone_behavior  # 別のパッケージ
 # roboone_teleop の結線テストを最小の rclpy 代替 (tools/fakeros) で回す
 python tools/run_teleop_tests_without_ros.py
 python tools/run_teleop_tests_without_ros.py -k hold  # pytest の引数はそのまま通る
+
+# Pi の上で試したいとき（ROS が source された端末では本物の rclpy を隠さないよう
+# 拒否される）。環境変数を落として呼ぶ。最終判定はあくまで colcon test
+env -u AMENT_PREFIX_PATH -u ROS_DISTRO -u ROS_VERSION -u COLCON_PREFIX_PATH \
+    -u PYTHONPATH -u LD_LIBRARY_PATH -u ROS_PYTHON_VERSION -u AMENT_PYTHON_EXECUTABLE \
+    python3 tools/run_teleop_tests_without_ros.py
 ```
+
+## 両足支持区間（swing_ratio）
+
+`src/roboone_walk_ref/config/gait.yaml` の **`swing_ratio`**。遊脚が歩周期 T のうち何割を
+使うか。1.0 = 従来（φ=1 ちょうどで着く）。下げるとその手前で着地点に達し、残りは
+両足が着いたまま止まる。
+
+**ZMP は歩の間ずっと支持足に固定されたまま**なので、ここを変えても DCM も `b` の閉形式も
+`a_max` の発散条件も変わらない。増えるのは支持多角形が広い時間だけで、**計画上の重心経路は
+変わらない**。yaml だけ、再ビルド不要、motion ノードの再起動で効く。
+
+```bash
+# 起動ログが実測値を出す（狙いの値はそのまま出ない。降下が td_speed_max で飽和するため）
+ros2 run roboone_motion motion_node --ros-args -p dry_run:=true \
+    -p allow_torque:=false -p gait_yaml:=$PWD/src/roboone_walk_ref/config/gait.yaml
+#   遊脚 swing_ratio=0.75 (狙いの両足支持 25.0%) -> 実際は位相 0.817 で接地し 両足支持 18.3% (110 ms)
+
+# 値を振って一覧にする
+for sr in 1.00 0.85 0.75 0.66 0.50 0.33; do
+  sed "s/^swing_ratio: 1.00/swing_ratio: $sr/" src/roboone_walk_ref/config/gait.yaml > /tmp/g.yaml
+  echo -n "swing_ratio=$sr -> "
+  timeout 6 ros2 run roboone_motion motion_node --ros-args -p dry_run:=true \
+      -p allow_torque:=false -p gait_yaml:=/tmp/g.yaml 2>&1 \
+    | grep -oE "両足支持 [0-9.]+% \([0-9]+ ms\)|遊脚が床に届かない" | head -1
+done
+```
+
+走査（swing_height 50mm / td_overdrive 4mm / td_speed_max 0.20 / T=0.60。2026-08-29 実測）:
+
+| swing_ratio | 1.00 | 0.85 | 0.75 | 0.66 | 0.50 | 0.33 |
+|---|---|---|---|---|---|---|
+| 狙いの両足支持 | 0% | 15% | 25% | 34% | 50% | 66.7% |
+| **実際の両足支持** | 3.3% | 12.5% | 18.3% | 23.3% | 32.5% | 41.7% |
+| 接地の位相 | 0.967 | 0.875 | 0.817 | 0.767 | 0.675 | 0.583 |
+
+全域で降下が `td_speed_max` に張り付くので、実際は必ず狙いより小さく出る。
+0.50 以下は接地が `swing_lock_phase`(0.70) より早くなり起動時に WARN が出る
+（着地点がまだ動いている最中に足が床へ着く）。今の設定で無理なく入るのは **0.75〜0.66**。
+
+起動時のチェックは 3 通り出る:
+
+- INFO … 接地の位相・実際の両足支持・飽和しているか
+- WARN … 接地が `swing_lock_phase` より早い
+- ERROR … 遊脚が床に届かないまま歩が終わる（空中で支持脚が入れ替わる）。
+  必要な `td_speed_max` を数値で出すので、その値以上へ上げるか `swing_height` を下げる

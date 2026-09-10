@@ -14,7 +14,7 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <exec_depend>roboone_teleop</exec_depend>
-  <exec_depend>roboone_motion_node</exec_depend>
+  <exec_depend>roboone_motion</exec_depend>
   <exec_depend>roboone_perception</exec_depend>
   <exec_depend>roboone_behavior</exec_depend>
   <exec_depend>roboone_ui</exec_depend>

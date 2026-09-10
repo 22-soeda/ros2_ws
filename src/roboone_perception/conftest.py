@@ -1,5 +1,5 @@
 # colcon を通さず ws ルートから pytest を直接叩いたときに
-# roboone_perception パッケージを見つけられるようにする（roboone_motion と同じ）。
+# roboone_perception パッケージを見つけられるようにする（roboone_walk_ref と同じ）。
 import os
 import sys
 
