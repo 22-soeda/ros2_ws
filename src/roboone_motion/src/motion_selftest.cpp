@@ -494,7 +494,31 @@ int main(int argc, char ** argv)
       drop(*c);
     }
 
-    // [5-5] WALK -> HOLD のばたつき止め。
+    // [5-5] その場保持の武装中に home が来たら、終わりは STAY ではなく HOLD。
+    //   stay_after_arm_ が立ったまま home の補間に入ると、終わった時点で STAY に
+    //   落ちて立位のまま固まる (以後 /cmd_walk が効かず歩けない)。
+    {
+      auto c = make();
+      c->setEstop(true);
+      c->requestMotion(rm::kHoldMotion);
+      auto t = c->step(0.0, dt, &meas, why, true);
+      c->setEstop(false);
+      double now = dt;
+      t = c->step(now, dt, &meas, why, true);
+      check(t.state == rm::State::ARMING, "その場保持で武装に入る");
+      c->requestMotion("home");              // 武装が終わる前に home
+      for (int i = 0; i < 800 && t.state != rm::State::HOLD; ++i) {
+        now += dt;
+        t = c->step(now, dt, &meas, why, true);
+        if (t.state == rm::State::STAY) {break;}
+      }
+      check(
+        t.state == rm::State::HOLD,
+        "★その場保持の武装中に home が来たら、終わりは STAY ではなく HOLD");
+      drop(*c);
+    }
+
+    // [5-6] WALK -> HOLD のばたつき止め。
     //   歩き始めは指令がレート制限で立ち上がるので、歩行エンジンが IDLE と START の
     //   間を数十 ms 単位で往復する (2026-08-28 実機で 55ms 周期)。**状態が何度も
     //   変わらないこと**が要点なので、遷移の回数を数える。

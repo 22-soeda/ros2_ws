@@ -155,6 +155,9 @@ void MotionController::handleMotionRequest(const std::string & name, double now)
       return;
     }
     walk_.reset();
+    // ★hold の武装中 (ARMING) に home が来ることがある。落とさずに補間へ入ると、
+    //   終わった時点で HOLD ではなく STAY に落ちて立位のまま固まる (歩けなくなる)。
+    stay_after_arm_ = false;
     startBlend(home_pose_, opt_.home_move_time, now, "home");
     setState(State::MOTION);
     ev_.info(fmt("ホームポジションへ (%.1fs)", opt_.home_move_time));
@@ -177,6 +180,9 @@ void MotionController::handleMotionRequest(const std::string & name, double now)
     ev_.warn("歩行を打ち切って技 \"" + name + "\" に入る");
   }
   walk_.reset();
+  // 技のあとは HOLD。いまは上の ARMING 弾きで stay_after_arm_ が立ったまま
+  // ここへ来ることはないが、弾きを緩めたときに STAY へ落ちないよう対にしておく。
+  stay_after_arm_ = false;
   player_.start(*lib_->find(name), cur_pose_, home_pose_, now, *map_);
   reportPlayerWarning();
   setState(State::MOTION);
