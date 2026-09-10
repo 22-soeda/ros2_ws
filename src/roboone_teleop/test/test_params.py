@@ -14,7 +14,7 @@ from roboone_teleop import params
 
 CONFIG = pathlib.Path(__file__).resolve().parents[1] / 'config' / 'ps5_dualsense.yaml'
 # 隣のパッケージの motions.yaml (ws ごとチェックアウトしていれば見える)
-MOTIONS = (pathlib.Path(__file__).resolve().parents[2] / 'roboone_motion_node' / 'config'
+MOTIONS = (pathlib.Path(__file__).resolve().parents[2] / 'roboone_motion' / 'config'
            / 'motions.yaml')
 
 

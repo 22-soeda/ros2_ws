@@ -3,26 +3,25 @@
 PS5 (DualSense) コントローラによる無線操縦。`/joy` を `/estop`・`/cmd_walk`・`/cmd_motion`
 に変換する。ros-architecture §2 の teleop ノード、作る順番 §5 の 2 にあたる。
 
-本番 (ROBO-ONE Auto) での役割は**非常停止だけ**。手動操作は開発中に behavior を止めて
-歩行だけを試すためのもの。
+本番 (ROBO-ONE Auto) での役割は**非常停止と、そこからの復帰と、自律への指令権の
+受け渡し**。手動操作は開発中に behavior を止めて歩行だけを試すためのもの。
+**この 4 つに入らない機能はここに置かない** — 割り当ての確認は `joy_probe`、config の
+検査は `teleop_params`、状態表示は別ノードの仕事。
 
 ```
 DualSense --BT--> joy (既製: game_controller_node) --/joy--> teleop --> /estop
                                                                     --> /cmd_walk
                                                                     --> /cmd_motion
                                                                     --> /autonomy   → behavior
-                                                                    --> /ui/oled/text     → ui
-                                                                        /ui/led/pattern
-                                                                        /ui/buzzer
 ```
 
 **値を変えたい人は [docs/teleop_tuning.md](../../docs/teleop_tuning.md) を読む。**
 項目の一覧・意味・単位・範囲は `roboone_teleop/params.py` の表 1 か所にあり、
-`config/ps5_dualsense.yaml` はその全項目を並べたもの。走らせたまま
-`ros2 param set /teleop scale.x 0.08` で試せる。編集した YAML は
-`ros2 run roboone_teleop teleop_params --check <yaml>` で検査できる
-(打ち間違えたキーは ROS が黙って捨てるので、起動時にも警告が出る)。
-「そもそも何が動かないか」の洗い出しは `docs/無線操縦_不足項目レビュー.md`。
+`config/ps5_dualsense.yaml` はその全項目を並べたもの。編集した YAML は
+`ros2 run roboone_teleop teleop_params --check <yaml>` で検査してから起動し直す
+(打ち間違えたキーは ROS が黙って捨てるので、必ず通すこと)。走らせたままの
+`ros2 param set` は受け付けない — 安全ループの途中で割り当てや周期が変わる経路を
+作らないため。「そもそも何が動かないか」の洗い出しは `docs/無線操縦_不足項目レビュー.md`。
 
 ## 1. コントローラを繋ぐ
 
@@ -70,14 +69,14 @@ ros2 launch roboone_teleop teleop.launch.py
 | **脱力** | **L1** (押した瞬間) | `/estop true` をラッチ | ★ |
 | **ホームポジション** | **Options を 1 秒長押し** | `/cmd_motion` → `home`、0.1 秒後に `/estop false` | ★ |
 | **その場保持で武装** | **L3 を 1 秒長押し** | `/cmd_motion` → `hold`、0.1 秒後に `/estop false`。今の姿勢のままトルクが入る（転倒 → 脱力 → 起き上がり の経路。§3「その場保持」） | ★ |
-| 無線テスト | Create を押している間 | `/ui/led` + `/ui/buzzer` | ★ |
 | **自律動作** | **十字キー 上 を 1 秒長押し** | `/autonomy true` | |
 
 ★ = 自律動作中でも効き、押した時点で自律動作を止める割り込み。
 
-* **左スティックに旋回は混ざらない。** 斜め前・斜め後ろへは、機体の向きを変えずに
-  平行移動で歩く。右スティック左右は `angular.z` に乗るが、**motion ノードは `angular.z` を
-  使わない**（歩行は平行移動のみ）。向きを変えるのは十字キー左右のキーフレームモーション。
+* **旋回は `/cmd_walk` に載らない。** 左スティックは `linear.x` / `linear.y` だけで、
+  `angular.z` は常に 0。**motion ノードが `angular.z` を使わない**（歩行は平行移動のみ）
+  ので、送っても捨てられて警告が出るだけだから teleop 側で持たない。斜め前・斜め後ろへは
+  機体の向きを変えずに平行移動で歩き、向きを変えるのは十字キー左右のキーフレームモーション。
 * 脱力を L1 に置いてあるのは、歩かせている最中 (R1 + スティック) に左手の人差し指
   だけで即座に押せて、しかも歩行操作と指が競合しないから。トルクオンは逆に、誤って
   触ってもトルクが入らないよう遠く・長押しにしてある。
@@ -126,7 +125,7 @@ motion 側で解く羽目になる。トルクの ON/OFF は経路を 1 本に�
   奪い合いになる。ros-architecture §2 の「behavior と teleop を同時に起動しない」運用を、
   起動したまま実現するのがこのトピック (`twist_mux` を入れずに済む)
 * スティックとパンチは効かない。指令権は behavior にある
-* 止めるのは **起き上がり / 脱力 / 無線確認ブザー / ホームポジション / その場保持** の 5 つ。
+* 止めるのは **起き上がり / 脱力 / ホームポジション / その場保持** の 4 つ。
   押した時点で `/autonomy false` が出て手動に戻り、そのうえで押した指令が実行される
 * 脱力中は自律動作に入れない。先にホームポジションでトルクを入れる
 * 電波が切れたら自律動作も止めて脱力する (`autonomy.stop_on_joy_loss`)。
@@ -139,45 +138,6 @@ motion 側で解く羽目になる。トルクの ON/OFF は経路を 1 本に�
 | トピック | 型 | 出す→受ける | 意味 |
 |---|---|---|---|
 | `/autonomy` | `std_msgs/Bool` (latched) | teleop → behavior | true の間だけ behavior が `/cmd_walk`・`/cmd_motion` を出してよい |
-
-### 状態表示（OLED / RGB LED）
-
-**操作者からは「今どのモードか」が機体を見ても分からない。** 特に自律動作中は teleop が
-`/cmd_walk` を黙るので、behavior が起動していないと「入れたのに動かない」になり、故障と
-区別が付かない。状態が変わるたびに OLED と LED へ出す。
-
-| 状態 | OLED | LED | 音 |
-|---|---|---|---|
-| `/joy` 未受信 | `TELEOP` / `no joy` | 消灯 (`dark`) | — |
-| 脱力（トルクOFF） | `RELAX` / `OPTIONS=home` | **赤の速い点滅** (`estop`) | `error` |
-| 再武装待ち | `MANUAL` / `release R1` | 黄の点滅 (`warn`) | — |
-| 手動・武装済み | `MANUAL` / `R1 = walk` | 緑の点灯 (`ready`) | `beep` |
-| 自律動作中 | `AUTO` / `any 5 = stop` | **青の点滅** (`auto`) | `ack` |
-| 無線テスト中 | `LINK TEST` / `radio ok` | シアンの点灯 (`link`) | （テスト自身のブザー） |
-
-* **色は teleop 側に持たない。** ui のプリセット名だけを送り、実際の色は ui が決める
-  (`roboone_ui` の `LED_PATTERNS`)。色を 1 箇所で管理できるのと、無線テストが終わった
-  ときに「元の状態のプリセットをもう一度送る」だけで復帰できる利点がある
-* 送るのは**変化したときだけ**。20Hz で latched トピックを叩き続けない
-* OLED は 8x8 フォントで 1 行ちょうど 12 文字（`roboone_ui` 実測）。日本語は出せないので
-  ASCII。文字数はテストで見張っている
-* 音は「操作者が画面を見ていなくても気付くべき変化」だけ。起動直後の初期表示では鳴らさない
-* `ui.enable: false` で全部止められる
-
-### 無線テスト
-
-Create ボタンを押している間、頭の RGB LED がシアンに変わり、ブザーが鳴り続ける。
-機体を脱力させたまま持ち歩いて、どこまで電波が届くかを確かめるための機能。
-
-* **デッドマン不要・脱力中でも動く。** 動作条件を付けると用を成さない。
-* `/joy` が `link_test.stale` (既定 0.15s) 途切れたら即座に鳴り止む。脱力までの
-  `joy_timeout` (0.5s) を待たない — 電波の切れ目を耳で探すのが目的だから。
-* ブザーは `beep` プリセットを 15Hz で撃ち続けて鳴らしている。ui ノードのブザーは
-  「1 回鳴って止まる」設計なので、押しっぱなし用の長いパターンを ui に足すより、
-  短いのを撃ち続けるほうが安全側に倒れる。teleop が落ちても電波が切れても、
-  次の 1 発が来ないので 100ms 以内に鳴り止む。
-* 表示には ui ノードが要る: `ros2 run roboone_ui ui_node`。上がっていなくても teleop は
-  そのまま動く（publish するだけで購読者の有無は見ていない）
 
 ## 4. 安全設計
 
@@ -193,10 +153,8 @@ Create ボタンを押している間、頭の RGB LED がシアンに変わり�
   より、ゼロが来続けるほうが motion 側が単純で安全になる。
 * **`/estop` は latched QoS** (`TRANSIENT_LOCAL`) — teleop より後に motion を起動しても
   直前の脱力状態が届く。ここを Volatile にすると「脱力させた状態で motion を再起動したら
-  動き出した」が起こりうる。`/ui/*` も ui ノードの購読側が latched なので同じ設定で出す
-  (VOLATILE な publisher は TRANSIENT_LOCAL な subscriber とマッチしない)。
-* **終了時** — ノードが落ちるときにゼロ Twist と `/estop true`、点けていれば LED 消灯を
-  置いていく。rclpy の既定シグナルハンドラは context を先に畳んでしまい publish が
+  動き出した」が起こりうる。
+* **終了時** — ノードが落ちるときにゼロ Twist と `/estop true` を置いていく。rclpy の既定シグナルハンドラは context を先に畳んでしまい publish が
   誰にも届かないので、既定を外して自前のフラグで抜けている
   (`SignalHandlerOptions.NO`)。
 
@@ -236,10 +194,10 @@ ros2 run roboone_teleop joy_probe
 * `b5` … `buttons[5]` が 1 のとき ON
 * `a7+` / `a7-` … `axes[7]` が ±0.5 を超えたとき ON (十字キーが軸として出る場合用)
 
-### 軸の符号 — `invert` は 3 つとも false
+### 軸の符号 — `invert` は 2 つとも false
 
 **joy ノードが SDL の値を符号反転して publish している。** SDL 自体は「下 = +」
-「右 = +」だが、/joy の時点で既に ROS 規約 (前 = +x / 左 = +y / 反時計 = +yaw) に
+「右 = +」だが、/joy の時点で既に ROS 規約 (前 = +x / 左 = +y) に
 なっているので、teleop 側で重ねて反転すると全部逆を向く。
 
 2026-08-28 実機実測 (DualSense + `game_controller_node`、軸 6 本 / ボタン 21 個):
@@ -248,15 +206,15 @@ ros2 run roboone_teleop joy_probe
 |---|---|---|
 | 左スティックを前へ | `axes[1] = +0.77` | `linear.x = +0.060` |
 | 左スティックを左へ | `axes[0] = +0.87` | `linear.y = +0.030` |
-| 右スティックを左へ | `axes[2] = +0.88` | `angular.z = +0.400`（motion 側で捨てられる） |
 
 反転している証拠は、無操作時に L2/R2 (`axes[4]`, `axes[5]`) が `0.0` ではなく **`-0.0`**
 で出ること。負のゼロは値を反転しないと生まれない。
 
 ### 実機で確認済みのボタン (2026-08-28)
 
-`b0` ✕ / `b1` ○ / `b2` □ / `b3` △ / `b4` Create / `b6` Options / `b9` L1 / `b10` R1 /
-`b11` 十字キー 上。config の 9 個すべてが一致した。
+`b0` ✕ / `b1` ○ / `b2` □ / `b3` △ / `b6` Options / `b9` L1 / `b10` R1 /
+`b11` 十字キー 上。当時 config にあった 9 個すべてが一致した（`b4` Create は
+無線テストと一緒に外したので今は使っていない）。
 十字キー下・左・右（`b12` / `b13` / `b14`）と L3（`b7`）はその後に足した割り当てで**未照合**。
 `joy_probe` で確かめること。
 
@@ -288,11 +246,10 @@ ros2 topic hz /cmd_walk          # 自律動作中は teleop から出なくな�
 ```
 
 `colcon test` にデッドマン・ウォッチドッグ・脱力ラッチ・「並行移動に旋回が混ざらない」
-・ホームの 2 段送信・自律動作の 4 割り込み・無線テストの結線を見る機能テストが
+・ホームとその場保持の 2 段送信・自律動作の 4 割り込みを見る機能テストが
 入っている (`test/test_teleop.py`)。コントローラ無しで走る。
-走らせたままの調整 (`ros2 param set` 相当) の反映と拒否も同じファイルで見ている。
-`params.py` の表と `config/ps5_dualsense.yaml` の整合 (打ち間違い・型・範囲) は
-`test/test_params.py` が見張る。こちらは ROS 無しでも走る。
+`params.py` の表と `config/ps5_dualsense.yaml` の整合 (打ち間違い・型・範囲) と、
+技名が `motions.yaml` にあるかは `test/test_params.py` が見張る。ROS 無しでも走る。
 
 ## 7. まだ決めていないこと
 
@@ -300,12 +257,17 @@ ros2 topic hz /cmd_walk          # 自律動作中は teleop から出なくな�
   今は「歩けるより遅い」側に振ってある。
 * `motion_bindings` の技名のうち `punch_r` / `punch_l` / `getup_front` / `getup_back` / `squat` は
   `motions.yaml` に定義済み。**`turn_l` / `turn_r` は未定義**で、押しても何も起きない
-  (`docs/無線操縦_不足項目レビュー.md` §2.2)。teleop は起動時に `motions.yaml` と照合して
-  無い名前を警告する。起動前に見るなら
-  `ros2 run roboone_teleop teleop_params --check config/ps5_dualsense.yaml --motions <motions.yaml>`。
+  (`docs/無線操縦_不足項目レビュー.md` §2.2)。照合は起動前に:
+  `ros2 run roboone_teleop teleop_params --check config/ps5_dualsense.yaml --motions <motions.yaml>`
+  （`test/test_params.py` が xfail で見張っていて、定義されたら XPASS で気付く）。
 * 起き上がりの「前 / 後」は**倒れた向き**で名付けてある (`getup_front` = うつ伏せから、
   `getup_back` = 仰向けから)。motion 側と解釈を合わせること。
 * `b7` (L3) / `b12`〜`b14` (十字下・左・右) は実機未照合。`joy_probe` で確かめる。
-* 自律動作中に teleop が黙るので、behavior が上がっていないまま自律に入ると `/cmd_walk`
-  が完全に止まる。motion の「途切れたら止まる」が効いて機体は停止する (安全側) が、
-  操作者から見ると「入ったのに動かない」になる。`/behavior/state` を ui に出すのはこれから。
+* **操作者向けの状態表示が無い。** teleop から OLED / LED / ブザーへ出していたが、
+  「非常停止・復帰・指令権の受け渡し・手動操作」の 4 つに入らないので外した
+  (`/ui/*` の publisher は今どこにも無い)。特に、自律動作中は teleop が `/cmd_walk` を
+  黙るので、behavior が上がっていないまま自律に入ると `/cmd_walk` が完全に止まる。
+  motion の「途切れたら止まる」が効いて機体は停止する (安全側) が、操作者から見ると
+  「入ったのに動かない」になる。**状態を機体に出すなら、`/estop`・`/autonomy`・
+  `/behavior/state` を購読する側 (ui ノードか、その手前の小さいノード) の仕事にする。**
+  teleop に戻さないこと — 20Hz の安全ループに表示の都合を混ぜ直すことになる。

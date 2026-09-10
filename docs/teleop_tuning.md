@@ -7,27 +7,27 @@ date: "2026-08-29"
 ## 0. この文書について
 
 PS5 コントローラで機体を動かす teleop ノード (`src/roboone_teleop`) の**値を人の手で変える**ための手順書。
-対象は「速さ・遊び・ボタン・長押し時間・音と光」のような調整項目で、歩き方そのもの (歩幅・周期・重心高さ) は
-`roboone_motion/config/gait.yaml` の担当なので別 (§5.1 に関係だけ書く)。
+対象は「速さ・遊び・ボタン・長押し時間」のような調整項目で、歩き方そのもの (歩幅・周期・重心高さ) は
+`roboone_walk_ref/config/gait.yaml` の担当なので別 (§5.1 に関係だけ書く)。
 
 前提は Raspberry Pi 5 / ROS 2 Jazzy / ワークスペースは `~/ros2_ws`。コマンドは Pi の端末で打つ。
 この文書と同じ内容の要約が `docs/commands.md` の「teleop の調整」節にあり、コードの入口は
 `src/roboone_teleop/README.md`。
 
-### コードの側で何を変えたか (2026-08-29)
+### コードの側で何を変えたか
 
-これまでも値は `config/ps5_dualsense.yaml` に集まっていたが、人が触るには 3 つの壁があった。
-それぞれをコード側で潰してある。
+項目の**一覧・意味・単位・既定値・範囲**は `roboone_teleop/params.py` の表 1 か所に集めてある。
+コードの中に散っていた既定値は全部そこへ移してあり、**人が読むべきコードはその表だけ**でよい。
 
 | 壁 | 直したこと |
 |---|---|
-| YAML を直しても `colcon build` し直さないと効かない | `--symlink-install` で入れ直す手順を §3.2 に。以後は再起動だけで効く |
-| 走らせたまま `ros2 param set` しても、起動時に読んだ値が残って効かない | ノードが変更を検査して次の周期に読み直す。全項目が走らせたまま変えられる |
-| キーを打ち間違えると ROS が黙って捨てる | 起動時に「知らないキー」と警告 (近い名前も出す)。`teleop_params --check` で起動前にも検査できる |
-| 割り当てた技名が本当に動くか誰も確かめない | 起動時に `motions.yaml` と照合して無い名前を警告。`teleop_params --check --motions` で起動前にも |
+| YAML を直しても `colcon build` し直さないと効かない | `--symlink-install` で入れ直す手順を §3.1 に。以後は再起動だけで効く |
+| キーを打ち間違えると ROS が黙って捨てる | `teleop_params --check` が起動前に検査する (近い名前も出す) |
+| 割り当てた技名が本当に動くか誰も確かめない | `teleop_params --check --motions` が `motions.yaml` と照合する |
 
-あわせて、項目の**一覧・意味・単位・既定値・範囲**を `roboone_teleop/params.py` の表 1 か所に集めた。
-コードの中に散っていた既定値は全部そこへ移してあり、**人が読むべきコードはその表だけ**でよい。
+**走らせたままの `ros2 param set` は受け付けない (2026-09-10 に外した)。** teleop は非常停止と
+その復帰を担うノードなので、20Hz の安全ループの途中で割り当てや周期が変わる経路を作らない。
+値を変えたら `--check` に通して起動し直す。
 
 ## 1. 全体像
 
@@ -43,7 +43,7 @@ PS5 コントローラで機体を動かす teleop ノード (`src/roboone_teleo
 | `src/roboone_teleop/launch/teleop.launch.py` | joy ノードと teleop を上げる。`config:=` `overrides:=` を受ける | 触らない |
 | `src/roboone_bringup/launch/roboone.launch.py` | 機体一式の launch。`teleop_config:=` `teleop_overrides:=` を teleop に渡す | 触らない |
 | `src/roboone_teleop/test/test_params.py` | 表と YAML の整合 (打ち間違い・型・範囲) を見張る。ROS 不要 | 触らない |
-| `src/roboone_teleop/test/test_teleop.py` | 結線テスト (デッドマン・ウォッチドッグ・走らせたままの調整) | 触らない |
+| `src/roboone_teleop/test/test_teleop.py` | 結線テスト (デッドマン・ウォッチドッグ・2 段トルクオン・自律の割り込み) | 触らない |
 
 ### 1.2 値の効く順番
 
@@ -52,18 +52,17 @@ PS5 コントローラで機体を動かす teleop ノード (`src/roboone_teleo
 1. `params.py` の表の既定値 — config を渡さずに起動したときだけ使われる
 2. `config/ps5_dualsense.yaml` — launch の既定。**普段はこれが効いている**
 3. `overrides:=<自分の YAML>` — 2 の上に重ねる。書いたキーだけ上書き
-4. `ros2 param set` — 走らせたまま上書き。**ノードを再起動すると消える**
 
-「いま効いている値」は `ros2 param get /teleop <名前>` か、起動ログの `調整値:` の行で分かる。
+「いま効いている値」は `ros2 param get /teleop <名前>` で読める (読むだけ。書けない)。
 
 ### 1.3 守り
 
-* config に表にない名前があると、起動時に `config の "scal.x" は teleop に無い項目なので効いていない ("scale.x" の打ち間違い?)` と警告する。
-* 型と範囲の外れた値は、起動時 (YAML) は例外で止まり、走行中 (`ros2 param set`) は拒否されて理由が返る。今の値は守られる。
+* 表にない名前を config に書くと ROS は黙って捨てる。`teleop_params --check` が
+  `知らないキー "scal.x" (効かない) — "scale.x" の打ち間違い?` と出すので、**起動前に必ず通す**。
+* 型と範囲の外れた値は、起動時に例外で止まる。黙って別の値で走ることはない。
 * 数値は `1` でも `1.0` でもよい (int / float を区別しない)。`true` / `false` は引用符なし。
-* 走行中の変更は「検査 → 次の周期に反映」なので、途中の値で動くことはない。
-* `motion_bindings` の技名は起動時に `motions.yaml` と照合し、無い名前は
-  `技 "turn_l" は motions.yaml に無い。割り当てたボタンを押しても何も起きない` と警告する。
+* `motion_bindings` の技名は `teleop_params --check --motions <motions.yaml>` で照合する。
+  `test/test_params.py` も同じ照合を見張っている。
 
 ## 2. 毎回の準備
 
@@ -98,34 +97,18 @@ ros2 topic echo /cmd_walk         # R1 + 左スティックで linear.x / linear
 
 ★ `allow_torque` を付けない既定はトルクが入る (機体が動く)。起動前に機体を支えておくこと。
 
-## 3. 調整のしかた — 3 通り
+## 3. 調整のしかた — 2 通り
 
 | 方法 | 向いている場面 | 残るか |
 |---|---|---|
-| **A. 走らせたまま試す** | 「0.06 と 0.08 でどう違うか」を実機で往復したい | 再起動で消える |
-| **B. YAML を直して再起動** | 決まった値を残す。人に渡す | パッケージに残る |
-| **C. 自分用の差分ファイル** | パッケージの YAML を汚さず、手元の値で回す | 自分の home に残る |
+| **A. YAML を直して再起動** | 決まった値を残す。人に渡す | パッケージに残る |
+| **B. 自分用の差分ファイル** | パッケージの YAML を汚さず、手元の値で回す | 自分の home に残る |
 
-普段は **A で探して、決まったら B に写す**。
+値を往復させて探すときも、**YAML を直して teleop を上げ直す**。走らせたままの
+`ros2 param set` は受け付けない (§0)。symlink で入れてあれば再ビルドは要らないので、
+Ctrl-C → 上矢印 → Enter で 2 秒ほど。読むだけなら `ros2 param get /teleop scale.x`。
 
-### 3.1 A. 走らせたまま試す
-
-teleop が上がっている状態で、別の端末から (source を忘れずに)。
-
-```bash
-ros2 param list /teleop                       # 項目の名前一覧
-ros2 param describe /teleop scale.x           # 意味・単位・範囲 (表から出る)
-ros2 param get /teleop scale.x                # いまの値
-ros2 param set /teleop scale.x 0.08           # 変える。次の周期 (50ms 以内) から効く
-```
-
-* 効いたかは teleop の端末に `調整: scale.x = 0.08 (次の周期から効く)` と `調整値: ...` の 2 行が出ることで分かる。
-* 拒否されたときは `Setting parameter failed: scale.x: 0.5 以下にすること` のように理由が返る。今の値は変わらない。
-* リストはこう書く: `ros2 param set /teleop motion_bindings "[b1:punch_r, b2:punch_l]"`
-* 文字列はそのまま: `ros2 param set /teleop buttons.relax b9`
-* 決まった値をまとめて見るには `ros2 param dump /teleop`。出てくるのは YAML そのものなので、そこから B の YAML へ写せる。
-
-### 3.2 B. YAML を直して再起動
+### 3.1 A. YAML を直して再起動
 
 編集するファイルは `~/ros2_ws/src/roboone_teleop/config/ps5_dualsense.yaml`。
 
@@ -158,7 +141,7 @@ source install/setup.bash
 以後は YAML と Python の編集が再起動だけで効く。**ファイルを新しく足したとき** (config に別の YAML を増やす等) だけは
 もう一度 `colcon build --packages-select roboone_teleop --symlink-install`。
 
-### 3.3 C. 自分用の差分ファイル
+### 3.2 B. 自分用の差分ファイル
 
 パッケージの YAML を触らずに、自分の値で回したいとき。変えたいキー**だけ**書く。
 
@@ -179,7 +162,7 @@ ros2 launch roboone_bringup roboone.launch.py teleop_overrides:=~/teleop_overrid
 ```
 
 パッケージの YAML の上に重なるので、書かなかった項目はパッケージの値のまま。
-決まったら B に写して、差分ファイルは消す (2 か所に値があると、次に読む人がどちらが正か迷う)。
+決まったら A に写して、差分ファイルは消す (2 か所に値があると、次に読む人がどちらが正か迷う)。
 
 ## 4. 項目の一覧
 
@@ -203,16 +186,12 @@ ros2 launch roboone_bringup roboone.launch.py teleop_overrides:=~/teleop_overrid
 |------|-----|---|-----|----------------|
 | `axes.walk_x` | `1` |  | 0 〜 31 | 前後 (linear.x) に使う軸番号。joy_probe で確かめる |
 | `axes.walk_y` | `0` |  | 0 〜 31 | 左右の並行移動 (linear.y) に使う軸番号 |
-| `axes.walk_yaw` | `2` |  | 0 〜 31 | 旋回 (angular.z) に使う軸番号。今の motion は使わない |
 | `invert.walk_x` | `false` |  |  | 前後の符号を反転。joy ノードが ROS 規約へ反転済みなので普段は false |
 | `invert.walk_y` | `false` |  |  | 左右の符号を反転 |
-| `invert.walk_yaw` | `false` |  |  | 旋回の符号を反転 |
 | `scale.x` | `0.06` | m/s | 0 〜 0.5 | スティック全倒しの前後速度。walk_core の v_max (gait.yaml) で頭打ち |
 | `scale.y` | `0.03` | m/s | 0 〜 0.5 | スティック全倒しの左右速度。v_max の y で頭打ち |
-| `scale.yaw` | `0.4` | rad/s | 0 〜 3 | スティック全倒しの旋回速度 |
 | `accel.x` | `0.15` | m/s² | 0.01 〜 10 | 前後指令の変化率の上限。gait.yaml の a_max より大きくしても motion 側で削られる |
 | `accel.y` | `0.1` | m/s² | 0.01 〜 10 | 左右指令の変化率の上限 |
-| `accel.yaw` | `1.5` | rad/s² | 0.01 〜 30 | 旋回指令の変化率の上限 |
 
 #### ボタン
 
@@ -221,7 +200,6 @@ ros2 launch roboone_bringup roboone.launch.py teleop_overrides:=~/teleop_overrid
 | `buttons.deadman` | `"b10"` |  |  | 押している間だけ歩行・技が通る (R1) |
 | `buttons.relax` | `"b9"` |  |  | 押した瞬間に脱力 (L1) |
 | `buttons.home` | `"b6"` |  |  | home_hold 秒の長押しでホームポジション → トルクオン (Options) |
-| `buttons.link_test` | `"b4"` |  |  | 押している間ブザー + LED で電波の疎通を示す (Create) |
 | `buttons.autonomy` | `"b11"` |  |  | autonomy_hold 秒の長押しで自律動作へ (十字キー 上) |
 | `buttons.hold` | `"b7"` |  |  | hold_hold 秒の長押しで、今の姿勢のままトルクを入れる (L3)。転倒 → 脱力 → 起き上がりの経路用 |
 
@@ -250,30 +228,6 @@ ros2 launch roboone_bringup roboone.launch.py teleop_overrides:=~/teleop_overrid
 | `motion_interrupts` | `[getup_front, getup_back]` |  |  | デッドマン不要で、押すと自律動作を止める技 |
 | `motion_requires_deadman` | `true` |  |  | 上記以外の技はデッドマンを押している間だけ通す |
 | `motion_cooldown` | `0.5` | s | 0 〜 5 | 同じ技を続けて送らない間隔 |
-| `motions_yaml` | `""` |  |  | 技名の照合に使う motions.yaml の場所。空なら roboone_motion_node の share から探す |
-
-#### 無線テスト
-
-| 名前 | 既定 | 単位 | 範囲 | 意味 |
-|------|-----|---|-----|----------------|
-| `link_test.buzzer` | `"beep"` |  |  | ui ノードのブザープリセット名 (beep / ack / error) |
-| `link_test.buzzer_hz` | `15.0` | Hz | 1 〜 50 | ブザーを撃ち直す周期 |
-| `link_test.stale` | `0.15` | s | 0.02 〜 2 | /joy がこれだけ途切れたら即鳴り止む (joy_timeout を待たない) |
-
-#### 状態表示 (ui ノードへ)
-
-| 名前 | 既定 | 単位 | 範囲 | 意味 |
-|------|-----|---|-----|----------------|
-| `ui.enable` | `true` |  |  | OLED / LED / ブザーへの状態表示を出すか |
-| `ui.pattern.nolink` | `"dark"` |  |  | /joy 未受信の LED プリセット |
-| `ui.pattern.relax` | `"estop"` |  |  | 脱力中の LED プリセット |
-| `ui.pattern.unarmed` | `"warn"` |  |  | 再武装待ちの LED プリセット |
-| `ui.pattern.manual` | `"ready"` |  |  | 武装済み (歩ける) の LED プリセット |
-| `ui.pattern.auto` | `"auto"` |  |  | 自律動作中の LED プリセット |
-| `ui.pattern.link` | `"link"` |  |  | 無線テスト中の LED プリセット |
-| `ui.buzzer.relax` | `"error"` |  |  | 脱力に落ちたときの音 |
-| `ui.buzzer.auto` | `"ack"` |  |  | 自律動作に入ったときの音 |
-| `ui.buzzer.manual` | `"beep"` |  |  | 武装した (歩ける状態になった) ときの音 |
 
 ## 5. よくある調整 — 手順つき
 
@@ -284,9 +238,9 @@ ros2 launch roboone_bringup roboone.launch.py teleop_overrides:=~/teleop_overrid
 `gait.yaml` の `a_max: [0.15, 0.05]` の**小さい方**で制限される。
 
 1. 機体を支えるか、`allow_torque:=false` で指令だけ見る
-2. `ros2 param set /teleop scale.x 0.08` (3 割ずつ上げる。いきなり倍にしない)
-3. R1 + 左スティック前倒しで歩かせ、`ros2 topic echo /cmd_walk` の `linear.x` が狙いの値になるのを見る
-4. 決まったら `config/ps5_dualsense.yaml` の `scale: x:` に写して再起動 (§3.2)
+2. `config/ps5_dualsense.yaml` の `scale: x:` を 3 割ずつ上げる (いきなり倍にしない)
+3. `teleop_params --check` に通して teleop を上げ直す (§3.1)
+4. R1 + 左スティック前倒しで歩かせ、`ros2 topic echo /cmd_walk` の `linear.x` が狙いの値になるのを見る
 
 `scale.y` は横歩き。斜めに倒すと x と y が同時に立つので、合成速度は最大 √(x²+y²) になる。
 
@@ -295,7 +249,7 @@ ros2 launch roboone_bringup roboone.launch.py teleop_overrides:=~/teleop_overrid
 DualSense は中央が少しずれるので、触っていないのに `/cmd_walk` に小さい値が乗ることがある。
 
 1. R1 を押したままスティックから手を離し、`ros2 topic echo /cmd_walk` が `0.0` か見る
-2. 乗っているなら `ros2 param set /teleop deadzone 0.15` のように少しずつ上げる
+2. 乗っているなら YAML の `deadzone` を `0.15` のように少しずつ上げて起動し直す
 3. 上げすぎると倒し始めの反応が鈍る。不感帯の外は 0..1 に引き伸ばすので段差は出ない
 
 joy ノード側の `deadzone` は launch で 0 に固定してある (二重に効くと読めなくなる)。触らない。
@@ -320,18 +274,17 @@ ros2 run roboone_teleop joy_probe                      # 端末 2
       - "a7-:squat"
 ```
 
-走らせたままなら `ros2 param set /teleop buttons.relax b9`。書式が壊れていれば拒否される。
+書式が壊れていれば `teleop_params --check` が拒否する (`割り当ての書式が不正: 'x1'`)。
 
 ### 5.4 長押し時間とウォッチドッグ (`home_hold` / `autonomy_hold` / `joy_timeout`)
 
 * `home_hold` と `autonomy_hold` は**誤操作でトルクが入る・自律に入るのを防ぐ**ための時間。短くするなら理由を持って。
 * `joy_timeout` は「電波が切れてから脱力するまで」。0.5 s は Bluetooth の途切れ (数十 ms) では反応せず、
   切断 (数百 ms 以上) では確実に落ちる値。**大きくすると転倒の前に止められなくなる**。
-* `link_test.stale` は無線テストのブザーが止まるまでの時間で、こちらは短いほど電波の切れ目が分かりやすい。
 
 ### 5.5 技を足す・ボタンに割り当てる
 
-技の中身 (キーフレーム) は `src/roboone_motion_node/config/motions.yaml`、ボタンへの割り当てが teleop の
+技の中身 (キーフレーム) は `src/roboone_motion/config/motions.yaml`、ボタンへの割り当てが teleop の
 `motion_bindings`。**技名は両方で一致させる**。
 
 1. `motions.yaml` に技を書く (作り方は `docs/commands.md` の「モーションを作る」)
@@ -340,22 +293,11 @@ ros2 run roboone_teleop joy_probe                      # 端末 2
 
 motion 側に無い名前を押しても、motion が「知らない技」と出すだけで何も起きない。
 2026-08-29 時点で `turn_l` / `turn_r` は teleop に割り当てがあるが `motions.yaml` に定義が無い (押しても何も起きない)。
+起動前の照合は `teleop_params --check <config> --motions <motions.yaml>`。
 
 起き上がりのように**転んだ機体を起こす技**は `motion_interrupts` に入れる。デッドマン不要になり、自律動作中でも通る。
 
-### 5.6 LED と音を変える (`ui.pattern.*` / `ui.buzzer.*`)
-
-teleop は**色を持たない**。ui ノードのプリセット名を送るだけなので、ここで選べるのはプリセット名。
-
-| 種類 | 使える名前 (2026-08-29 時点) | 定義場所 |
-|---|---|---|
-| LED | `dark` `ready` `warn` `estop` `auto` `link` | `src/roboone_ui/roboone_ui/ui_node.py` の `LED_PATTERNS` |
-| ブザー | `beep` `ack` `error` | 同 `BUZZER_PATTERNS` |
-
-色そのものや点滅の速さを変えたいときは ui 側の表を直す (teleop は触らない)。
-無い名前を送ると ui が「未知のパターン、現状維持」と出して何もしない。
-
-### 5.7 転倒から復帰する (その場保持で武装 → 起き上がり)
+### 5.6 転倒から復帰する (その場保持で武装 → 起き上がり)
 
 転倒すると電波の瞬断か L1 で脱力に入る。ここで Options (ホーム) を押すと立位へ 2 秒かけて動き出すので、
 寝ている機体では脚が床を押して跳ねる。代わりに:
@@ -366,7 +308,7 @@ teleop は**色を持たない**。ui ノードのプリセット名を送るだ
 3. 歩くには一度 R1 を離して再武装
 
 関係する項目: `buttons.hold` (既定 L3 = `b7`、**実機未照合**)、`hold_hold` (長押し時間)、`hold_motion` (`hold`)、
-motion 側の `hold_arm_time` (`roboone_motion_node/config/motion_node.yaml`)。
+motion 側の `hold_arm_time` (`roboone_motion/config/motion_node.yaml`)。
 
 ★ **初回は `allow_torque:=false` で試すこと。** `STAY` に入ったら `/motion/joint_commands` と `/joint_states` を
 見比べ、寝た姿勢が IK を往復して同じ値に戻っているかを確かめる (大きく違う軸があれば、トルクを入れた瞬間に
@@ -387,15 +329,14 @@ motion 側の `hold_arm_time` (`roboone_motion_node/config/motion_node.yaml`)。
 
 | 症状 | まず見るところ |
 |---|---|
-| YAML を直したのに変わらない | (1) `ros2 param get /teleop <名前>` で今の値を確認 (2) symlink か (§3.2 の `ls -la`) (3) `source install/setup.bash` を打った端末か (4) `overrides:=` や `ros2 param set` が上書きしていないか (§1.2) |
-| 起動時に `config の "..." は teleop に無い項目` | キーの打ち間違い。警告に近い名前が出る。`teleop_params --check` で起動前に拾える |
+| YAML を直したのに変わらない | (1) teleop を上げ直したか (2) `ros2 param get /teleop <名前>` で今の値を確認 (3) symlink か (§3.1 の `ls -la`) (4) `source install/setup.bash` を打った端末か (5) `overrides:=` が上書きしていないか (§1.2) |
+| キーを書いたのに効かない | 表にない名前は ROS が黙って捨てる。`teleop_params --check` が `知らないキー "..." — "..." の打ち間違い?` と出す |
 | 起動時に例外で止まる (`InvalidParameterTypeException` など) | `true`/`false` を `"true"` と引用符付きで書いた、文字列に数値を書いた等。`teleop_params --check` が同じことを日本語で言う |
-| `ros2 param set` が `Setting parameter failed` | 後ろの理由を読む (範囲・書式)。今の値は守られている |
 | `/joy` が来ない (`ros2 topic hz /joy` が出ない) | コントローラのペアリング・電池。README §1 と `docs/commands.md`「実機まわり」 |
 | 動いてほしい向きと逆 | `invert.*` を触る前に README §5 の実測表 (前 = `axes[1]` が +) と `joy_probe` で軸を確認 |
-| 起動直後に R1 を押しても歩かない | 再武装待ち。一度 R1 を離す (OLED に `release R1`) |
-| 技のボタンを押しても何も起きない | 起動ログに `技 "..." は motions.yaml に無い` が出ていないか。2026-08-29 時点では `turn_l` / `turn_r` がこれ。`motions.yaml` に作るか割り当てを外す |
-| 転んだあと Options を押したら脚が跳ねた | ホームは立位へ動き出す。寝ている機体は L3 長押し (その場保持) → △/✕ (§5.7) |
+| 起動直後に R1 を押しても歩かない | 再武装待ち。一度 R1 を離す (ログに `デッドマン再武装`) |
+| 技のボタンを押しても何も起きない | `teleop_params --check <config> --motions <motions.yaml>` で照合する。2026-08-29 時点では `turn_l` / `turn_r` が未定義。`motions.yaml` に作るか割り当てを外す |
+| 転んだあと Options を押したら脚が跳ねた | ホームは立位へ動き出す。寝ている機体は L3 長押し (その場保持) → △/✕ (§5.6) |
 | `ros2 run roboone_teleop teleop_params` が無いと言われる | `colcon build --packages-select roboone_teleop` のあと `source install/setup.bash` |
 
 ## 8. 変更をリポジトリに残す
@@ -437,12 +378,10 @@ ros2 run roboone_teleop teleop_params --check <yaml>          # 編集した YAM
 ros2 run roboone_teleop teleop_params --check <yaml> --motions <motions.yaml>   # 技名の照合も
 ros2 run roboone_teleop joy_probe                             # ボタン・軸の番号を実機で読む
 
-# 走らせたまま
+# 走っているノードの値を読む (書き換えは受け付けない。YAML を直して上げ直す)
 ros2 param list /teleop
 ros2 param describe /teleop scale.x
 ros2 param get /teleop scale.x
-ros2 param set /teleop scale.x 0.08
-ros2 param dump /teleop
 
 # 起動
 ros2 launch roboone_teleop teleop.launch.py                                  # teleop だけ

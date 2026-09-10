@@ -15,7 +15,6 @@ import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from roboone_interfaces.msg import OledText
 from roboone_teleop.bindings import apply_deadzone, Binding, parse_motion_bindings
 from roboone_teleop.teleop_node import LATCHED, TeleopNode
 from sensor_msgs.msg import Joy
@@ -24,12 +23,12 @@ from std_msgs.msg import Bool, String
 # テスト用のパラメータ。本番 config と同じキーだが、待ち時間を詰めてある。
 PARAMS = {
     'rate_hz': 50.0, 'joy_timeout': 0.3, 'deadzone': 0.1,
-    'axes.walk_x': 1, 'axes.walk_y': 0, 'axes.walk_yaw': 2,
-    'invert.walk_x': True, 'invert.walk_y': True, 'invert.walk_yaw': True,
-    'scale.x': 0.5, 'scale.y': 0.5, 'scale.yaw': 3.0,        # 表の上限 (範囲外は起動時に拒否)
-    'accel.x': 10.0, 'accel.y': 10.0, 'accel.yaw': 30.0,     # 同上。1 周期 (20ms) で 0.2 進む
+    'axes.walk_x': 1, 'axes.walk_y': 0,
+    'invert.walk_x': True, 'invert.walk_y': True,
+    'scale.x': 0.5, 'scale.y': 0.5,          # 表の上限 (範囲外は起動時に拒否)
+    'accel.x': 10.0, 'accel.y': 10.0,        # 同上。1 周期 (20ms) で 0.2 進む
     'buttons.deadman': 'b10', 'buttons.relax': 'b9',
-    'buttons.home': 'b6', 'buttons.link_test': 'b4', 'buttons.autonomy': 'b11',
+    'buttons.home': 'b6', 'buttons.autonomy': 'b11',
     'buttons.hold': 'b7',
     'home_hold': 0.3, 'home_motion': 'home', 'home_torque_delay': 0.1,
     'hold_hold': 0.3, 'hold_motion': 'hold',
@@ -38,13 +37,9 @@ PARAMS = {
     'motion_interrupts': ['getup_front'],
     'motion_requires_deadman': True,
     'motion_cooldown': 0.05,
-    'motions_yaml': '',
-    'link_test.buzzer': 'beep', 'link_test.buzzer_hz': 15.0,
-    'link_test.stale': 0.1,
-    'ui.enable': True,
 }
 
-DEADMAN, RELAX, HOME, LINK, AUTO, HOLD = 10, 9, 6, 4, 11, 7
+DEADMAN, RELAX, HOME, AUTO, HOLD = 10, 9, 6, 11, 7
 PUNCH_R, GETUP_F = 1, 3
 
 N_AXES = 6
@@ -63,20 +58,11 @@ class Harness(Node):
         self.walk = []
         self.estop = []
         self.motion = []
-        self.led = []          # /ui/led/pattern のプリセット名
-        self.oled = []         # (line1, line2)
-        self.buzzer = []
         self.auto = []
         self._joy = self.create_publisher(Joy, '/joy', 10)
         self.create_subscription(Twist, '/cmd_walk', lambda m: self.walk.append(m), 10)
         self.create_subscription(Bool, '/estop', lambda m: self.estop.append(m.data), LATCHED)
         self.create_subscription(String, '/cmd_motion', lambda m: self.motion.append(m.data), 10)
-        self.create_subscription(
-            String, '/ui/led/pattern', lambda m: self.led.append(m.data), LATCHED)
-        self.create_subscription(
-            OledText, '/ui/oled/text', lambda m: self.oled.append((m.line1, m.line2)), LATCHED)
-        self.create_subscription(
-            String, '/ui/buzzer', lambda m: self.buzzer.append(m.data), LATCHED)
         self.create_subscription(Bool, '/autonomy', lambda m: self.auto.append(m.data), LATCHED)
 
     def send(self, axes=None, buttons=None):
@@ -279,73 +265,6 @@ def test_translation_does_not_rotate(rig):
     assert all(m.angular.z == 0.0 for m in harness.walk), '並行移動で旋回が混ざった'
 
 
-def test_yaw_comes_only_from_right_stick(rig):
-    harness, _ = rig
-    _pump(harness, seconds=0.2)
-    harness.walk.clear()
-    buttons = [0] * N_BUTTONS
-    buttons[DEADMAN] = 1
-    axes = [0.0, 0.0, -1.0, 0.0, 0.0, 0.0]      # 右スティックを左へ
-    _pump(harness, axes, buttons, seconds=0.4)
-    turning = [m for m in harness.walk if m.angular.z != 0.0]
-    assert turning, '右スティックで旋回指令が出ていない'
-    assert all(m.angular.z > 0.0 for m in turning), '左旋回が +z になっていない'
-    assert all(m.linear.x == 0.0 and m.linear.y == 0.0 for m in harness.walk)
-
-
-def test_link_test_needs_no_deadman_and_works_while_relaxed(rig):
-    """無線テストはデッドマン不要・脱力中でも動く。動作条件を付けると用を成さない。"""
-    harness, teleop = rig
-    _pump(harness, seconds=0.2)
-
-    buttons = [0] * N_BUTTONS
-    buttons[RELAX] = 1                          # 先に脱力させておく
-    _pump(harness, None, buttons, seconds=0.15)
-    assert teleop._estop
-    harness.led.clear()
-    harness.buzzer.clear()
-
-    buttons = [0] * N_BUTTONS
-    buttons[LINK] = 1                           # デッドマンは押さない
-    _pump(harness, None, buttons, seconds=0.5)
-    assert harness.led[-1] == 'link', f'LED が link になっていない: {harness.led}'
-    assert ('LINK TEST', 'radio ok') in harness.oled
-    beeps = [b for b in harness.buzzer if b == 'beep']
-    assert len(beeps) >= 4, f'ブザーの再送が少なすぎる: {harness.buzzer}'
-
-    n_before = len(beeps)
-    _pump(harness, None, None, seconds=0.3)     # 離す
-    assert harness.led[-1] == 'estop', f'脱力表示に戻っていない: {harness.led}'
-    # 離す直前に撃った 1 発が届くことはある (timer と /joy の順序は決まっていない)。
-    # 見るのは「離したあとに増え続けないこと」。
-    n_after = len([b for b in harness.buzzer if b == 'beep'])
-    assert n_after <= n_before + 1, '離したのにブザーが鳴り続けている'
-    _pump(harness, None, None, seconds=0.2)
-    assert len([b for b in harness.buzzer if b == 'beep']) == n_after, \
-        '離したあともブザーが鳴り続けている'
-
-
-def test_link_test_stops_when_joy_is_lost(rig):
-    """電波が切れたら鳴りっぱなしにしない。
-
-    ここは joy_timeout (脱力までの 0.3s) より速く止まること。無線テストは
-    「どこまで電波が届くか」を耳で探す機能なので、切れた瞬間に鳴り止まないと
-    範囲の境目が分からない。
-    """
-    harness, _ = rig
-    buttons = [0] * N_BUTTONS
-    buttons[LINK] = 1
-    _pump(harness, None, buttons, seconds=0.3)
-    assert harness.led[-1] == 'link'
-
-    time.sleep(0.2)                             # link_test.stale=0.1 を超えて黙る
-    assert harness.led[-1] != 'link', '電波が切れても LED が link のまま'
-    n_after_drop = len([b for b in harness.buzzer if b == 'beep'])
-    time.sleep(0.3)
-    assert len([b for b in harness.buzzer if b == 'beep']) == n_after_drop, \
-        '電波が切れてもブザーが鳴り続けている'
-
-
 # ---------------------------------------------------------------- 自律動作
 def _enter_auto(harness, teleop):
     _pump(harness, seconds=0.2)                     # 再武装
@@ -404,15 +323,6 @@ def test_getup_interrupts_autonomy_without_deadman(rig):
     assert harness.motion == ['getup_front']
     assert not teleop._auto
     assert harness.auto[-1] is False
-
-
-def test_link_test_interrupts_autonomy(rig):
-    harness, teleop = rig
-    _enter_auto(harness, teleop)
-    _pump(harness, None, _btn(LINK), seconds=0.3)
-    assert not teleop._auto
-    assert harness.auto[-1] is False
-    assert harness.led[-1] == 'link'
 
 
 def test_home_interrupts_autonomy(rig):
@@ -488,94 +398,7 @@ def test_autonomy_does_not_repeat_while_held(rig):
     assert n == 1, f'/autonomy true が {n} 回出ている'
 
 
-# ---------------------------------------------------------------- 状態表示
-def test_ui_shows_each_state(rig):
-    """OLED と LED のプリセットが状態ごとに切り替わる。
-
-    自律動作中は teleop が /cmd_walk を黙るので、behavior が上がっていないと
-    「入れたのに動かない」になる。操作者が今どのモードかを機体側で見分けられる
-    ことがこの表示の目的。
-    """
-    harness, teleop = rig
-
-    _pump(harness, seconds=0.3)                      # 手動・武装済み
-    assert harness.led[-1] == 'ready'
-    assert harness.oled[-1] == ('MANUAL', 'R1 = walk')
-
-    _pump(harness, None, _btn(RELAX), seconds=0.2)   # 脱力
-    assert harness.led[-1] == 'estop'
-    assert harness.oled[-1] == ('RELAX', 'OPTIONS=home')
-
-    # ホーム。R1 を押したまま復帰すると再武装待ち (黄) で止まる。
-    # ここが「押しっぱなしで復帰していきなり歩き出す」を防いでいる表示。
-    _pump(harness, None, _btn(HOME, DEADMAN), seconds=0.6)
-    assert not teleop._estop
-    assert harness.led[-1] == 'warn'
-    assert harness.oled[-1] == ('MANUAL', 'release R1')
-
-    _pump(harness, seconds=0.2)                      # 離して武装
-    assert harness.led[-1] == 'ready'
-
-    _pump(harness, None, _btn(AUTO), seconds=0.5)    # 自律動作
-    assert teleop._auto
-    assert harness.led[-1] == 'auto'
-    assert harness.oled[-1] == ('AUTO', 'any 5 = stop')
-
-
-def test_ui_publishes_only_on_change(rig):
-    """20Hz で latched トピックを叩き続けない。"""
-    harness, _ = rig
-    _pump(harness, seconds=0.5)
-    n = len(harness.led)
-    _pump(harness, seconds=0.5)                      # 状態を変えずに回す
-    assert len(harness.led) == n, f'変化していないのに {len(harness.led) - n} 回送った'
-
-
-def test_oled_lines_fit_the_screen(rig):
-    """OLED は 8x8 フォントで 1 行 12 文字ちょうど。はみ出すと読めない。"""
-    harness, teleop = rig
-    _pump(harness, seconds=0.2)
-    for key in teleop._ui_pattern:
-        teleop._link = (key == 'link')
-        _, line1, line2, _ = teleop._ui_state()
-        assert len(line1) <= 12, f'{key}: line1 が {len(line1)} 文字 ({line1!r})'
-        assert len(line2) <= 12, f'{key}: line2 が {len(line2)} 文字 ({line2!r})'
-    teleop._link = False
-
-
-# ------------------------------------------------------ 走らせたままの調整
-def test_param_set_takes_effect_without_restart(rig):
-    """ros2 param set 相当で scale を変えると、次の周期から指令に効く。"""
-    harness, teleop = rig
-    _pump(harness, seconds=0.2)                 # 再武装
-    results = teleop.set_parameters([Parameter('scale.x', value=0.4)])
-    assert results[0].successful
-    axes = [0.0, -1.0, 0.0, 0.0, 0.0, 0.0]
-    harness.walk.clear()
-    _pump(harness, axes, _btn(DEADMAN), seconds=0.4)
-    assert max(m.linear.x for m in harness.walk) == pytest.approx(0.4)
-
-
-def test_param_set_rejects_bad_values(rig):
-    """範囲外・書式違いは拒否され、今の値が守られる。"""
-    _, teleop = rig
-    bad = teleop.set_parameters([Parameter('deadzone', value=1.5)])
-    assert not bad[0].successful and 'deadzone' in bad[0].reason
-    assert teleop._deadzone == pytest.approx(0.1)
-    bad = teleop.set_parameters([Parameter('buttons.deadman', value='x1')])
-    assert not bad[0].successful
-
-
-def test_int_is_accepted_for_float_param(rig):
-    """scale.x に 1 (int) を入れても 1.0 として効く (YAML に 1 と書いても壊れない)。"""
-    harness, teleop = rig
-    _pump(harness, seconds=0.2)
-    ok = teleop.set_parameters([Parameter('scale.x', value=0)])
-    assert ok[0].successful
-    _pump(harness, seconds=0.1)                 # 次の周期で読み直される
-    assert teleop._scale['x'] == 0.0 and isinstance(teleop._scale['x'], float)
-
-
+# ---------------------------------------------------------------- 起動時の検査
 def test_out_of_range_config_is_rejected_at_startup():
     """YAML の値が表の範囲外なら起動時に止まる (黙って別の値で動かない)。"""
     rclpy.init()

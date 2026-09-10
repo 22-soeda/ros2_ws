@@ -3,7 +3,7 @@
 
 **人が手で触る値は、ここに並んでいるものが全部。** 名前・意味・単位・既定値・許される
 範囲を 1 か所に集め、teleop_node.py はこの表を読んで宣言と検査をする。表にない名前は
-config に書いても効かないので、起動時に警告が出る。
+config に書いても ROS が黙って捨てるので、起動前に --check で見ること。
 
 この表そのものは ROS に依存しない (rclpy を使うのは declare_all / read_all の中だけ)。
 だから config を編集したあと、ROS を通さずにこれで検査できる:
@@ -18,7 +18,9 @@ ROS 環境なら ``ros2 run roboone_teleop teleop_params`` でも同じ。
     1. この表の default              … config を渡さずに起動したときの値
     2. パッケージの config/*.yaml    … launch の既定。普段はこれが効いている
     3. launch の overrides:=<yaml>    … 自分用の差分ファイル (変えたいキーだけ書く)
-    4. ros2 param set (走らせたまま)   … 試すとき。ノードを再起動すると消える
+
+値を変えたら --check に通してから teleop を起動し直す。走らせたままの ros2 param set は
+受け付けない (安全ループの途中で割り当てや周期が変わる経路を作らないため)。
 
 数値は int でも float でも受け付ける (``scale.x: 1`` と書いても 1.0 として読む)。
 """
@@ -52,8 +54,6 @@ _G_BUTTON = 'ボタン'
 _G_HOME = 'ホームポジション / その場保持'
 _G_AUTO = '自律動作'
 _G_MOTION = '技'
-_G_LINK = '無線テスト'
-_G_UI = '状態表示 (ui ノードへ)'
 
 #: 調整項目の全部。並びは config/ps5_dualsense.yaml と同じにしてある。
 TUNABLES = (
@@ -69,27 +69,20 @@ TUNABLES = (
             _G_STICK, '', kind='int', low=0, high=31),
     Tunable('axes.walk_y', 0, '左右の並行移動 (linear.y) に使う軸番号',
             _G_STICK, '', kind='int', low=0, high=31),
-    Tunable('axes.walk_yaw', 2, '旋回 (angular.z) に使う軸番号。今の motion は使わない',
-            _G_STICK, '', kind='int', low=0, high=31),
     Tunable('invert.walk_x', False, '前後の符号を反転。joy ノードが ROS 規約へ反転済みなので普段は false',
             _G_STICK, '', kind='bool'),
     Tunable('invert.walk_y', False, '左右の符号を反転', _G_STICK, '', kind='bool'),
-    Tunable('invert.walk_yaw', False, '旋回の符号を反転', _G_STICK, '', kind='bool'),
     Tunable('scale.x', 0.06, 'スティック全倒しの前後速度。walk_core の v_max (gait.yaml) で頭打ち',
             _G_STICK, 'm/s', low=0.0, high=0.5),
     Tunable('scale.y', 0.03, 'スティック全倒しの左右速度。v_max の y で頭打ち',
             _G_STICK, 'm/s', low=0.0, high=0.5),
-    Tunable('scale.yaw', 0.40, 'スティック全倒しの旋回速度', _G_STICK, 'rad/s', low=0.0, high=3.0),
     Tunable('accel.x', 0.15, '前後指令の変化率の上限。gait.yaml の a_max より大きくしても motion 側で削られる',
             _G_STICK, 'm/s²', low=0.01, high=10.0),
     Tunable('accel.y', 0.10, '左右指令の変化率の上限', _G_STICK, 'm/s²', low=0.01, high=10.0),
-    Tunable('accel.yaw', 1.50, '旋回指令の変化率の上限', _G_STICK, 'rad/s²', low=0.01, high=30.0),
     # --- ボタン -------------------------------------------------------------
     Tunable('buttons.deadman', 'b10', '押している間だけ歩行・技が通る (R1)', _G_BUTTON, '', kind='str'),
     Tunable('buttons.relax', 'b9', '押した瞬間に脱力 (L1)', _G_BUTTON, '', kind='str'),
     Tunable('buttons.home', 'b6', 'home_hold 秒の長押しでホームポジション → トルクオン (Options)',
-            _G_BUTTON, '', kind='str'),
-    Tunable('buttons.link_test', 'b4', '押している間ブザー + LED で電波の疎通を示す (Create)',
             _G_BUTTON, '', kind='str'),
     Tunable('buttons.autonomy', 'b11', 'autonomy_hold 秒の長押しで自律動作へ (十字キー 上)',
             _G_BUTTON, '', kind='str'),
@@ -121,26 +114,6 @@ TUNABLES = (
     Tunable('motion_requires_deadman', True, '上記以外の技はデッドマンを押している間だけ通す',
             _G_MOTION, '', kind='bool'),
     Tunable('motion_cooldown', 0.5, '同じ技を続けて送らない間隔', _G_MOTION, 's', low=0.0, high=5.0),
-    Tunable('motions_yaml', '',
-            '技名の照合に使う motions.yaml の場所。空なら roboone_motion_node の share から探す',
-            _G_MOTION, '', kind='path'),
-    # --- 無線テスト ---------------------------------------------------------
-    Tunable('link_test.buzzer', 'beep', 'ui ノードのブザープリセット名 (beep / ack / error)',
-            _G_LINK, '', kind='str'),
-    Tunable('link_test.buzzer_hz', 15.0, 'ブザーを撃ち直す周期', _G_LINK, 'Hz', low=1.0, high=50.0),
-    Tunable('link_test.stale', 0.15, '/joy がこれだけ途切れたら即鳴り止む (joy_timeout を待たない)',
-            _G_LINK, 's', low=0.02, high=2.0),
-    # --- 状態表示 -----------------------------------------------------------
-    Tunable('ui.enable', True, 'OLED / LED / ブザーへの状態表示を出すか', _G_UI, '', kind='bool'),
-    Tunable('ui.pattern.nolink', 'dark', '/joy 未受信の LED プリセット', _G_UI, '', kind='str'),
-    Tunable('ui.pattern.relax', 'estop', '脱力中の LED プリセット', _G_UI, '', kind='str'),
-    Tunable('ui.pattern.unarmed', 'warn', '再武装待ちの LED プリセット', _G_UI, '', kind='str'),
-    Tunable('ui.pattern.manual', 'ready', '武装済み (歩ける) の LED プリセット', _G_UI, '', kind='str'),
-    Tunable('ui.pattern.auto', 'auto', '自律動作中の LED プリセット', _G_UI, '', kind='str'),
-    Tunable('ui.pattern.link', 'link', '無線テスト中の LED プリセット', _G_UI, '', kind='str'),
-    Tunable('ui.buzzer.relax', 'error', '脱力に落ちたときの音', _G_UI, '', kind='str'),
-    Tunable('ui.buzzer.auto', 'ack', '自律動作に入ったときの音', _G_UI, '', kind='str'),
-    Tunable('ui.buzzer.manual', 'beep', '武装した (歩ける状態になった) ときの音', _G_UI, '', kind='str'),
 )
 
 #: ROS が勝手に足すパラメータ。config に無くても、あっても、関知しない。
