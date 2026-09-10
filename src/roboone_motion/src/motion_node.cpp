@@ -99,7 +99,7 @@ public:
     port_[rm::kRight] = declare_parameter<std::string>("port_right", "/dev/feetech_right");
     port_[rm::kLeft] = declare_parameter<std::string>("port_left", "/dev/feetech_left");
     bank_opt_.baud = declare_parameter<int>("baud", 1000000);
-    bank_opt_.goal_torque = declare_parameter<int>("goal_torque", 1000);
+    bank_opt_.goal_torque = declare_parameter<int>("goal_torque", 2047);
     // ★0 にしないこと。位置指令パケットの速度 (reg46/47) に 0 を書くと、この実機
     //   (HLS 系) は目標位置を受け取っても動かない。同じパケットの 44/45 = GOAL_TORQUE
     //   に 0 を書くと全軸まったく動かないのと同じ性質で、0 は「無制限」ではない。

@@ -21,7 +21,10 @@
     # HLS 系は位置指令パケットの 44/45 が GOAL_TORQUE。**0 だと全軸まったく動かない。**
     # SMS/STS 系ではここは GOAL_TIME になるので、繋ぎ替えたら feetech_bus 側の
     # Family を直すこと。
-    goal_torque: 1000
+    #
+    # これは Target Current の**上限**（0-2047）で、常にこれだけ流すわけではない。
+    # 2047 = 制限を掛けない（feetech_shell の既定と同じ）。
+    goal_torque: 2047
 
     # 位置指令パケットに載せる速度 (reg46/47) と加速度 (reg41)。
     #
