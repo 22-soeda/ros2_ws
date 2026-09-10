@@ -1,8 +1,8 @@
 # roboone_walk_core — 歩行計画エンジンの C++ 版
 
-`roboone_motion` (Python) の walk_core を機械移植したもの。ヘッダオンリ・ROS 非依存。
+`roboone_walk_ref` (Python) の walk_core を機械移植したもの。ヘッダオンリ・ROS 非依存。
 **Python 版が仕様の原本**で、設計判断と式の導出は
-`src/roboone_motion/roboone_motion/walk_core/engine.py` の docstring にある。
+`src/roboone_walk_ref/roboone_walk_ref/walk_core/engine.py` の docstring にある。
 
 - `include/roboone_walk_core/walk_engine.hpp` — エンジン本体
 - `include/roboone_walk_core/gait_params.hpp` — 静的設定 (既定値は gait.yaml と同じ。
@@ -20,9 +20,9 @@ walk_core は 3 か所に同じロジックがある。**変更は必ず 3 つ�
 
 | 実装 | 場所 | 用途 |
 |---|---|---|
-| Python (原本) | roboone_motion/walk_core/engine.py | 仕様・単体テスト・可視化データ生成 |
+| Python (原本) | roboone_walk_ref/walk_core/engine.py | 仕様・単体テスト・可視化データ生成 |
 | C++ | この walk_engine.hpp | motion ノード (実機 200 Hz) |
-| JS | roboone_motion/viz/walkcore.js | ブラウザのライブ操縦シミュレータ |
+| JS | roboone_viz/walkcore.js | ブラウザのライブ操縦シミュレータ |
 
 ```bash
 colcon build --packages-select roboone_walk_core

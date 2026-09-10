@@ -1,4 +1,4 @@
-// walk_core C++ 版の自己検算。roboone_motion/test/test_walk_core.py の
+// walk_core C++ 版の自己検算。roboone_walk_ref/test/test_walk_core.py の
 // 主要な検査を C++ 側でも回す (数値の Python 一致は compare_walk_engines.py)。
 
 #include <cmath>

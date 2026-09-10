@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """walk_core の Python / C++ / JS 3 実装の数値照合。
 
-Python 版 (roboone_motion) が仕様の原本。C++ 版 (walk_dump) と JS 版
-(roboone_motion/viz/walkcore.js を node で実行) が同じ指令プロファイルで
+Python 版 (roboone_walk_ref) が仕様の原本。C++ 版 (walk_dump) と JS 版
+(roboone_viz/walkcore.js を node で実行) が同じ指令プロファイルで
 同じ軌道を出すことを、tick ごとの最大絶対誤差で確認する。
 
 使い方 (ws ルートから):
@@ -19,9 +19,9 @@ import subprocess
 import sys
 
 WS = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(WS / 'src' / 'roboone_motion'))
+sys.path.insert(0, str(WS / 'src' / 'roboone_walk_ref'))
 
-from roboone_motion.walk_core import WalkEngine  # noqa: E402
+from roboone_walk_ref.walk_core import WalkEngine  # noqa: E402
 
 DT = 0.005
 TOL = 1e-6
@@ -67,7 +67,7 @@ def run_cpp(vx, vy):
 
 
 def run_js(vx, vy):
-    js = WS / 'src' / 'roboone_motion' / 'roboone_motion' / 'viz' / 'walkcore.js'
+    js = WS / 'src' / 'roboone_viz' / 'roboone_viz' / 'walkcore.js'
     if not js.exists():
         return None
     try:

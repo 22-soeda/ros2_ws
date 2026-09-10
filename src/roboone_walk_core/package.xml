@@ -5,7 +5,7 @@
   <version>0.1.0</version>
   <description>
     歩行計画ライブラリ walk_core の C++ 版 (ヘッダオンリ / ROS 非依存)。
-    roboone_motion (Python) の walk_core を機械移植したもので、Python 版が仕様の原本。
+    roboone_walk_ref (Python) の walk_core を機械移植したもので、Python 版が仕様の原本。
     数値の一致は tools/compare_walk_engines.py で照合する。
     motion ノード (今後実装) はこれと roboone_kinematics・feetech_servo をリンクする。
   </description>

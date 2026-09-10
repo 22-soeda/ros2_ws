@@ -1,6 +1,6 @@
 // 歩行計画エンジン walk_core の C++ 版。
 //
-// **roboone_motion/walk_core/engine.py の機械移植で、Python 版が仕様の原本。**
+// **roboone_walk_ref/walk_core/engine.py の機械移植で、Python 版が仕様の原本。**
 // 設計判断・式の導出・文書との対応は engine.py の docstring に全部書いてあるので
 // ここでは繰り返さない。ロジックを変えるときは必ず両方を揃え、
 // tools/compare_walk_engines.py で数値一致 (許容 1e-6 m) を確認すること。
@@ -57,6 +57,53 @@ inline double quintic(double tau)
   return tau * tau * tau * (10.0 + tau * (-15.0 + 6.0 * tau));
 }
 }  // namespace detail
+
+/// 遊脚が計画どおり床に着くかを、実際の軌道で調べた結果。
+///
+/// 降下は td_speed_max で飽和するので、**狙った swing_ratio がそのまま両足支持に
+/// なるわけではない**。式で近似せず、下の swing_pos と同じ漸化式を loop_hz で
+/// 回して出す（swing_pos を変えたらここも合わせること）。
+struct SwingLanding
+{
+  bool lands = false;             //!< φ=1 までに床へ届くか
+  double touch_phase = 1.0;       //!< 床を切る位相
+  double double_support = 0.0;    //!< 実際に両足が着いている割合 [0,1]
+  bool saturated = false;         //!< 降下が td_speed_max に張り付いたか
+  double z_end = 0.0;             //!< φ=1 での遊脚の高さ [m]（正なら浮いたまま）
+  double v_need = 0.0;            //!< 飽和なしで降りるのに要る平均速度 [m/s]
+};
+
+inline SwingLanding checkSwingLanding(const GaitParams & p)
+{
+  SwingLanding r;
+  const double dt = 1.0 / (p.loop_hz > 0.0 ? p.loop_hz : 200.0);
+  const double sr = (p.swing_ratio > 1e-6) ? p.swing_ratio : 1.0;
+  r.v_need = (p.swing_height + p.td_overdrive) / (0.55 * sr * p.t_step);
+  double z = 0.0, zp = 0.0, t = 0.0;
+  while (t < p.t_step - 1e-12) {
+    t += dt;
+    const double phase = t / p.t_step;
+    const double tau = detail::clamp(phase / sr, 0.0, 1.0);
+    double zref;
+    if (tau < 0.45) {
+      zref = p.swing_height * detail::quintic(tau / 0.45);
+    } else {
+      const double u = (tau - 0.45) / 0.55;
+      zref = p.swing_height * (1.0 - detail::quintic(u)) - p.td_overdrive * detail::quintic(u);
+    }
+    const double zsat = zp - p.td_speed_max * dt;
+    z = (zref > zsat) ? zref : zsat;
+    if (zsat > zref + 1e-12) {r.saturated = true;}
+    if (!r.lands && z <= 0.0) {
+      r.lands = true;
+      r.touch_phase = phase;
+      r.double_support = 1.0 - phase;
+    }
+    zp = z;
+  }
+  r.z_end = z;
+  return r;
+}
 
 // クランプ域 (xmin, xmax, ymin, ymax)。世界座標
 using ClampBox = std::array<double, 4>;
@@ -341,7 +388,10 @@ private:
   // -------------------------------------------------------- 遊脚 (式 14〜16)
   Vec3 swing_pos(double dt)
   {
-    const double tau = detail::clamp(phase_, 0.0, 1.0);
+    // swing_ratio < 1 なら遊脚は歩の前半だけで軌道を終え、残りは着地点に置かれたまま
+    // 止まる（= 両足接地）。**ZMP は enter_step() で支持足に固定されて歩の間ずっと
+    // 動かない**ので、ここを変えても DCM の伝播も b の閉形式も一切変わらない。
+    const double tau = detail::clamp(phase_ / p_.swing_ratio, 0.0, 1.0);
     const double s = detail::quintic(tau);
     const Vec2 & pl = *p_land_;
     const double x = swing_r0_[0] + s * (pl[0] - swing_r0_[0]);
