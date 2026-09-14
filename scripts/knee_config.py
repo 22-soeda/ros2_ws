@@ -102,7 +102,7 @@ SERVO_PORT = {"right": "/dev/feetech_right", "left": "/dev/feetech_left"}
 #: ここも写し直す（serve_knee3d.py は yaml を直接読み、この値と食い違ったら警告を出す）。
 #:
 #: φ0 は σ_m と n に依る派生量なので定数で持たず、phi0_from_home() で作る。
-SERVO_HOME_COUNT = {"right": 1835, "left": 2095}
+SERVO_HOME_COUNT = {"right": 1931, "left": 2174}
 
 #: サーボ 1 回転のカウント数（0-4095 = 0-360 deg）。
 SERVO_COUNTS = 4096
