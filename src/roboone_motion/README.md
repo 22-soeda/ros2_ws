@@ -93,7 +93,7 @@ bank_.states()  ->  codec_.decode()  ->  ctrl_.step()  ->  codec_.encode()
 | **Σ_B** | 実際の骨盤系。胴体が `body_pitch` だけ前傾している |
 
 胴体を ψ 前傾させるのは**股ピッチ θ1 に −ψ を足すのと厳密に等価**なので、
-**膝・足首の関節角は 1 度も変わらない**（足首 θ6 の余裕を食わずに前傾できる）。
+**膝・足首の関節角は 1 度も変わらない**（足首ピッチ θ5 の余裕を食わずに前傾できる）。
 
 **変換を掛けるのは `PoseCodec` だけ。** 上の層（歩行・技・補間・ホーム）は前傾を
 知らない。`encode` の `bodyPitchApply` と `decode` の `bodyPitchRemove` は対で、
@@ -245,3 +245,28 @@ ros2 run roboone_motion motion_selftest --gait /tmp/g.yaml --home-pose /tmp/h.ya
 1. この README
 2. 変えたい層のヘッダ冒頭（実機で踏んだ話は全部そこに書いてある）
 3. `motion_selftest` を通す。config を触ったなら `--strict` も
+
+## 足裏の座標を打って片脚を動かす `motion_leg_goto`
+
+脚 IK 全体（IK → 膝 4 節 → 足首パラレル → サーボ角 → 生カウント）を実機で確かめる。
+motion ノードと同じ変換（`body_pose.hpp` の `servoFromFootPose` / `footPoseFromServo`、
+`ServoMap` の生カウント変換）を通すので、ここで出るカウントはノードが出すものと一致する。
+
+```bash
+ros2 run roboone_motion motion_leg_goto --leg R --p 0 -89.3 -261 --rpy 0 0 0         # 計算と現在値だけ
+ros2 run roboone_motion motion_leg_goto --leg L --rel --p 0 0 -261 --rpy 0 -20 0     # 股中心からの相対
+ros2 run roboone_motion motion_leg_goto --leg R --p 0 -89.3 -261 --move              # ★実機が動く
+ros2 run roboone_motion motion_leg_goto --leg L --move --repl    # ★対話。1 行 "x y z [roll pitch yaw]"
+ros2 run roboone_motion motion_leg_goto --leg R --off            # その脚 6 軸のトルクを切る
+```
+
+- 座標は機体座標 Σ_B（x 前 / y 左 / z 上、原点は股 3 軸の高さ）[mm]、rpy は足裏の姿勢 [deg]
+  （`home_pose.yaml` の `foot` と同じ取り方）。股中心は右 (0, −89.3, 0) / 左 (0, +89.3, 0)。
+  `--rel` で x, y を股中心からの相対にできる。
+- **★★脚 6 軸がまとめて動く。** 必ず機体を吊るか、脚が空中にある姿勢で使う。既定は読むだけで、
+  `--move` を付けたときだけトルク ON と位置指令を出す。6 軸は 1 パケットで同時に動く。
+- 動かさない条件: IK が解けない / 膝・足首の機構が届かない（足首はエンベロープで丸めたときも）/
+  関節リミットの外 / カウントが `servo_limits.yaml` の窓の外。理由を印字して止まる。
+- 動かしたあとは実測カウントを順変換で足裏の姿勢に戻し、指令との差を出す。
+- 終了時トルクは入ったまま。`--off` は単独でも使える。
+

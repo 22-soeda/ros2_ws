@@ -322,6 +322,79 @@ buses:
 | `--speed N` / `--acc N` | 微調整で動かす速度・加速度（既定 300 / 20） |
 | `--torque N` | HLS系の目標トルク 0-1000（既定 1000）。0 だと動かない |
 
+### 6. 足首の関節角を指定して動かす `feetech_ankle_goto`
+
+足首パラレルリンクの逆変換（`roboone_kinematics/ankle_parallel.hpp`）を実機で確かめる。
+関節角 (θ5, θ6) を deg で渡すと、`ankleClampJoints → ankleIk → ankleServoFromCrank → 生カウント`
+まで通して印字し、**`--move` を付けたときだけ** ID6 / ID5 を同じパケットで同時に動かす。
+動かしたあとは実測カウントを順変換 `ankleFk` で (θ5, θ6) に戻して指令との差を出す。
+
+```bash
+ros2 run feetech_servo feetech_ankle_goto --th5 10 --th6 -5             # 計算と現在値だけ（何も書かない）
+ros2 run feetech_servo feetech_ankle_goto --leg R --pitch -5 --roll 10  # pitch/roll で指定
+ros2 run feetech_servo feetech_ankle_goto --th5 10 --th6 -5 --move      # ★実機が動く
+ros2 run feetech_servo feetech_ankle_goto --move --repl                 # ★対話。1 行 "θ5 θ6" で順に動かす
+```
+
+- **θ5 = ピッチ（上側ピボット・腰に近い方）、θ6 = ロール（下側ピボット）**。`--pitch` は θ5、`--roll` は θ6 に入る
+  （`ankle_config.hpp` の約束。2026-09-14 に上下の軸を入れ替えた）。対応を疑うときは
+  `--th5` だけ振って足裏が前後に傾くことを見る。
+- 鎖0 = ID6（短ロッド）、鎖1 = ID5（長ロッド）。`--ids 6,5` で変えられる。
+- エンベロープ（ピッチ θ5 ±55 deg / ロール θ6 ±40 deg）の外は丸めてから解く。ロッドが届かない（Δ < 0）か
+  クランクが `CRANK_LIMIT_DEG`（-42..+60 deg）の外なら **動かさない**。
+- 終了時トルクは入ったまま。切るなら `--off`。足が落ちる姿勢ではトルクを切らないこと。
+- 差がゼロ近くても言えるのは「逆変換と順変換が互いに整合している」ことだけ。
+  足裏が本当にその角度かは目で見る。
+
+| オプション | 内容 |
+|---|---|
+| `--leg L\|R` | どちらの脚か（既定 L）。バスは L=`/dev/feetech_left` / R=`/dev/feetech_right` |
+| `--th5 D` / `--th6 D` | 関節角 [deg]。`--roll` / `--pitch` は同じものの別名 |
+| `--move` | ★実機を動かす。無ければ読むだけ |
+| `--repl` | 標準入力の 1 行 "θ5 θ6" を順に動かす（`--move` が要る）。空行で読み直し、`q` で終了 |
+| `--off` | 終了時にトルクを切る |
+| `--yes` | 3 秒カウントダウンを省略 |
+| `--duration S` / `--rate HZ` | 到達時間（既定 2）/ 送信周波数（既定 50） |
+| `--speed N` / `--acc N` / `--torque N` | 既定 600 / 20 / 1000。speed 0 は実機で動かないので拒否する |
+| `--home FILE` | 原点ファイル（既定 `share/feetech_servo/config/servo_home.yaml`） |
+
+### 7. 膝の曲げ量を指定して動かす `feetech_knee_goto`
+
+膝 4 節リンク（`roboone_kinematics/knee_fourbar.hpp`）を実機で確かめる。曲げ量 [deg] を渡すと
+`kneeIk → クランク角 θ2 → サーボ角 φ → 生カウント` まで通して印字し、**`--move` を付けたときだけ**
+ID4 を動かす。動かしたあとは実測カウントを順変換 `kneeFk` で曲げ量に戻して指令との差を出す。
+足首の `feetech_ankle_goto` と同じ作法で、違うのは 1 軸だけ・入力が曲げ量なこと。
+
+```bash
+ros2 run feetech_servo feetech_knee_goto --bend 30            # 計算と現在値だけ（何も書かない）
+ros2 run feetech_servo feetech_knee_goto --leg R --bend 60    # 右脚
+ros2 run feetech_servo feetech_knee_goto --bend 30 --move     # ★実機が動く
+ros2 run feetech_servo feetech_knee_goto --move --repl        # ★対話。1 行に曲げ量 [deg]
+```
+
+- **★★膝は機体の重さを支える軸。** トルクを入れて曲げると崩れ落ちる。必ず機体を吊るか
+  横に寝かせてから使うこと（足首より危ない）。
+- **曲げ量は伸展 0・屈曲 +**。`JOINT_LIMIT[KNEE]` の 0..150 deg と同じ量で、
+  T ポーズ（曲げ量 0 = 脚が伸び切った姿勢）が `servo_home.yaml` の ID4 の `home` に対応する。
+- 目標カウントが `servo_limits.yaml` の ID4 の窓の外なら **動かさない**。窓が `[0, 0]`（制限なし）
+  の軸では検査を飛ばす。
+- 伝達比 dθ4/dθ2 と伝達角 γ も出る。γ が 40-140 deg の外は死点に近い。
+- `--rocker` でロッカー絶対角 θ4（T ポーズ 89.3）、`--crank` でクランク角 θ2 を直接指定できる。
+- 終了時トルクは入ったまま。切るなら `--off`（★膝が抜けて落ちる）。
+
+| オプション | 内容 |
+|---|---|
+| `--leg L\|R` | どちらの脚か（既定 L） |
+| `--bend D` | 膝の曲げ量 [deg]。`--rocker` / `--crank` は別の入り口 |
+| `--move` | ★実機を動かす。無ければ読むだけ |
+| `--repl` | 標準入力の 1 行ずつ曲げ量を読んで動かす（`--move` が要る）。空行で読み直し、`q` で終了 |
+| `--off` | 終了時にトルクを切る |
+| `--yes` | 3 秒カウントダウンを省略 |
+| `--duration S` / `--rate HZ` | 到達時間（既定 3）/ 送信周波数（既定 50） |
+| `--speed N` / `--acc N` / `--torque N` | 既定 300 / 20 / 1000。speed 0 は実機で動かないので拒否する |
+| `--id N` | 膝サーボの ID（既定 4） |
+| `--home FILE` / `--limits FILE` | 原点・角度リミットのファイル |
+
 ## 実機の設定値
 
 18軸すべてのレジスタ実測値は [docs/servo-registers.md](docs/servo-registers.md) にまとめてある

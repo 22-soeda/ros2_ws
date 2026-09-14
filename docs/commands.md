@@ -141,6 +141,17 @@ ros2 launch feetech_servo feetech_demo.launch.py enable_motion:=true   # 実機�
 ros2 topic echo /motion/state
 ros2 topic echo /joint_states --once
 
+# 関節角を deg の表で見る（/joint_states は rad なので読みにくい）
+ros2 topic echo --once /joint_states | python3 -c "
+import sys,yaml,math
+d=next(yaml.safe_load_all(sys.stdin))
+for n,p in zip(d['name'],d['position']): print(f'{n:<18}{math.degrees(p):8.2f} deg')
+"
+#   指令側と並べたいなら /motion/joint_commands に差し替える（並び・名前は同じ）
+#   サーボの生カウントが見たいなら /motion/servo_states
+#     position=実測カウント / velocity=目標カウント / effort=負荷
+watch -n 0.5 'ros2 topic echo --once /joint_states --field position'   # 雑に流し見
+
 # 手で叩く。★/estop は latched (TRANSIENT_LOCAL) なので QoS を合わせないと届かない
 ros2 topic pub -t 3 /cmd_motion std_msgs/msg/String "{data: home}"
 ros2 topic pub -t 3 --qos-durability transient_local --qos-reliability reliable \
@@ -183,7 +194,7 @@ ros2 topic pub -r 20 /cmd_walk geometry_msgs/msg/Twist "{linear: {x: 0.05}}"
 
 前傾角は `src/roboone_walk_ref/config/home_pose.yaml` の **`body_pitch`**（deg・+ が前傾）。
 股ピッチ ID1 に `-body_pitch` を足すのと厳密に等価で、**膝・足首の関節角は変わらない**
-（足首 θ6 の余裕を食わない）。`foot.rpy` の pitch とは別の操作で、あちらは足裏の位置を
+（足首ピッチ θ5 の余裕を食わない）。`foot.rpy` の pitch とは別の操作で、あちらは足裏の位置を
 固定したまま姿勢だけ回すので足首が全部吸収する。前傾させたいだけなら `body_pitch` を使う。
 
 ```bash
@@ -474,14 +485,14 @@ printf 'mech 0\nik R 20 -89 -250\n' | ./build/roboone_kinematics/leg_service   #
 
 # 起き上がりのキーフレームを検算する（motions.yaml の p / rpy をそのまま渡す）。
 # status ok・clamped 0 で、股ピッチ |hip| <= 60（leg_config.hpp の可動域）・
-# 足首 th6 > -50（窓 -55 に余裕を残す）なら、その姿勢は実機で出せる。
+# 足首ピッチ th5 > -50（エンベロープ -55 に余裕を残す）なら、その姿勢は実機で出せる。
 # ★キーフレームの間の補間点も通るので、隣り合う 2 枚を数点に割って同じように見ること。
 printf 'ikpose R 0 -89.3 -170 0 10 0\nikpose L 0 89.3 -170 0 10 0\n' \
   | ./build/roboone_kinematics/leg_service \
   | python3 -c 'import sys,json
 for l in sys.stdin:
     r=json.loads(l); m=r["mech"]
-    print(r["status"], "th6=%.1f"%m["ankle"]["th6"], "bend=%.1f"%m["knee"]["bend"],
+    print(r["status"], "th5=%.1f"%m["ankle"]["th5"], "bend=%.1f"%m["knee"]["bend"],
           "hip=%.1f"%r["theta"][0], "ankle=%s clamped=%d"%(m["status"],m["ankle"]["clamped"]))'
 
 # 両脚 3D（既定 :8103。実機なしで見るなら --demo、片脚だけなら --only right）
@@ -505,10 +516,12 @@ PC のブラウザから見るときは有線 LAN で `http://<Pi の IP>:8102/`
 
 ## 足首パラレルリンク（特異点とリミット）
 
-足裏を前後に傾けすぎると（ピッチ θ6 が -65.6 deg の型 2 特異点に近づくと）順変換が
-発散していた。順変換は窓 ±55 deg の中だけを解くようにしてあり、その外に出たら窓の
-縁に張り付く（`AnkleFkStatus::Clamped`）。詳しくは
-`roboone_kinematics/include/roboone_kinematics/ankle_parallel.hpp` の冒頭。
+足首は **θ5 = ピッチ（上側ピボット）/ θ6 = ロール（下側ピボット）**（2026-09-14 に上下の軸を
+入れ替えた。それまでの「θ5 = ロール」は実機と逆だった）。つま先を上げすぎると（ピッチ θ5 が
++88 deg の型 2 特異点に近づくと）順変換が発散するので、指令側は θ5 を ±55 deg の
+エンベロープに丸め、順変換はロール θ6 を窓 ±40 deg の中だけで解く（外に出たら窓の縁に
+張り付く `AnkleFkStatus::Clamped`）。クランクは -42..+60 deg。詳しくは
+`roboone_kinematics/include/roboone_kinematics/ankle_parallel.hpp` と `ankle_config.hpp` の冒頭。
 
 ```bash
 # 特異点・窓・クランクリミットと、servo_limits.yaml に貼る生カウントを印字する。
@@ -521,6 +534,52 @@ ros2 run roboone_kinematics ankle_dump --th5 10 --th6 -30
 
 # 検算（「型 2 特異点と順変換の頑健性」の節が再発防止用）
 ros2 run roboone_kinematics ankle_selftest -n 3000
+```
+
+足首の逆変換を**実機で**確かめる（関節角 → サーボ角 → 動かす → 実測を順変換で戻す）。
+motion ノードが走っているとポートを掴めないので先に止める。
+
+```bash
+# 読むだけ（計算結果と ID6/ID5 の現在値・順変換の θ5/θ6 を出す。何も書かない）
+ros2 run feetech_servo feetech_ankle_goto --th5 10 --th6 -5
+ros2 run feetech_servo feetech_ankle_goto --leg R --pitch -5 --roll 10   # --pitch→θ5, --roll→θ6
+
+# ★実機が動く（ID6/ID5 にトルクを入れて 2 軸同時に動かす。足を浮かせてから）
+ros2 run feetech_servo feetech_ankle_goto --th5 10 --th6 -5 --move
+ros2 run feetech_servo feetech_ankle_goto --move --repl      # 対話。1 行 "θ5 θ6" [deg]、q で終了
+ros2 run feetech_servo feetech_ankle_goto --th5 0 --th6 0 --move --off   # 原点へ戻してトルクを切る
+```
+
+θ5 = ピッチ（上側）/ θ6 = ロール（下側）は `ankle_config.hpp` の約束。届かない・クランク
+リミット外の目標は動かさない。終了時トルクは入ったまま（`--off` で切る）。
+
+膝も同じ作法で、曲げ量 [deg]（伸展 0・屈曲 +）を指定して 4 節リンクの逆変換を実機で確かめる。
+
+```bash
+# 読むだけ（曲げ量 → ロッカー θ4 → クランク θ2 → サーボ角 → count と、ID4 の現在値）
+ros2 run feetech_servo feetech_knee_goto --bend 30
+ros2 run feetech_servo feetech_knee_goto --leg R --bend 60
+
+# ★実機が動く。★★膝は機体を支える軸なので、必ず吊るか寝かせてから
+ros2 run feetech_servo feetech_knee_goto --bend 30 --move
+ros2 run feetech_servo feetech_knee_goto --move --repl        # 対話。1 行に曲げ量、q で終了
+ros2 run feetech_servo feetech_knee_goto --bend 0 --move      # 伸び切り（T ポーズ）へ戻す
+```
+
+曲げ量 0 が `servo_home.yaml` の ID4 の `home`。目標カウントが `servo_limits.yaml` の窓の外なら
+動かさない。`--rocker` / `--crank` でロッカー角・クランク角を直接指定することもできる。
+
+脚 IK 全体は足裏の座標で。motion ノードと同じ変換を通すのでカウントはノードと一致する。
+
+```bash
+# 読むだけ（IK → 膝・足首の機構 → サーボ角 → count と、6 軸の現在値 → 順変換の足裏）
+ros2 run roboone_motion motion_leg_goto --leg R --p 0 -89.3 -261 --rpy 0 0 0      # Σ_B [mm]・[deg]
+ros2 run roboone_motion motion_leg_goto --leg L --rel --p 0 0 -261 --rpy 0 -20 0  # 股中心からの相対
+
+# ★実機が動く。★★脚 6 軸がまとめて動くので、必ず機体を吊るか脚が空中の姿勢で
+ros2 run roboone_motion motion_leg_goto --leg R --p 0 -89.3 -261 --move
+ros2 run roboone_motion motion_leg_goto --leg L --move --repl    # 対話。1 行 "x y z [roll pitch yaw]"、q で終了
+ros2 run roboone_motion motion_leg_goto --leg R --off            # その脚 6 軸のトルクを切る
 ```
 
 サーボの角度リミットを EEPROM に書くのは実機操作。**先に --dry-run で確認する。**

@@ -79,6 +79,18 @@ add_executable(leg_live_test test/leg_live_test.cpp)
 target_link_libraries(leg_live_test feetech_servo scservo ${YAML_CPP_LIBRARIES})
 ament_target_dependencies(leg_live_test roboone_kinematics)
 
+# 足首の関節角 (θ5,θ6) を指定して逆変換を実機で確かめる。
+#   既定は読むだけ。--move を付けたときだけ ID6/ID5 にトルク ON と位置指令を出す。
+add_executable(feetech_ankle_goto test/feetech_ankle_goto.cpp)
+target_link_libraries(feetech_ankle_goto feetech_servo scservo ${YAML_CPP_LIBRARIES})
+ament_target_dependencies(feetech_ankle_goto roboone_kinematics)
+
+# 膝の曲げ量を指定して 4 節リンクの逆変換を実機で確かめる。
+#   既定は読むだけ。--move を付けたときだけ ID4 にトルク ON と位置指令を出す。
+add_executable(feetech_knee_goto test/feetech_knee_goto.cpp)
+target_link_libraries(feetech_knee_goto feetech_servo scservo ${YAML_CPP_LIBRARIES})
+ament_target_dependencies(feetech_knee_goto roboone_kinematics)
+
 # set_limits は EEPROM アドレス定義と YAML パーサ、既定設定の場所解決に ament_index を使う。
 add_executable(feetech_set_limits test/feetech_set_limits.cpp)
 target_link_libraries(feetech_set_limits feetech_servo scservo yaml-cpp::yaml-cpp)
@@ -121,7 +133,7 @@ install(TARGETS feetech_servo scservo
 
 install(TARGETS feetech_demo_node feetech_scan_test feetech_goto_test feetech_shell
   feetech_set_limits feetech_calibrate_home feetech_knee_stream feetech_leg_stream
-  leg_live_test feetech_gains feetech_limits
+  leg_live_test feetech_ankle_goto feetech_knee_goto feetech_gains feetech_limits
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch config viz

@@ -72,6 +72,13 @@ target_compile_options(motion_teach PRIVATE -O2 -Wall -Wextra)
 # 自己検算 (実機もサーボも要らない)
 #   角の 3 つの表し方・胴体の前傾の等価性・脚の角度書きの読み込みと補間
 # ---------------------------------------------------------------------------
+# 足裏の目標 (x,y,z,rpy) を打って片脚 6 軸を動かす実機確認ツール。
+#   既定は読むだけ。--move を付けたときだけトルク ON と位置指令を出す。
+add_executable(motion_leg_goto src/motion_leg_goto.cpp)
+target_link_libraries(motion_leg_goto roboone_motion_core)
+ament_target_dependencies(motion_leg_goto ament_index_cpp)
+target_compile_options(motion_leg_goto PRIVATE -O2 -Wall -Wextra)
+
 add_executable(motion_selftest src/motion_selftest.cpp)
 target_link_libraries(motion_selftest roboone_motion_core)
 ament_target_dependencies(motion_selftest ament_index_cpp)
@@ -87,7 +94,7 @@ install(TARGETS roboone_motion_core
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
   INCLUDES DESTINATION include)
-install(TARGETS motion_node motion_teach motion_selftest DESTINATION lib/${PROJECT_NAME})
+install(TARGETS motion_node motion_teach motion_selftest motion_leg_goto DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 
 ament_export_targets(export_roboone_motion HAS_LIBRARY_TARGET)
