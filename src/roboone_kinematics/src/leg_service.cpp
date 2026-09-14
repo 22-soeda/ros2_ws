@@ -55,7 +55,7 @@ struct Dims
 
 Dims g_dims;
 
-/// Σ_B の寸法から左右脚の LegParams（Σ_S 成分）を組み立てる。
+/// Σ_B の寸法から左右脚の LegParams を組み立てる。
 /// makeLegParams() と同じ手順を、config 定数のかわりに Dims から行う。
 LegParams makeParams(Side side)
 {
@@ -65,12 +65,12 @@ LegParams makeParams(Side side)
   prm.l4 = g_dims.l4;
   prm.l5 = g_dims.l5;
   prm.l6 = g_dims.l6;
-  prm.a3 = -g_dims.p3y * lat;
-  prm.a4 = -g_dims.p4y * lat;
+  prm.a3 = g_dims.p3y * lat;
+  prm.a4 = g_dims.p4y * lat;
   prm.b = g_dims.p3x;
-  prm.p0 = {-g_dims.hipy * lat, g_dims.hipx, g_dims.hipz};
-  prm.p6 = {-g_dims.p6y * lat, g_dims.p6x, g_dims.p6z};
-  prm.sigma = -g_dims.knee;
+  prm.p0 = {g_dims.hipx, g_dims.hipy * lat, g_dims.hipz};
+  prm.p6 = {g_dims.p6x, g_dims.p6y * lat, g_dims.p6z};
+  prm.sigma = g_dims.knee;
   prm.finalize();
   return prm;
 }
@@ -361,9 +361,10 @@ int main()
         std::printf("%s[%.3f,%.3f]", i ? "," : "",
           sp.ankle.qMin[i] * d2, sp.ankle.qMax[i] * d2);
       }
-      std::printf("],\"th6win\":[%g,%g],\"th5lim\":%g,\"kneeR\":[%g,%g,%g,%g]",
+      // th5win = ピッチのエンベロープ（指令側で丸める）/ th6win = ロールの窓（順変換）
+      std::printf("],\"th5win\":[%g,%g],\"th6win\":[%g,%g],\"kneeR\":[%g,%g,%g,%g]",
+        ankle_config::TH5_ENVELOPE_DEG[0], ankle_config::TH5_ENVELOPE_DEG[1],
         ankle_config::FK_WINDOW_DEG[0], ankle_config::FK_WINDOW_DEG[1],
-        ankle_config::TH5_MECH_LIMIT_DEG,
         sp.knee.r1, sp.knee.r2, sp.knee.r3, sp.knee.r4);
       std::printf("}\n");
       std::fflush(stdout);

@@ -360,7 +360,7 @@ void testLegBridge()
   const LegServoParams prm = makeLegServoParams(Side::RIGHT);
 
   // 曲げ量 0 で脚が本当に伸び切る（T ポーズ）ことを、脚 FK の関節位置で確かめる。
-  // 伸び切りなら股中心 o3 から足首ロール軸 o5 までが ℓ3 + ℓ4 ちょうどになる。
+  // 伸び切りなら股中心 o3 から足首ピッチ軸 o5 までが ℓ3 + ℓ4 ちょうどになる。
   double theta[kNumJoints] = {0, 0, 0, 0, 0, 0};
   theta[KNEE] = legAngleFromKneeBend(prm.leg, 0.0);
   Vec3 o[5];

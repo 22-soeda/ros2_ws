@@ -5,9 +5,7 @@
 同じパラメータ・同じ姿勢に対して両者の FK と IK が一致することを確認する。
 独立に書いた 2 つの実装を比べるので、片方だけの取り違えを拾える。
 
-C++ 側の公開 API は機体座標 Σ_B（x 前 / y 左 / z 上）、Python 参照実装は文書の
-Σ_0（x 右 / y 前 / z 上）なので、C++ の出力を Σ_0 に戻してから比べる。
-つまりこの突き合わせは leg_kinematics.hpp の (X-swap) 自体の検算にもなっている。
+どちらも機体座標 Σ_B（x 前 / y 左 / z 上）で書いてあるので、読み替え無しに比べる。
 
   python3 scripts/crosscheck_cpp.py [-n 姿勢数]
 
@@ -32,25 +30,8 @@ _WS = os.path.dirname(_HERE)
 
 _STATUS = {0: "Ok", 1: "AnkleOutOfRange", 2: "KneeOutOfRange", 3: "NoBranch"}
 
-#: Σ_B -> Σ_0（文書）。v_doc = C^T v_B、R_doc = C^T R_B C、C = Rz(-90°)
-_C = np.array([[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
-#: (X-swap) の関節符号。Σ_S で Rx の関節（J1 股ピッチ・J4 膝・J6 足首）が反転する。
-#: leg_kinematics.hpp の kAxisSwapSign と同じ並びにしておくこと。
-_SWAP = np.array([-1.0, 1.0, 1.0, -1.0, 1.0, -1.0])
-
-
-def to_doc_vec(v):
-    return _C.T @ np.asarray(v, dtype=float)
-
-
-def to_doc_rot(R):
-    return _C.T @ np.asarray(R, dtype=float) @ _C
-
-
-def to_doc_theta(th):
-    return np.asarray(th, dtype=float) * _SWAP
-
-#: (a3, a4, b, sigma, flipmask) の組。x 成分・膝の分岐・回転方向を混ぜる
+#: (a3, a4, b, sigma, flipmask) の組。膝軸方向オフセット・前後オフセット・
+#: 膝の分岐・回転方向を混ぜる。a3, a4 = p3, p4 の y 成分、b = p3 の x 成分
 CASES = [
     (0.0, 0.0, 0.0, +1, 0),
     (11.0, -4.0, 7.0, +1, 0),
@@ -100,11 +81,10 @@ def main() -> int:
         rows = 0
         for line in raw.strip().splitlines():
             v = [float(x) for x in line.split(",")]
-            # leg_dump の出力は Σ_B なので、文書の座標系に戻してから比べる
-            th = to_doc_theta(v[0:6])
-            p_cpp = to_doc_vec(v[6:9])
-            R_cpp = to_doc_rot(np.array(v[9:18]).reshape(3, 3))
-            ik_cpp = to_doc_theta(v[18:24])
+            th = np.array(v[0:6])
+            p_cpp = np.array(v[6:9])
+            R_cpp = np.array(v[9:18]).reshape(3, 3)
+            ik_cpp = np.array(v[18:24])
             st = int(v[24])
             rows += 1
 
@@ -113,7 +93,8 @@ def main() -> int:
             w_p = max(w_p, float(np.max(np.abs(p_py - p_cpp))))
             w_R = max(w_R, float(np.max(np.abs(R_py - R_cpp))))
 
-            # IK の照合（同じ枝を選んでいるか含めて）
+            # IK の照合（同じ根を選んでいるか含めて。両実装とも「A > 0 で |θ6| が
+            # 小さい根」を採る約束なので、a ≠ 0 でも同じ根に落ちるはず）
             try:
                 ik_py = leg_ik.ik(p_cpp, R_cpp, prm, clamp=False)
             except leg_ik.Unreachable:

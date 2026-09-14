@@ -26,11 +26,10 @@ C++ 版は ``roboone_kinematics/leg_servo.hpp`` で、あちらは足首まで�
 2 段の読み替えで結ばれる。
 
     [1] 公開角 -> 曲げ量 bend（伸展 0・屈曲 +）
-          θ4_doc = θ4_pub · sign[knee]              AXIS_FLIP を外す
-          bend   = σ_leg · (θ4_doc − φ)             解析解の θ4 = σ·bend + φ
-        既定値（AXIS_FLIP なし・b = 0・σ_leg = -1）では bend = −θ4_pub になる。
-        C++ 側は Σ_B なので (X-swap) がもう 1 段入り、そちらでは bend = +θ4_B。
-        **同じ姿勢を指しているが公開角の符号が違う**ので、値を直接見比べない。
+          θ4 = θ4_pub · sign[knee]                  AXIS_FLIP を外す
+          bend = σ_leg · (θ4 + φ)                    解析解の θ4' = θ4 + φ = σ·bend
+        既定値（AXIS_FLIP なし・b = 0・σ_leg = +1）では bend = θ4_pub になる。
+        C++ 側（leg_servo.hpp）も同じ Σ_B・同じ式なので、値をそのまま見比べてよい。
 
     [2] 曲げ量 -> ロッカー角
           θ4_rocker = σ_knee · bend + θ4_zero       knee_config.py
@@ -71,12 +70,12 @@ class AnkleNotImplemented(NotImplementedError):
 # 掛かるのは ±1 だけなので、どちら向きの変換も同じ式でよい。
 def knee_bend_from_leg_angle(theta4_pub: float, prm: leg_ik.LegParams) -> float:
     """脚 IK の公開角 θ4 -> 膝の曲げ量（伸展 0・屈曲 +）。"""
-    return prm.sigma * (theta4_pub * prm.sign[leg_ik.JOINT_NAMES.index("knee")] - prm.phi)
+    return prm.sigma * (theta4_pub * prm.sign[leg_ik.JOINT_NAMES.index("knee")] + prm.phi)
 
 
 def leg_angle_from_knee_bend(bend: float, prm: leg_ik.LegParams) -> float:
     """膝の曲げ量 -> 脚 IK の公開角 θ4。"""
-    return ((prm.sigma * bend + prm.phi)
+    return ((prm.sigma * bend - prm.phi)
             * prm.sign[leg_ik.JOINT_NAMES.index("knee")])
 
 

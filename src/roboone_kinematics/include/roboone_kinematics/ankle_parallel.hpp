@@ -20,12 +20,12 @@
 // ボールを押し引きする。足と下腿は中央のユニバーサルジョイント（θ5, θ6）だけで
 // 繋がり、ロッドは長さ拘束しか与えない。
 //
-//   R5 = Rx(θ5)  足首ロール（上側ピボット）
-//   R6 = Ry(θ6)  足首ピッチ（下側ピボット）
+//   R5 = Ry(θ5)  足首ピッチ（上側ピボット・腰に近い方）
+//   R6 = Rx(θ6)  足首ロール（下側ピボット・足に近い方）
 //   o5 -> o6 = (0, 0, -ℓ5)
 //
-// ★θ5 がロール、θ6 がピッチ。サーボ名の「足首ピッチ / 足首ロール」とは逆
-//   （ankle_config.hpp の冒頭を読むこと）。
+// θ5 がピッチ、θ6 がロール。leg_kinematics.hpp の ANKLE_PITCH / ANKLE_ROLL と同じ
+// （2026-09-14 に上下の軸を入れ替えた。ankle_config.hpp の冒頭を読むこと）。
 //
 // ---------------------------------------------------------------------------
 // 解き方
@@ -36,24 +36,25 @@
 //   平面内の 2 円の交わりに落ちる。
 //
 // 順変換（仕様 §5）は閉形式にならない（消去すると tan(θ6/2) の 8 次式）。
-//   鎖 1 本ぶんの拘束を θ5 について解いた曲線 Θ_i(θ6) を 2 本作り、
-//   Φ(θ6) = Θ1(θ6) - Θ2(θ6) = 0 を **1 変数**で解く。
+//   B_i = R5(θ5)·t_i(θ6) で、外側の R5 は固定ベクトル t_i に線形に効くので、
+//   θ6 を固定すれば鎖 1 本ぶんの拘束は (cos θ5, sin θ5) の 1 次式になり θ5 が
+//   閉形式で出る。その曲線 Θ_i(θ6) を 2 本作り、Φ(θ6) = Θ1(θ6) - Θ2(θ6) = 0 を
+//   **1 変数**（ロール θ6）で解く。
 //   枝 β_i を固定してあるので Φ の零点に「別の組み方の姿勢」が現れない。
 //   2 変数ニュートンや 8 次式は全部の組み方を等しく見るので選別が要る。
 //   Φ' が消えるのは det Jθ = 0（型 2 特異点）のときだけで、ソルバが止まる条件と
 //   機構が破綻する条件が一致している。これがこの形にする理由。
 //
 // ---------------------------------------------------------------------------
-// 姿勢が暴れないための約束（2026-08-28）
+// 姿勢が暴れないための約束（2026-08-28、軸の入れ替えに合わせて 2026-09-14 に取り直し）
 // ---------------------------------------------------------------------------
-// 素のニュートンだと、足裏を前後に傾けすぎたとき（θ6 が -65° の型 2 特異点に
-// 近づいたとき）Φ' → 0 で発散し、遠くの根へ飛んで姿勢が跳ねていた。
-// 特異点そのものは機構の性質なので消せない。消せるのは「跳ねること」のほうで、
-// 次の 3 つで押さえてある。
+// 素のニュートンだと、型 2 特異点（純ピッチで θ5 = +88°）に近づいたとき Φ' → 0 で
+// 発散し、遠くの根へ飛んで姿勢が跳ねる。特異点そのものは機構の性質なので消せない。
+// 消せるのは「跳ねること」のほうで、次の 3 つで押さえてある。
 //
-//   [1] 解く範囲を窓 FK_WINDOW_DEG = ±55° に閉じる。**この窓の中では Φ が θ6 に
-//       ついて狭義単調**であることを、クランク角 ±90°（サーボリミットより広い）
-//       の全域で確認してある。根は高々 1 個。
+//   [1] 解く範囲を窓 FK_WINDOW_DEG = ±40°（ロールの機構限界 ±41° の内側）に閉じる。
+//       **クランク箱 ±60° の全域で、この窓の中の Φ の根は高々 1 個**であることを
+//       確かめてある（ankle_selftest [S2]。±75° の箱でも同じ）。
 //   [2] 窓の両端の符号で根を挟み、二分法で守ったニュートンで詰める。ニュートンが
 //       飛んでもブラケットの外へは出られない ⇒ 出力は必ず窓の中（有界）。
 //   [3] 根が窓の外に出たら窓の縁を返す（AnkleFkStatus::Clamped）。出ていく瞬間は
@@ -61,8 +62,8 @@
 //
 // おまけに、根が 1 個しかないので**種（前周期の θ6）が答えを選ばなくなった**。
 // 起動直後の粗探し（旧 ankleFkScan）も、種の違いで別の姿勢に落ちることも無い。
-// 指令側は ankleClampJoints() が同じ窓で θ6 を丸めるので、そもそも特異点へ
-// 向かう指令が出ない。
+// 指令側は ankleClampJoints() が θ5 を TH5_ENVELOPE_DEG（特異点の手前）、θ6 を
+// 同じ窓で丸めるので、そもそも特異点へ向かう指令が出ない。
 #ifndef ROBOONE_KINEMATICS__ANKLE_PARALLEL_HPP_
 #define ROBOONE_KINEMATICS__ANKLE_PARALLEL_HPP_
 
@@ -95,7 +96,7 @@ enum class AnkleIkStatus
 enum class AnkleFkStatus
 {
   Ok = 0,
-  //! θ6 の解が窓 FK_WINDOW_DEG の外。縁に張り付けて返した（型 2 特異点の手前で止める）
+  //! θ6（ロール）の解が窓 FK_WINDOW_DEG の外。縁に張り付けて返した
   Clamped,
   //! |W'| > 2√(U'²+V'²)。窓の端まで詰め寄っても曲線 Θ_i が存在しなかった
   NoCurve,
@@ -163,10 +164,10 @@ inline Vec3 ankleBall(
   const AnkleParams & prm, int i, double c5, double s5, double c6, double s6)
 {
   const Vec3 & b = prm.b[i];
-  // V(θ6) = a_i1 + Ry(θ6) b_i                                        （§5.1）
-  const Vec3 t{c6 * b.x + s6 * b.z, b.y, -s6 * b.x + c6 * b.z + prm.p5.z};
-  // Rx(θ5) t
-  return {t.x, c5 * t.y - s5 * t.z, s5 * t.y + c5 * t.z};
+  // V(θ6) = a_i1 + Rx(θ6) b_i （§5.1）
+  const Vec3 t{b.x, c6 * b.y - s6 * b.z, s6 * b.y + c6 * b.z + prm.p5.z};
+  // Ry(θ5) t
+  return {c5 * t.x + s5 * t.z, t.y, -s5 * t.x + c5 * t.z};
 }
 
 inline Vec3 ankleBall(const AnkleParams & prm, int i, double th5, double th6)
@@ -283,6 +284,11 @@ inline void ankleMargin(
 // 順変換 (q1, q2) -> (θ5, θ6)    仕様 §5
 // ---------------------------------------------------------------------------
 /// 鎖 1 本の拘束を (cos θ5, sin θ5) の 1 次式にまとめた係数。          （§5.1）
+///
+/// B = Ry(θ5)·t（t は θ6 を固定したときの足側ボール、ankleBall の中間量）で、
+/// ロッド拘束 |B - K_abs|² = L² を展開すると B に 1 次でしか入らないので
+///   2(u·c5 + v·s5) + w = 0
+/// の形になる。P = a_i0（クランク軸 O_i -> o5）、K = クランク先端の O_i からの相対位置。
 struct AnkleFwdCoeff
 {
   double u{0.0};      //!< U'
@@ -297,15 +303,18 @@ inline AnkleFwdCoeff ankleFwdCoeff(
   const Vec3 & P = prm.a0[i];
   const Vec3 & b = prm.b[i];
   const double c6 = std::cos(th6), s6 = std::sin(th6);
-  const Vec3 V{c6 * b.x + s6 * b.z, b.y, -s6 * b.x + c6 * b.z + prm.p5.z};
+  // t = a_i1 + Rx(θ6) b_i（ankleBall と同じ式）
+  const Vec3 V{b.x, c6 * b.y - s6 * b.z, s6 * b.y + c6 * b.z + prm.p5.z};
   const Vec3 K = {prm.r[i] * std::cos(q), 0.0, prm.r[i] * std::sin(q)};
 
+  // D = P - K。B·D = c5·(D_x t_x + D_z t_z) + s5·(D_x t_z - D_z t_x) + D_y t_y
   AnkleFwdCoeff co;
-  const double pzk = P.z - K.z;
-  co.u = P.y * V.y + pzk * V.z;
-  co.v = pzk * V.y - P.y * V.z;
+  const double dx = P.x - K.x;
+  const double dz = P.z - K.z;
+  co.u = dx * V.x + dz * V.z;
+  co.v = dx * V.z - dz * V.x;
   co.w = prm.a0Sq[i] + V.normSq() + prm.rSq[i] - prm.rodSq[i]
-    + 2.0 * (P.x - K.x) * V.x - 2.0 * P.dot(K);
+    + 2.0 * P.y * V.y - 2.0 * P.dot(K);
   co.amp = 2.0 * std::hypot(co.u, co.v);
   return co;
 }
@@ -364,23 +373,6 @@ struct AnkleFkResult
 
 namespace apdetail
 {
-/// 窓の端で曲線が存在しないとき、内側へ詰め寄って評価できる点を探す。
-/// 回数は固定なので最悪実行時間は姿勢に依らない。
-inline bool phiEdge(
-  const AnkleParams & prm, const double q[kAnkleChains], double & x, double toward,
-  double & f)
-{
-  bool ok = false;
-  f = phi(prm, q, x, ok);
-  if (ok) {return true;}
-  double a = x;
-  for (int k = 0; k < ankle_config::FK_EDGE_SHRINK; ++k) {
-    a = 0.5 * (a + toward);
-    f = phi(prm, q, a, ok);
-    if (ok) {x = a; return true;}
-  }
-  return false;
-}
 }  // namespace apdetail
 
 /// クランク角 -> 関節角。**窓 FK_WINDOW_DEG の中だけを解く**（§5.2 + 二分法で保護）。
@@ -392,12 +384,16 @@ inline bool phiEdge(
 ///                 根が窓から出るときは縁に連続に近づくので、張り付きも跳ばない
 ///   3. **必ず終わる**  ブラケットを保つので、ニュートンが飛んでも二分法に落ちる
 ///
-/// 窓の中では Φ(θ6) が狭義単調（ankle_config.hpp の FK_WINDOW_DEG 参照）なので、
-/// 両端の符号を見るだけで根を挟み込める。根が 1 個しかないため、
-/// **種 th6Seed は収束を速くするだけで、答えを選ばない**。前周期の値が無ければ
-/// 0 を渡してよく、起動直後に別の姿勢へ飛ぶことはない。
+/// 窓の中では Φ(θ6) の根が高々 1 個（ankle_config.hpp の FK_WINDOW_DEG 参照）。
+/// 曲線 Θ_i(θ6) が存在する区間は (q1, q2) に依るので、まず窓を FK_SCAN_SAMPLES 点で
+/// 走査して「曲線のある区間」と「符号の変わる区間」を見つけ、その 2° 幅の区間の中で
+/// 二分法で守ったニュートンを回す。根が無ければ |Φ| が最小になる区間の端
+/// （曲線の途切れる所か窓の縁）に張り付ける（Clamped）。
+/// 根が 1 個しかないため、**種 th6Seed は収束を速くするだけで、答えを選ばない**。
+/// 前周期の値が無ければ 0 を渡してよく、起動直後に別の姿勢へ飛ぶことはない。
+/// 回数はすべて固定なので、最悪実行時間は姿勢に依らない。
 ///
-/// th6Seed  前周期の θ6。窓の外なら窓に丸めてから使う
+/// th6Seed  前周期の θ6（ロール）。根を挟む区間の中にあればそこから始める
 inline AnkleFkResult ankleFk(
   const AnkleParams & prm, const double qIn[kAnkleChains], double th6Seed = 0.0)
 {
@@ -412,15 +408,29 @@ inline AnkleFkResult ankleFk(
     if (q[i] != qIn[i]) {res.crankClamped = true;}
   }
 
-  // --- 2) 窓の両端で Φ を評価してブラケットを作る -----------------------------
-  double lo = FK_WINDOW_DEG[0] * M_PI / 180.0;
-  double hi = FK_WINDOW_DEG[1] * M_PI / 180.0;
-  const double mid0 = 0.5 * (lo + hi);
-  double flo = 0.0, fhi = 0.0;
-  if (!apdetail::phiEdge(prm, q, lo, mid0, flo) ||
-    !apdetail::phiEdge(prm, q, hi, mid0, fhi))
-  {
-    res.th6 = apdetail::clamp(th6Seed, lo, hi);
+  // --- 2) 窓を走査して、曲線のある区間と符号の変わる区間を探す -----------------
+  const double wlo = FK_WINDOW_DEG[0] * M_PI / 180.0;
+  const double whi = FK_WINDOW_DEG[1] * M_PI / 180.0;
+  constexpr int n = FK_SCAN_SAMPLES;
+  double xs[n], fs[n];
+  bool oks[n];
+  int nValid = 0, bracket = -1, bestK = -1;
+  double bestAbs = 1e300;
+  for (int k = 0; k < n; ++k) {
+    xs[k] = wlo + (whi - wlo) * k / (n - 1);
+    fs[k] = apdetail::phi(prm, q, xs[k], oks[k]);
+    if (!oks[k]) {continue;}
+    ++nValid;
+    if (std::fabs(fs[k]) < bestAbs) {bestAbs = std::fabs(fs[k]); bestK = k;}
+    // 符号が変わり、かつ ±π の折り返しでない区間が根を挟む
+    if (bracket < 0 && k > 0 && oks[k - 1] && fs[k - 1] * fs[k] <= 0.0 &&
+      std::fabs(fs[k] - fs[k - 1]) < FK_WRAP_JUMP_RAD)
+    {
+      bracket = k - 1;
+    }
+  }
+  if (nValid == 0) {                                   // 窓のどこにも曲線が無い
+    res.th6 = apdetail::clamp(th6Seed, wlo, whi);
     res.status = AnkleFkStatus::NoCurve;
     return res;
   }
@@ -434,19 +444,44 @@ inline AnkleFkResult ankleFk(
       }
     };
 
-  // --- 3) 窓の中に根が無い: 近いほうの縁に張り付ける ---------------------------
-  // Φ は窓の中で単調なので、同符号 = 根は窓の外。**縁を返す**。
-  // 根が窓から出ていく瞬間は Φ(縁) = 0 なので、Ok から Clamped へは連続に移る。
-  if (flo * fhi > 0.0) {
-    res.th6 = (std::fabs(flo) <= std::fabs(fhi)) ? lo : hi;
-    res.atWindow = true;
+  // --- 3) 根が無い: |Φ| が最小のサンプルを含む区間の端に張り付ける ---------------
+  // 端は「曲線が途切れる所」か「窓の縁」。途切れる所は二分法で詰める。
+  // 根が区間から出ていく瞬間は端で Φ = 0 なので、Ok から Clamped へ連続に移る。
+  if (bracket < 0) {
+    auto curveEnd = [&prm, &q, &xs, &oks](int kValid, int dir) {
+        // kValid から dir 方向へ有効サンプルをたどり、最初の無効サンプルとの間を詰める
+        int k = kValid;
+        while (k + dir >= 0 && k + dir < n && oks[k + dir]) {k += dir;}
+        if (k + dir < 0 || k + dir >= n) {return xs[k];}     // 窓の縁
+        double a = xs[k], b = xs[k + dir];                    // a: 有効 / b: 無効
+        for (int it = 0; it < FK_EDGE_BISECT; ++it) {
+          const double m = 0.5 * (a + b);
+          bool ok = false;
+          apdetail::phi(prm, q, m, ok);
+          if (ok) {a = m;} else {b = m;}
+        }
+        return a;
+      };
+    const double xl = curveEnd(bestK, -1), xr = curveEnd(bestK, +1);
+    bool okl = false, okr = false;
+    const double fl = std::fabs(apdetail::phi(prm, q, xl, okl));
+    const double fr = std::fabs(apdetail::phi(prm, q, xr, okr));
+    // 端で曲線が消えかけて評価できないことがあるので、そのときはサンプル値で代用
+    double cand[3] = {xl, xr, xs[bestK]};
+    double cabs[3] = {okl ? fl : 1e300, okr ? fr : 1e300, bestAbs};
+    int pick = 2;
+    for (int c = 0; c < 2; ++c) {if (cabs[c] < cabs[pick]) {pick = c;}}
+    res.th6 = cand[pick];
+    res.atWindow = (res.th6 <= wlo + 1e-12) || (res.th6 >= whi - 1e-12);
     res.status = AnkleFkStatus::Clamped;
     finish(res);
     return res;
   }
 
-  // --- 4) 二分法で守ったニュートン -------------------------------------------
-  double x = apdetail::clamp(th6Seed, lo, hi);
+  // --- 4) 根を挟む区間の中で、二分法で守ったニュートン -------------------------
+  double lo = xs[bracket], hi = xs[bracket + 1];
+  double flo = fs[bracket], fhi = fs[bracket + 1];
+  double x = (th6Seed > lo && th6Seed < hi) ? th6Seed : 0.5 * (lo + hi);
   bool ok = false;
   double fx = apdetail::phi(prm, q, x, ok);
   if (!ok) {x = 0.5 * (lo + hi); fx = apdetail::phi(prm, q, x, ok);}
@@ -475,7 +510,7 @@ inline AnkleFkResult ankleFk(
     }
     x = next;
     fx = apdetail::phi(prm, q, x, ok);
-    if (!ok) {                                           // 窓の中で曲線が切れた
+    if (!ok) {                                           // 区間の中で曲線が切れた
       res.th6 = 0.5 * (lo + hi);
       res.status = AnkleFkStatus::NoCurve;
       finish(res);
@@ -492,8 +527,8 @@ inline AnkleFkResult ankleFk(
 
 /// 前周期の θ6 が無いときの入口。
 ///
-/// 窓の中で Φ が単調になったので**粗探しは要らなくなった**（種に依らず同じ解が
-/// 出る）。呼び分けを消さずに済むよう名前だけ残してある。
+/// 窓の中の根が 1 個なので**粗探しは要らない**（種に依らず同じ解が出る）。
+/// 呼び分けを消さずに済むよう名前だけ残してある。
 inline AnkleFkResult ankleFkScan(const AnkleParams & prm, const double q[kAnkleChains])
 {
   return ankleFk(prm, q, 0.0);
@@ -504,8 +539,9 @@ inline AnkleFkResult ankleFkScan(const AnkleParams & prm, const double q[kAnkleC
 // ---------------------------------------------------------------------------
 /// (θ5, θ6) を「順変換が必ず解ける範囲」に丸める。
 ///
-/// θ6 は窓 FK_WINDOW_DEG、θ5 は機構限界 TH5_MECH_LIMIT_DEG の内側に取る。
-/// θ5 のほうは Δ < 0 で逆変換が弾くが、θ6 は **Δ が正のまま特異点に入る**ので
+/// θ5（ピッチ）は TH5_ENVELOPE_DEG（型 2 特異点 +88° と機構限界 -65.5° の内側）、
+/// θ6（ロール）は窓 FK_WINDOW_DEG（機構限界 ±41° の内側）に取る。
+/// θ6 のほうは Δ < 0 で逆変換が弾くが、θ5 は **Δ が正のまま特異点に入る**ので
 /// 逆変換だけでは止まらない。指令を出す前にここを通すこと。
 struct AnkleClampResult
 {
@@ -518,10 +554,8 @@ inline AnkleClampResult ankleClampJoints(double th5, double th6)
 {
   using namespace ankle_config;
   const double d = M_PI / 180.0;
-  // 機構限界そのものではなく少し内側。Δ = 0 の縁は逆変換の精度が落ちる
-  const double t5lim = (TH5_MECH_LIMIT_DEG - 1.0) * d;
   AnkleClampResult r;
-  r.th5 = apdetail::clamp(th5, -t5lim, t5lim);
+  r.th5 = apdetail::clamp(th5, TH5_ENVELOPE_DEG[0] * d, TH5_ENVELOPE_DEG[1] * d);
   r.th6 = apdetail::clamp(th6, FK_WINDOW_DEG[0] * d, FK_WINDOW_DEG[1] * d);
   r.clamped = (r.th5 != th5) || (r.th6 != th6);
   return r;
@@ -543,10 +577,10 @@ inline AnkleJacobian ankleJacobian(
 {
   const double c5 = std::cos(th5), s5 = std::sin(th5);
   const double c6 = std::cos(th6), s6 = std::sin(th6);
-  // ĵ6 = R5 ŷ、o6 = R5 (0,0,-ℓ5)
-  const Vec3 j6{0.0, c5, s5};
-  const Vec3 o6{0.0, -s5 * prm.p5.z, c5 * prm.p5.z};
-  const Vec3 xh{1.0, 0.0, 0.0};
+  // θ5 の軸は ŷ（下腿に固定）、θ6 の軸は ĵ6 = R5 x̂（足首ピッチで回った x）、o6 = R5 (0,0,-ℓ5)
+  const Vec3 j6{c5, 0.0, -s5};
+  const Vec3 o6{s5 * prm.p5.z, 0.0, c5 * prm.p5.z};
+  const Vec3 yh{0.0, 1.0, 0.0};
   const Vec3 eh{ankle_config::CRANK_AXIS[0], ankle_config::CRANK_AXIS[1],
     ankle_config::CRANK_AXIS[2]};
 
@@ -555,7 +589,7 @@ inline AnkleJacobian ankleJacobian(
     const Vec3 B = ankleBall(prm, i, c5, s5, c6, s6);
     const Vec3 K = ankleCrank(prm, i, q[i]);
     const Vec3 d = (B - prm.c[i]) - (K - prm.c[i]);   // ロッドベクトル B - K
-    J.jt[i][0] = xh.dot(B.cross(d));
+    J.jt[i][0] = yh.dot(B.cross(d));
     J.jt[i][1] = j6.dot((B - o6).cross(d));
     J.jq[i] = eh.dot((K - prm.c[i]).cross(d));
   }

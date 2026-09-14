@@ -537,7 +537,7 @@ function updateMechTable() {
   const rows = [
     ['膝 曲げ量', m => m.knee.bend], ['膝 クランク θ2', m => m.knee.theta2],
     ['膝 伝達角 γ', m => m.knee.gamma],
-    ['足首 θ5 ロール', m => m.ankle.th5], ['足首 θ6 ピッチ', m => m.ankle.th6],
+    ['足首 θ5 ピッチ', m => m.ankle.th5], ['足首 θ6 ロール', m => m.ankle.th6],
   ];
   for (const [name, f] of rows) {
     h += `<tr><th>${name}</th><td class="r">${num(mr, f)}</td>` +

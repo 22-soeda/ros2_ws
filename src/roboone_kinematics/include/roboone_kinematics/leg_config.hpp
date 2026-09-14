@@ -11,9 +11,8 @@
 //   x = 前, y = 左, z = 上   （REP-103。walk_core/engine.py と同じ取り方）
 //   原点はボディ原点（骨盤）。ゼロ姿勢で脚は真下に伸び、足裏は水平。
 //
-// 文書 docs/脚IK導出.tex の Σ_0 は x = 右, y = 前, z = 上 なので、この
-// ファイルの値とは z まわりに 90° ずれている。読み替えは leg_kinematics.hpp の
-// 「座標系」節に 1 か所だけ書いてあり、CAD の値はここへ Σ_B のまま入れてよい。
+// leg_kinematics.hpp の解析解もこの座標系で書いてあるので、読み替えは無い。
+// （docs/脚IK導出.tex の Σ_0 は x = 右, y = 前 で、コードとは軸の名前が違う。）
 //
 // **値は右脚 (Side::RIGHT) の Σ_B 成分**。左脚は y 成分を反転して作る（左右対称）。
 #ifndef ROBOONE_KINEMATICS__LEG_CONFIG_HPP_
@@ -26,9 +25,9 @@ namespace roboone_kinematics::config
 // リンク長（上下方向の成分。文書 表 1 の ℓ_k）                        [mm]
 // ---------------------------------------------------------------------------
 inline constexpr double L3 = 142.5;     // 股中心 o3 -> 膝軸 o4（大腿）
-inline constexpr double L4 = 141.021;   // 膝軸 o4 -> 足首ロール軸 o5（下腿）
-inline constexpr double L5 = 7.924;     // 足首 2 軸のオフセット o5 -> o6（ℓ4 > ℓ5 が必要）
-inline constexpr double L6 = 8.5;       // 足首ピッチ軸 o6 -> 足裏中心
+inline constexpr double L4 = 141.021;   // 膝軸 o4 -> 足首ピッチ軸 o5（下腿）
+inline constexpr double L5 = 7.924;     // 足首 2 軸のオフセット o5 -> o6（ピッチ軸 -> ロール軸）
+inline constexpr double L6 = 8.5;       // 足首ロール軸 o6 -> 足裏中心
 
 // ---------------------------------------------------------------------------
 // 左右方向（膝軸 = y_B）のオフセット                                   [mm]
@@ -46,7 +45,8 @@ inline constexpr double P3_Y = 14.642;
 inline constexpr double P4_Y = -14.642;
 
 // 大腿の前後オフセット（膝軸が股中心の真下から前後にずれる量）。
-// 0 でなくても ℓ3' = hypot(L3, P3_X)、θ4' = θ4 + atan2(P3_X, L3) で吸収できる。
+// 0 でなくても ℓ3' = hypot(L3, P3_X)、θ4' = θ4 + atan2(P3_X, L3) で吸収できる
+// （leg_kinematics.hpp 導出 [2]）。
 // ※ 下腿側 (p4) の前後オフセットは解析解の前提から 0 でなければならない。
 inline constexpr double P3_X = 0.0;
 

@@ -69,16 +69,17 @@ Probe probe(const LegServoParams & prm, const Vec3 & p)
   }
   r.sst = legServoFromJoints(prm, r.th, r.servo);
   if (r.sst != LegServoStatus::Ok) {return r;}
-  // 足首クランク ±60° (CRANK_LIMIT_DEG)。servo は σ·n·q + zero で n=1・zero=0 なので |q|
+  // 足首クランクのリミット (CRANK_LIMIT_DEG。-42..+60 と非対称なので σ を戻して q で見る)
   const std::size_t ankleIdx[2] = {ANKLE_PITCH, ANKLE_ROLL};
-  for (std::size_t k : ankleIdx) {
-    if (std::abs(r.servo[k]) > ankle_config::CRANK_LIMIT_DEG[0][1] * kDeg) {return r;}
+  for (int c = 0; c < kAnkleChains; ++c) {
+    const double q = ankleCrankFromServo(prm.ankle, c, r.servo[ankleIdx[c]]);
+    if (q < prm.ankle.qMin[c] || q > prm.ankle.qMax[c]) {return r;}
   }
   r.level = MECH;
   // 足首の設計可動域: 同時 ±15° の菱形 (ankle_config.hpp)。
-  // enum の ANKLE_PITCH は Σ_B ではロール、ANKLE_ROLL はピッチ (leg_kinematics.hpp 冒頭)
-  r.ankleRoll = r.th[ANKLE_PITCH];
-  r.anklePitch = r.th[ANKLE_ROLL];
+  // ANKLE_PITCH = θ5（上側ピボット）、ANKLE_ROLL = θ6（下側）。名前どおり
+  r.anklePitch = r.th[ANKLE_PITCH];
+  r.ankleRoll = r.th[ANKLE_ROLL];
   const double lim = ankle_config::TH5_LIMIT_DEG[1] * kDeg;
   if (std::abs(r.ankleRoll) / lim + std::abs(r.anklePitch) / lim <= 1.0 + 1e-9) {
     r.level = DESIGN;
@@ -141,7 +142,8 @@ int main(int argc, char ** argv)
 
   // ------------------------------------------------------------ ホーム姿勢
   // 符号は FK で決める: 足裏が水平 (R = I)、足がほぼ股の真下、
-  // 膝が前に出る (o4 の x > 股の x) 組み合わせを採る
+  // 膝が前に出る (o4 の x > 股の x) 組み合わせを採る。
+  // 股ピッチ・膝・足首ピッチ（θ5 = ANKLE_PITCH）の 3 つで屈伸する
   const double b = bendDeg * kDeg;
   double th[kNumJoints] = {0, 0, 0, 0, 0, 0};
   Vec3 foot;
@@ -149,7 +151,7 @@ int main(int argc, char ** argv)
   for (int sh = -1; sh <= 1 && !found; sh += 2) {
     for (int sk = -1; sk <= 1 && !found; sk += 2) {
       for (int sa = -1; sa <= 1 && !found; sa += 2) {
-        double t[kNumJoints] = {sh * b, 0.0, 0.0, sk * 2.0 * b, 0.0, sa * b};
+        double t[kNumJoints] = {sh * b, 0.0, 0.0, sk * 2.0 * b, sa * b, 0.0};
         Vec3 p; Mat3 R;
         fk(prm.leg, t, p, R);
         double off = 0.0;
@@ -178,7 +180,7 @@ int main(int argc, char ** argv)
   std::printf("=== ホーム姿勢 (脚ピッチ %.0f deg 曲げ・腕 id9 +50 / id10 +30 は脚 FK に無関係) ===\n",
               bendDeg);
   std::printf("関節角 Σ_B [deg]: 股ピッチ %+.1f  股ロール %+.1f  股ヨー %+.1f  膝 %+.1f  "
-              "足首(J5=ロール) %+.1f  足首(J6=ピッチ) %+.1f\n",
+              "足首(J5=ピッチ) %+.1f  足首(J6=ロール) %+.1f\n",
               th[0] / kDeg, th[1] / kDeg, th[2] / kDeg, th[3] / kDeg, th[4] / kDeg, th[5] / kDeg);
   std::printf("足裏中心 (右脚, Σ_B) = (%.1f, %.1f, %.1f) mm\n", foot.x, foot.y, foot.z);
   std::printf("z_c = 原点(股3軸の高さ・重心質点) から足裏まで = %.1f mm = %.4f m\n", zc_mm, zc);
@@ -188,9 +190,11 @@ int main(int argc, char ** argv)
   std::printf("サーボ側の判定: %s  (膝サーボ %+.1f deg, 足首クランク q1 %+.1f / q2 %+.1f deg)\n",
               levelName(home.level), home.servo[KNEE] / kDeg,
               home.servo[ANKLE_PITCH] / kDeg, home.servo[ANKLE_ROLL] / kDeg);
-  std::printf("  足首 ロール %+.1f / ピッチ %+.1f deg  設計可動域は同時 ±15 (菱形)、"
-              "単軸ピッチ窓 ±55、ロール機構限界 ±35.8\n",
-              home.ankleRoll / kDeg, home.anklePitch / kDeg);
+  std::printf("  足首 ピッチ %+.1f / ロール %+.1f deg  設計可動域は同時 ±15 (菱形)、"
+              "ピッチのエンベロープ %+.0f..%+.0f、ロール機構限界 ±%.1f\n",
+              home.anklePitch / kDeg, home.ankleRoll / kDeg,
+              ankle_config::TH5_ENVELOPE_DEG[0], ankle_config::TH5_ENVELOPE_DEG[1],
+              ankle_config::TH6_MECH_LIMIT_DEG);
 
   // ------------------------------------------------------------ 到達域
   const Vec3 fwd{1, 0, 0}, back{-1, 0, 0}, in{0, 1, 0}, out{0, -1, 0};   // 右脚: 内側 = +y

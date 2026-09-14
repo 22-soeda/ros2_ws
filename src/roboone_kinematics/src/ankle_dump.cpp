@@ -1,6 +1,6 @@
 // 足首パラレルリンクの中間量を出す確認用ツール。CAD の値を入れ替えたあとの点検に使う。
 //
-//   ros2 run roboone_kinematics ankle_dump [--th5 deg] [--th6 deg] [--right]
+//   ros2 run roboone_kinematics ankle_dump [--th5 deg] [--th6 deg] [--right]   θ5 = ピッチ / θ6 = ロール
 //   ros2 run roboone_kinematics ankle_dump --limits [--home c0 c1] [--right]
 //
 // ankle_selftest が「合っているか」を判定するのに対し、こちらは「どうなっているか」を
@@ -56,11 +56,15 @@ int main(int argc, char ** argv)
   if (limits) {
     using namespace ankle_config;
     std::printf("=== リミットと特異点 (%s脚) ===\n", side == Side::LEFT ? "左" : "右");
-    std::printf("  型 2 特異点（純ピッチ）  θ6 = %+.1f / %+.1f deg\n",
-      TH6_SINGULAR_DEG[0], TH6_SINGULAR_DEG[1]);
-    std::printf("  順変換の窓               θ6 ∈ [%+.1f, %+.1f] deg"
-      "  … この中で Φ は単調\n", FK_WINDOW_DEG[0], FK_WINDOW_DEG[1]);
-    std::printf("  ロールの機構限界         θ5 = ±%.1f deg (Δ = 0)\n", TH5_MECH_LIMIT_DEG);
+    std::printf("  型 2 特異点（純ピッチ）  θ5 = %+.1f / %+.1f deg（-側は先にロッドが届かなくなる）\n",
+      TH5_SINGULAR_DEG[0], TH5_SINGULAR_DEG[1]);
+    std::printf("  ピッチのエンベロープ     θ5 ∈ [%+.1f, %+.1f] deg（指令側で丸める）\n",
+      TH5_ENVELOPE_DEG[0], TH5_ENVELOPE_DEG[1]);
+    std::printf("  ピッチの機構限界         θ5 = %+.1f / %+.1f deg (Δ = 0)\n",
+      TH5_MECH_LIMIT_DEG[0], TH5_MECH_LIMIT_DEG[1]);
+    std::printf("  ロールの機構限界         θ6 = ±%.1f deg (Δ = 0)\n", TH6_MECH_LIMIT_DEG);
+    std::printf("  順変換の窓（ロール）     θ6 ∈ [%+.1f, %+.1f] deg"
+      "  … この中で Φ の根は高々 1 個\n", FK_WINDOW_DEG[0], FK_WINDOW_DEG[1]);
     std::printf("\n  鎖   クランク [deg]      サーボ角 [deg]        生カウント\n");
     for (int i = 0; i < kAnkleChains; ++i) {
       double a = ankleServoFromCrank(prm, i, prm.qMin[i]) * kDeg;

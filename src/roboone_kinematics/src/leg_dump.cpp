@@ -2,6 +2,7 @@
 // Python 参照実装と突き合わせるために使う。
 //
 //   leg_dump <a3> <a4> <b> <sigma> <flipmask> <n> <seed>
+//   a3, a4 = p3, p4 の y 成分（膝軸方向）、b = p3 の x 成分（前後）。すべて Σ_B
 //
 // 1 行 = th0..th5, px,py,pz, R00..R22, ik0..ik5, status
 #include <cstdio>
@@ -39,10 +40,10 @@ int main(int argc, char ** argv)
         config::JOINT_LIMIT_HI_DEG[k] * M_PI / 180.0);
       internal[k] = d(rng);
     }
-    internal[KNEE] = prm.sigma * internal[KNEE] + prm.phi;
-    // 乱数は文書の符号 (Σ_S) で作り、公開符号 (Σ_B) に直して fk/ik に渡す
+    internal[KNEE] = prm.sigma * internal[KNEE] - prm.phi;   // 曲げ量 -> θ4
+    // 乱数は内部角で作り、AXIS_FLIP を掛けた公開角にして fk/ik に渡す
     double th[kNumJoints];
-    toSolverAngles(prm, internal, th);
+    applyFlip(prm, internal, th);
 
     Vec3 p; Mat3 R;
     fk(prm, th, p, R);

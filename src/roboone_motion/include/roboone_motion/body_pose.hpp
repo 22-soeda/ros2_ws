@@ -177,8 +177,8 @@ struct LegSolve
 ///
 /// theta を返すのは /joint_states に出すため（同じ IK を 2 回解かない）。
 ///
-/// **足首は ankleClampJoints() を必ず通す。** θ6 は Δ > 0 のまま特異点に入るので
-/// 逆変換だけでは止まらない（ankle_parallel.hpp の注記）。ここを飛ばすと
+/// **足首は ankleClampJoints() を必ず通す。** ピッチ θ5 は Δ > 0 のまま特異点に
+/// 入るので逆変換だけでは止まらない（ankle_parallel.hpp の注記）。ここを飛ばすと
 /// 軌道生成が可動域を超えたときに足首が跳ねる。
 inline LegSolve servoFromFootPose(
   const rk::LegServoParams & prm, const FootPose & foot,
@@ -200,7 +200,7 @@ inline LegSolve servoFromFootPose(
 
 /// 観測側: 絶対サーボ角 6 本 [rad] -> 関節角と足裏の姿勢。
 ///
-/// th6_seed は足首の順変換（1 変数ニュートン法）の種で、前周期の θ6 を渡す。
+/// th6_seed は足首の順変換（1 変数ニュートン法）の種で、前周期の θ6（ロール）を渡す。
 /// 収束しなければ粗探し（ankleFkScan）へ 1 回だけ落ちる。起動直後や、脱力中に
 /// 手で大きく動かした直後がこれに当たる。
 inline rk::LegServoStatus footPoseFromServo(
@@ -307,16 +307,15 @@ inline ReachLevel reachLevel(const rk::LegServoParams & prm, const FootPose & fo
   if (rk::legServoFromJoints(prm, theta, servo) != rk::LegServoStatus::Ok) {
     return ReachLevel::IkOnly;
   }
-  // 足首クランク ±60 deg。servo = σ·n·q + zero で n = 1・zero = 0 なので |q| そのもの
-  for (std::size_t k : {rk::ANKLE_PITCH, rk::ANKLE_ROLL}) {
-    if (std::abs(servo[k]) > rk::ankle_config::CRANK_LIMIT_DEG[0][1] * d2r) {
-      return ReachLevel::Mech;
-    }
+  // 足首クランクのリミット (CRANK_LIMIT_DEG。-42..+60 と非対称なので σ を戻して q で見る)
+  const std::size_t ankleIdx[2] = {rk::ANKLE_PITCH, rk::ANKLE_ROLL};
+  for (int c = 0; c < rk::kAnkleChains; ++c) {
+    const double q = rk::ankleCrankFromServo(prm.ankle, c, servo[ankleIdx[c]]);
+    if (q < prm.ankle.qMin[c] || q > prm.ankle.qMax[c]) {return ReachLevel::Mech;}
   }
-  // 設計可動域は同時 ±15 deg の菱形。enum の ANKLE_PITCH は Σ_B ではロール、
-  // ANKLE_ROLL はピッチ (leg_kinematics.hpp 冒頭の約束)。
+  // 設計可動域は同時 ±15 deg の菱形。ANKLE_PITCH = θ5（上側）、ANKLE_ROLL = θ6（下側）
   const double lim = rk::ankle_config::TH5_LIMIT_DEG[1] * d2r;
-  const double roll = theta[rk::ANKLE_PITCH], pitch = theta[rk::ANKLE_ROLL];
+  const double pitch = theta[rk::ANKLE_PITCH], roll = theta[rk::ANKLE_ROLL];
   if (std::abs(roll) / lim + std::abs(pitch) / lim <= 1.0 + 1e-9) {return ReachLevel::Design;}
   return ReachLevel::Mech;
 }

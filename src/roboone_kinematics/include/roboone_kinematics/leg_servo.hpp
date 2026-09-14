@@ -19,8 +19,8 @@
 // は別物で、2 段の読み替えで結ばれる。
 //
 //   [1] 公開角 -> 曲げ量 bend（伸展 0・屈曲 +、leg_config の JOINT_LIMIT[KNEE] と同じ量）
-//         θ4_S = θ4_B · sign[KNEE] · kAxisSwapSign[KNEE]      (X-swap) と AXIS_FLIP
-//         bend = σ_leg · (θ4_S − φ)                            解析解の θ4 = σ·bend + φ
+//         θ4 = θ4_B · sign[KNEE]                               AXIS_FLIP を外す
+//         bend = σ · (θ4 + φ)                                  解析解の θ4' = θ4 + φ = σ·bend
 //       既定値（AXIS_FLIP なし・P3_X = 0・KNEE_FORWARD = +1）では bend = θ4_B に落ちる。
 //
 //   [2] 曲げ量 -> ロッカー角
@@ -35,10 +35,9 @@
 // * J1–J3 は「関節角 = サーボ指令角」として素通しする。サーボごとの原点・ギア比が
 //   要るなら、ここではなくサーボドライバ層（feetech_servo）で持つ。
 //   TODO(実機): 股 3 軸に原点オフセットが要るか、原点出しのときに確かめる。
-// * 足首は ankle_parallel.hpp の約束どおり leg_kinematics.hpp の θ5・θ6 をそのまま
-//   渡している。ankle_config.hpp の点の座標系（Σ_s の取り方）は CAD 待ちの TODO が
-//   残っているので、足首側は数値が入ってから改めて突き合わせること。膝の経路は
-//   knee_selftest / crosscheck_knee.py で検算済み。
+// * 足首は ankle_parallel.hpp の約束どおり leg_kinematics.hpp の θ5（ピッチ・上側）・
+//   θ6（ロール・下側）をそのまま渡している。膝の経路は knee_selftest /
+//   crosscheck_knee.py で検算済み。
 // * 足首の順変換だけは閉形式にならず 1 変数ニュートン法なので、前周期の θ6 を
 //   種として渡す（文書 §10）。膝と股には反復も種も要らない。
 #ifndef ROBOONE_KINEMATICS__LEG_SERVO_HPP_
@@ -97,15 +96,15 @@ inline LegServoParams makeLegServoParams(Side side)
 /// 脚 IK の公開角 θ4（Σ_B・AXIS_FLIP 適用後）-> 膝の曲げ量（伸展 0・屈曲 +）。
 inline double kneeBendFromLegAngle(const LegParams & leg, double theta4B)
 {
-  const double th4S = theta4B * leg.sign[KNEE] * kAxisSwapSign[KNEE];
-  return leg.sigma * (th4S - leg.phi);
+  const double th4 = theta4B * leg.sign[KNEE];
+  return leg.sigma * (th4 + leg.phi);
 }
 
 /// 膝の曲げ量 -> 脚 IK の公開角 θ4。
 inline double legAngleFromKneeBend(const LegParams & leg, double bend)
 {
-  const double th4S = leg.sigma * bend + leg.phi;
-  return th4S * leg.sign[KNEE] * kAxisSwapSign[KNEE];
+  const double th4 = leg.sigma * bend - leg.phi;
+  return th4 * leg.sign[KNEE];
 }
 
 // ---------------------------------------------------------------------------
@@ -149,7 +148,7 @@ inline LegServoStatus legServoFromJoints(
 
   // J5・J6 は足首パラレルリンク (AP-8)
   //
-  // ★逆変換の前にエンベロープで丸める。ピッチ θ6 は **Δ が正のまま型 2 特異点に
+  // ★逆変換の前にエンベロープで丸める。ピッチ θ5 は **Δ が正のまま型 2 特異点に
   //   入れてしまう**ので、Δ を見ている ankleIk() では止められない。ここで止めないと
   //   「指令は通ったのに、その姿勢を順変換で読み戻せない」状態に持っていける。
   const AnkleClampResult env =
