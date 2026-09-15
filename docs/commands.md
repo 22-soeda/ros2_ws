@@ -44,6 +44,60 @@ ros2 pkg list | grep roboone
 ros2 pkg executables roboone_motion       # motion_node motion_teach motion_selftest
 ```
 
+### 設定 YAML / ヘッダを変えたあとの反映
+
+**config の YAML は再コンパイル不要、`*_config.hpp` は依存パッケージ全部の再ビルドが要る。**
+定数はヘッダの `constexpr` なので、`roboone_kinematics` だけ建て直しても
+`roboone_motion` の中に古い値が焼き込まれたまま残る。
+
+```bash
+# leg_config.hpp / ankle_config.hpp / knee_config.hpp を変えた
+# --packages-above は「そのパッケージ + それに依存する全部」
+colcon build --packages-above roboone_kinematics
+source install/setup.bash
+# 対象: feetech_servo roboone_kinematics roboone_motion roboone_walk_core roboone_viz roboone_bringup
+# Pi 5 で約 60 秒（2026-09-15 実測）
+
+# 効いたかの確認（実機不要・バスを開かない）
+ros2 run roboone_kinematics leg_selftest     # 最後に「すべて一致」
+ros2 run roboone_motion motion_selftest      # 最後に「全部通った」
+```
+
+servo_home.yaml / servo_limits.yaml / home_pose.yaml / motions.yaml / gait.yaml は
+share に入るデータなので、ビルドの `install` 段だけ通れば足りる。
+
+```bash
+colcon build --packages-select feetech_servo        # servo_home / servo_limits
+colcon build --packages-select roboone_walk_ref     # home_pose / gait
+colcon build --packages-select roboone_motion       # motions
+```
+
+**ただし symlink で入っているファイルは編集がそのまま効く**（`--symlink-install` で
+建てたパッケージ）。どちらなのかは見れば分かる。
+
+```bash
+ls -la install/feetech_servo/share/feetech_servo/config/servo_limits.yaml
+# -> src/... へのシンボリックリンクなら編集は即反映。通常ファイルならビルドが要る
+```
+
+いずれの場合も**走っているノードには効かない**。`motion_node` は起動時に YAML を
+読むだけなので、上げ直す。ツール（`motion_leg_goto` ほか）は起動ごとに読む。
+
+```bash
+# 反映されたかを数字で見る（★読むだけ。トルクも位置指令も出さない）
+ros2 run roboone_motion motion_leg_goto --leg R --p 0 -89.3 -261 --rpy 0 0 0
+#   関節リミットの外なら「★関節リミット (leg_config JOINT_LIMIT) の外」
+#   count 窓の外なら各行に「★servo_limits の窓の外」が付く
+```
+
+servo_limits.yaml はここまで全部**ソフト側のクランプ**（`ServoMap` が count を丸める）。
+サーボの EEPROM に窓を書くのは別で、こちらは実機操作。
+
+```bash
+ros2 run feetech_servo feetech_set_limits --dry-run   # バスは開くが書かない。差分の表示だけ
+ros2 run feetech_servo feetech_set_limits             # ★EEPROM に書く。確認プロンプトあり
+```
+
 ## テスト
 
 ```bash
@@ -484,7 +538,7 @@ printf 'ik R 0 -89.3 -260\nfk L 0 0 0 30 0 0\n' | ./build/roboone_kinematics/leg
 printf 'mech 0\nik R 20 -89 -250\n' | ./build/roboone_kinematics/leg_service   # 機構層を切る
 
 # 起き上がりのキーフレームを検算する（motions.yaml の p / rpy をそのまま渡す）。
-# status ok・clamped 0 で、股ピッチ |hip| <= 60（leg_config.hpp の可動域）・
+# status ok・clamped 0 で、股ピッチ |hip| <= 90（leg_config.hpp の可動域）・
 # 足首ピッチ th5 > -50（エンベロープ -55 に余裕を残す）なら、その姿勢は実機で出せる。
 # ★キーフレームの間の補間点も通るので、隣り合う 2 枚を数点に割って同じように見ること。
 printf 'ikpose R 0 -89.3 -170 0 10 0\nikpose L 0 89.3 -170 0 10 0\n' \
@@ -587,7 +641,34 @@ ros2 run roboone_motion motion_leg_goto --leg R --off            # その脚 6 �
 ```bash
 ros2 run feetech_servo feetech_set_limits --dry-run
 ros2 run feetech_servo feetech_set_limits          # 書き込み（確認プロンプトあり）
+ros2 run feetech_servo feetech_set_limits -c /tmp/limits_一部.yaml --dry-run   # 軸を絞る
 ```
+
+★`--ids` のような絞り込みは**無い**。`servo_limits.yaml` に載っている軸を全部見て、
+EEPROM と食い違う軸を**まとめて**書く。1 軸だけ直したつもりでも、YAML が EEPROM より
+新しい軸が他にあれば一緒に書かれる。**必ず --dry-run の「変更する」行を数えてから流す。**
+一部だけ書きたいときは、その軸だけ書いた YAML を作って `-c` で渡す（書式は同じ）。
+
+`servo_limits.yaml` の行き先は 2 つあって、反映のしかたが違う:
+
+| 行き先 | 反映 |
+|---|---|
+| ソフトの窓（`ServoMap` / `pose_codec` / `motion_teach` / `*_goto` が指令を丸める） | ファイルを読み直すだけ = **ツール / ノードの再起動のみ**（install は symlink なのでビルド不要） |
+| サーボの EEPROM（addr 9 / 11） | **`feetech_set_limits` を流さないと変わらない** |
+
+`servo_home.yaml` はソフトしか読まないので、こちらは**再起動だけ**で足りる。
+
+### 腕（ID8/9/10）の可動域を手で探る
+
+```bash
+# そのバスの全 ID（腕も含む）の生カウントと T ポーズ基準 deg を 30Hz で出し続ける
+ros2 run feetech_servo leg_live_test --scan --leg R          # 書き込み無し
+ros2 run feetech_servo leg_live_test --scan --relax --leg R  # ★起動時にトルクを切る
+```
+
+名前は「leg」だが `--scan` は `servo_home.yaml` に載っている**そのバスの全 ID** を読むので
+腕にも使える。`--relax` は★**そのバスの全軸が脱力する**（機体が落ちる）ので吊るか寝かせてから。
+手で可動端まで動かし、突き当たりの生カウントを両端ぶん控えて `servo_limits.yaml` に書く。
 
 ### ホーム姿勢の足裏ピッチ（後傾の補正）を決める
 

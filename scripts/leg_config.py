@@ -92,9 +92,9 @@ AXIS_FLIP_LEFT = None
 # ※ AXIS_FLIP を適用する前の内部角での範囲。
 #: knee は曲げ量（伸展 0・屈曲 +）。実際の θ4 は σ * 曲げ量 - atan2(b, ℓ3)。
 JOINT_LIMITS_DEG = {
-    "hip_pitch":   (-60.0, 60.0),
-    "hip_roll":    (-60.0, 60.0),
-    "hip_yaw":     (-60.0, 60.0),
+    "hip_pitch":   (-90.0, 90.0),
+    "hip_roll":    (-90.0, 90.0),
+    "hip_yaw":     (-90.0, 90.0),
     "knee":        (0.0, 150.0),
     "ankle_pitch": (-60.0, 60.0),
     "ankle_roll":  (-60.0, 60.0),

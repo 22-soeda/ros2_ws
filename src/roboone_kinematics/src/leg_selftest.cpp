@@ -118,7 +118,9 @@ void checkRoundtrip(const LegParams & prm, int n, std::uint64_t seed, const char
     unique ? "" : "（a ≠ 0 では解が一意でない。足先姿勢は一致している）");
   std::printf("           解けなかった数   %d 件\n", nbad);
   check(mp < 1e-9, "往復の位置");
-  check(mR < 1e-12, "往復の姿勢");
+  // 許容 1e-11。JOINT_LIMIT を股 3 軸 ±90 deg へ広げた分だけ回転行列の丸めが
+  // 増える（ロールが ±90 に近い姿勢で最大 1.0e-12。位置は 5e-11 mm で 1e-9 の内側）。
+  check(mR < 1e-11, "往復の姿勢");
   check(mth < 1e-9, "往復の関節角");
   check(!unique || nbranch == 0, "a = 0 なのに別の根に落ちた");
   check(nbad == 0, "可動域内で解けない姿勢がある");

@@ -19,7 +19,7 @@ buses:
       1:   {home: 2143, offset:    95}   # 188.3 deg  (前回の値)
       2:   {home: 2094, offset:    46}   # 184.0 deg  (前回の値)
       3:   {home: 2068, offset:    20}   # 181.8 deg  (前回の値)
-      4:   {home: 1931, offset:  -117}   # 169.7 deg
+      4:   {home: 1975, offset:  -117}   # 169.7 deg
       5:   {home: 2193, offset:   145}   # 192.7 deg  (前回の値)
       6:   {home: 2033, offset:   -15}   # 178.7 deg  (前回の値)
       7:   {home: 2028, offset:   -20}   # 178.2 deg  (前回の値)

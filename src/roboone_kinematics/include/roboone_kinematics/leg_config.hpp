@@ -105,8 +105,8 @@ inline constexpr int AXIS_FLIP_LEFT[6] = {1, 0, 0, 0, 0, 0};
 // ※ Σ_B の関節角で、AXIS_FLIP を適用する前の値。
 //    KNEE は「曲げ量」で、KNEE_FORWARD = +1 なら θ4 そのもの。
 // TODO: サーボのリミット（feetech_servo/config/servo_limits.yaml）と突き合わせる。
-inline constexpr double JOINT_LIMIT_LO_DEG[6] = {-60.0, -60.0, -60.0,   0.0, -60.0, -60.0};
-inline constexpr double JOINT_LIMIT_HI_DEG[6] = { 60.0,  60.0,  60.0, 150.0,  60.0,  60.0};
+inline constexpr double JOINT_LIMIT_LO_DEG[6] = {-110.0, -90.0, -90.0, 0.0, -60.0, -60.0};
+inline constexpr double JOINT_LIMIT_HI_DEG[6] = { 110.0,  90.0,  90.0, 150.0,  60.0,  60.0};
 
 }  // namespace roboone_kinematics::config
 
