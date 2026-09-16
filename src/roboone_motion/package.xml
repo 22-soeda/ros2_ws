@@ -7,7 +7,8 @@
     motion ノード。ros-architecture §3 の「200Hz ループ」の実体で、
     /cmd_walk・/cmd_motion・/estop を受けて歩行計画 (roboone_walk_core) と
     キーフレームモーションを走らせ、IK (roboone_kinematics) を通して
-    Feetech サーボ (feetech_servo) へ送る。
+    Feetech サーボ (feetech_servo) へ送る。/camera/imu (RealSense 内蔵 IMU) から
+    胴体の傾きを推定し、足首と股で立位・歩行を安定化する。
 
     歩行計画の仕様原本は roboone_walk_ref (Python) 側にある。こちらはその C++ 版
     (roboone_walk_core) をプロセス内で呼ぶだけで、計画の式は持たない。
@@ -21,6 +22,7 @@
   <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>diagnostic_msgs</depend>
   <depend>ament_index_cpp</depend>
   <depend>yaml-cpp</depend>

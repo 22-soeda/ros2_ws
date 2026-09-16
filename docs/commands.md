@@ -172,6 +172,10 @@ ros2 launch roboone_bringup roboone.launch.py record:=false
 # カメラも上げる（検知の開発時）
 ros2 launch roboone_bringup roboone.launch.py camera:=true
 
+# ★既定で RealSense が IMU だけのモード（深度・点群なし）で上がる（imu:=true）。
+#   motion ノードの安定化の入力 /camera/imu を出すため。止めたいときだけ
+ros2 launch roboone_bringup roboone.launch.py imu:=false
+
 # 自律動作の一式（カメラ + 検出器 + 行動層）
 ros2 launch roboone_bringup roboone.launch.py camera:=true detector:=true behavior:=true
 
@@ -184,6 +188,7 @@ ros2 launch roboone_motion motion.launch.py                      # motion だけ
 ros2 launch roboone_motion motion.launch.py allow_torque:=false  # 読むだけ
 ros2 launch roboone_motion motion.launch.py dry_run:=true        # バスも開かない
 ros2 launch realsense_bringup realsense.launch.py
+ros2 launch realsense_bringup realsense.launch.py enable_depth:=false   # IMU だけ（安定化用）
 ros2 launch feetech_servo feetech_demo.launch.py                 # 動かさない確認用
 ros2 launch feetech_servo feetech_demo.launch.py enable_motion:=true   # 実機が動く
 ```
@@ -243,6 +248,75 @@ ros2 topic pub -r 20 /cmd_walk geometry_msgs/msg/Twist "{linear: {x: 0.05}}"
 状態遷移は `RELAX → ARMING → HOLD → WALK / MOTION`。
 起動直後は `require_home_before_arm` により、`/cmd_motion` を 1 回受けるまで脱力のまま
 （teleop の Options 長押しが `home` → `/estop false` の順に送るので操作は変わらない）。
+
+サーボの加速度（`move_acc`）は 254（明示できる最大。単位 100 step/s²）。2026-09-16 に 50 から
+上げた。0 はベンダ資料では「最大」だが、この HLS 系で確かめていないので使わない。
+
+## IMU の安定化（足首戦略・胴体の補正）
+
+motion ノードが `/camera/imu` から胴体のロール・ピッチを推定し、支持脚の足首と股に補正を
+足す。中身は `src/roboone_motion/include/roboone_motion/stabilizer.hpp` と `imu_attitude.hpp`。
+**ゲインの既定は全部 0**（入れても今までと同じ動き）で、実行中に `ros2 param set` で上げる。
+
+前提: RealSense が上がっていること（`roboone.launch.py` の既定 `imu:=true`、または
+`camera:=true`）。来ていなければ起動 10 秒後に警告が出て、補正 0 のまま動く。
+
+```bash
+# 1) 立たせて傾きの読みを見る（下の 3) の roll / pitch）。カメラは胴体に水平付けなので、
+#    取り付けは既定の [0, 0, 0] のままでよい。立位の後傾（膝のしなり）もそのまま読める
+#
+#    零点は組み付けのずれを取るときだけ。★胴体が水平だと分かっている状態（水準器を当てる等）で、
+#    静止させてから呼ぶ。ホーム姿勢で立たせて呼ぶと、立位の後傾まで 0 と覚えて kp が直さなくなる。
+#    25° 以上傾いた読み（寝ている・吊られて傾いている）や、動いているときは断る
+ros2 service call /motion/imu_zero std_srvs/srv/Trigger
+#    ログに出る「mount_rpy_deg: [...]」を motion_node.yaml の imu: に書き写すと
+#    次回の起動から効く（書かないと再起動で [0, 0, 0] に戻る）
+
+# 2) ゲインを入れる。★トルクが入っている機体の足首が動く。支えた状態で、段ごとに押して確かめる
+#    （docs/ros2_walk_implementation.pdf §9 の順）
+ros2 param set /motion stab.kd_pitch 0.05      # ① ジャイロ減衰（ピッチ）。振動の手前まで上げて 2〜3 割戻す
+ros2 param set /motion stab.kd_roll 0.05       #    同（ロール）
+ros2 param set /motion stab.kp_pitch 0.3       # ② 傾きの比例。傾いたまま戻らない分が減るか
+ros2 param set /motion stab.kp_roll 0.3
+ros2 param set /motion stab.k_torso 0.3        # ③ 胴体を起こす（前後のみ）
+ros2 param set /motion stab.enable false       # まとめて切る（ゲインは残る）
+#    ★double は小数点付きで打つ（0 ではなく 0.0）。整数だと型違いで弾かれる
+#    範囲外（kd > 0.5 など）も弾かれる。範囲と説明は describe で見る
+ros2 param describe /motion stab.kd_pitch
+ros2 param dump /motion | grep -A30 "stab:"    # いまの値をまとめて見る
+
+# 3) 中身を見る（100Hz。並びは layout に名前で載っている）
+ros2 topic echo --once /motion/stab | python3 -c "
+import sys,yaml,math
+d=next(yaml.safe_load_all(sys.stdin))
+for n,v in zip(d['layout']['dim'][0]['label'].split(','), d['data']):
+    print(f'{n:<14}{v:+10.4f}' + (f'  ({math.degrees(v):+.2f} deg)' if n in ('roll','pitch') else ''))
+"
+```
+
+見るもの（`/motion/stab`。bag にも入る）:
+
+| 項目 | 意味 |
+|---|---|
+| `roll` / `pitch` | 胴体の傾き [rad]。**roll + = 右へ倒れている / pitch + = 前へ倒れている** |
+| `gyro_x` / `gyro_y` | その速さ [rad/s]（Σ_B） |
+| `imu_ok` / `imu_age` | IMU が新しいか / 最後のサンプルからの経過（通常 5ms 前後、最大 20ms 程度） |
+| `active` / `fade` | 補正を入れる条件が揃っているか（HOLD / WALK・IMU あり・ゲイン非 0）/ 出し入れ |
+| `w_R` / `w_L` / `gate` | 脚ごとの効かせ方（遊脚は 0）/ 着地前後でゲインを半分にしているか |
+| `u_roll` / `u_pitch` | 足裏を胴体に対して回したい量 [rad] |
+| `ank_R_th5` ほか | 足首 θ5（ピッチ）/ θ6（ロール）に実際に足した量 [rad] |
+| `torso` | 胴体の前傾に足した量 [rad]（前へ倒れたら負 = 起こす） |
+| `ff_ax` / `ff_ay` | IMU に教えた歩行計画の重心加速度（横揺れで傾きの推定がずれないように引く） |
+| `corr_dropped` | 補正を入れると IK が解けないので外した脚の数 |
+
+符号の確かめ方（トルクなしでよい。`allow_torque:=false` で立ち上げ、HOLD まで進めてから
+ゲインを入れ、機体を手で傾ける）: 前へ倒す → `pitch` と `u_pitch` が + で、`ank_*_th5` も +
+（胴体から見てつま先を下げる向き = 前へ倒れるのを押し戻す）。右へ倒す → `roll` と `u_roll` が +、
+`ank_*_th6` が +（足裏の左縁を上げる向き）。向きの根拠は `motion_selftest` の [8]。
+
+`imu_rx_lag`（受信時刻 − header.stamp）は RealSense が機器の時計を換算した stamp なので
+**約 −20ms の定数が乗る**（2026-09-16 実測）。絶対の遅れではない。受信間隔は p50 5.0ms /
+p99 5.7ms / 最大 27ms（0.5% が 8ms 超）。
 
 ## 胴体の前傾（body_pitch）
 
@@ -485,6 +559,15 @@ ros2 run roboone_motion motion_selftest --strict \
 # 歩行
 python3 src/roboone_viz/roboone_viz/gen_walk_viz.py --serve 8100
 python3 src/roboone_walk_core/tools/compare_walk_engines.py
+
+# ↑ を手元の PC で見る（どれか 1 つ）
+#   VSCode Remote-SSH の端末から: 手元のブラウザで開き、ポート転送も VSCode が張る
+"$BROWSER" http://localhost:8100/walk_viz.html
+#   同じ LAN なら直接: http://<Pi の IP>:8100/walk_viz.html（Pi の IP は ip -4 addr で見る）
+#   ssh のトンネル（手元の PC 側で打つ）: ssh -L 8100:localhost:8100 <pi> のあと http://localhost:8100/walk_viz.html
+# ★2026-09-17 までの版は 1 接続ずつしか捌かず、ブラウザの空の先行接続で固まってページが
+#   出なかった（ThreadingHTTPServer に直した）。止めた直後に Address already in use が
+#   出たら、古い接続が消えるまで数十秒待つ
 
 # ホーム姿勢 (脚ピッチ曲げ角) から z_c と到達域を出し、gait.yaml の目安を印字する
 # --map で到達域の ASCII マップ、--bend で曲げ角 [deg]、--t-step で歩周期を変える
@@ -883,6 +966,9 @@ ros2 topic echo /camera/imu --once
 
 # 中身の検査（静止させて実行。重力・ジャイロバイアス・ノイズ・共分散の参考値）
 ros2 run realsense_bringup rs_imu_test --duration 30
+
+# motion ノードの安定化用に IMU だけ上げる（深度・点群なし）
+ros2 launch realsense_bringup realsense.launch.py enable_depth:=false
 
 # 全ストリームの周期・ジッタ・遅延をまとめて見る
 ros2 run realsense_bringup rs_stream_test --duration 20

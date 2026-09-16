@@ -141,6 +141,9 @@ details.params .grid span:nth-child(odd) { color: var(--ink-2); }
 #joy.live:active { cursor: grabbing; }
 .joyhint { display: none; text-align: center; color: var(--muted); font-size: 11.5px; margin-top: 2px; }
 .live-on .joyhint { display: block; }
+#marchBtn { display: none; margin: 6px auto 0; }
+.live-on #marchBtn { display: block; }
+#marchBtn.on { color: var(--ink); border-color: var(--ink-2); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -191,7 +194,8 @@ details.params .grid span:nth-child(odd) { color: var(--ink-2); }
     <div class="card">
       <h2>指令 → 1 歩のパラメータ (毎周期)</h2>
       <canvas id="joy" width="140" height="140" style="width:140px;height:140px;margin:4px auto 0;display:block"></canvas>
-      <div class="joyhint">パッドをドラッグ / WASD・矢印キーで操縦。離すと停止</div>
+      <div class="joyhint">パッドをドラッグ / WASD・矢印キーで操縦。離すと停止。M で足踏み (試作)</div>
+      <button class="ctrl" id="marchBtn" title="可視化だけの試作。実機の歩行エンジンには無い">足踏み (試作): OFF</button>
       <dl class="pipe" id="pipe"></dl>
     </div>
     <div class="card" style="margin-top:14px">
@@ -221,6 +225,28 @@ details.params .grid span:nth-child(odd) { color: var(--ink-2); }
 <script>
 'use strict';
 const DATA = /*__WALK_DATA__*/null;
+
+// 足踏み (その場で歩を続ける) の試作。**可視化専用**で、walkcore.js (3 実装照合の対象) にも
+// 実機の歩行エンジンにも入っていない。record.py の MarchWalkEngine と同じ作りで、
+// march の間だけ歩き出し・歩き続けのしきい値を無効にしたパラメータで回す。
+// 速度指令は通常どおり a_max で整形されるので、踏み出し量はなめらかに 0 へ落ちる。
+class MarchWalkEngineJS extends WalkEngineJS {
+  constructor(params) {
+    super(params);
+    this.march = false;
+    this.pBase = this.p;
+    this.pMarch = Object.assign({}, this.p, { v_start_eps: -1.0, v_stop_eps: -1.0 });
+  }
+
+  update(vx, vy, dt, estop) {
+    this.p = this.march ? this.pMarch : this.pBase;
+    try {
+      return super.update(vx, vy, dt, estop);
+    } finally {
+      this.p = this.pBase;
+    }
+  }
+}
 
 const STATES = ['IDLE', 'START', 'STEP', 'STOP', 'ESTOP'];
 const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -260,8 +286,8 @@ function makeLive() {
   for (const k of ['t','st','ph','sup','stop','lock','cx','cy','vx','vy',
                    'xix','xiy','comx','comy','zx','zy',
                    'lfx','lfy','lfz','rfx','rfy','rfz',
-                   'pnx','pny','plx','ply','bx','by','xex','xey']) cols[k] = [];
-  const eng = new WalkEngineJS();
+                   'pnx','pny','plx','ply','bx','by','xex','xey','mf']) cols[k] = [];
+  const eng = new MarchWalkEngineJS();
   return {
     eng,
     cmd: [0, 0],              // ジョイスティックの生指令
@@ -300,6 +326,7 @@ function pushLiveFrame(o, cmd) {
   const stCode = { IDLE: 0, START: 1, STEP: 2, STOP: 3, ESTOP: 4 }[o.state];
   k.t.push(o.t); k.st.push(stCode); k.ph.push(o.phase); k.sup.push(o.support);
   k.stop.push(o.stopping ? 1 : 0); k.lock.push(o.locked ? 1 : 0);
+  k.mf.push(live.eng.march ? 1 : 0);
   k.cx.push(cmd[0]); k.cy.push(cmd[1]); k.vx.push(o.v[0]); k.vy.push(o.v[1]);
   k.xix.push(o.xi[0]); k.xiy.push(o.xi[1]);
   k.comx.push(o.com[0]); k.comy.push(o.com[1]);
@@ -368,6 +395,7 @@ function enterLive() {
   document.body.classList.add('live-on');
   joyCv.classList.add('live');
   view.cx = 0; view.cy = 0;
+  updateMarchBtn();
   // 最初の 1 frame を入れて描画を成立させる
   pushLiveFrame(live.eng.update(0, 0, LIVE_DT, false), [0, 0]);
   buildSteps(); renderAll();
@@ -415,6 +443,18 @@ const scrub = document.getElementById('scrub');
 const timeLabel = document.getElementById('timeLabel');
 const stateBadge = document.getElementById('stateBadge');
 const joyCv = document.getElementById('joy');
+const marchBtn = document.getElementById('marchBtn');
+function updateMarchBtn() {
+  const on = !!(live && live.eng.march);
+  marchBtn.textContent = '足踏み (試作): ' + (on ? 'ON' : 'OFF');
+  marchBtn.classList.toggle('on', on);
+}
+function toggleMarch() {
+  if (!live) return;
+  live.eng.march = !live.eng.march;   // OFF にすると次の歩の境界で停止シーケンスへ
+  updateMarchBtn();
+}
+marchBtn.onclick = () => { toggleMarch(); marchBtn.blur(); };
 function updatePlayBtn() { playBtn.textContent = playing ? '⏸ 停止' : '▶ 再生'; }
 playBtn.onclick = () => { playing = !playing; updatePlayBtn(); };
 document.getElementById('speedSel').onchange = e => { speed = +e.target.value; };
@@ -470,6 +510,11 @@ for (const evName of ['pointerup', 'pointercancel']) {
 addEventListener('keydown', ev => {
   if (!live) return;
   const k = ev.key.length === 1 ? ev.key.toLowerCase() : ev.key;
+  if (k === 'm') {
+    if (!ev.repeat) toggleMarch();
+    ev.preventDefault();
+    return;
+  }
   if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'w', 'a', 's', 'd'].includes(k)) {
     live.keys[k] = true;
     ev.preventDefault();
@@ -923,7 +968,8 @@ function renderAll() {
   const f = Math.floor(frame);
   scdesc.textContent = sc.desc;
   timeLabel.textContent = `t = ${sc.ticks.t[f].toFixed(2)} s`;
-  stateBadge.textContent = STATES[sc.ticks.st[f]] + (sc.ticks.stop[f] ? ' (停止中)' : '');
+  stateBadge.textContent = STATES[sc.ticks.st[f]] + (sc.ticks.stop[f] ? ' (停止中)' : '') +
+    (sc.ticks.mf && sc.ticks.mf[f] ? ' 足踏み' : '');
   if (!live && !scrubActive()) scrub.value = Math.round(f / (nFrames(sc) - 1) * 100);
   drawTopdown();
   drawChart(chartY);

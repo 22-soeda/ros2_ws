@@ -187,13 +187,22 @@ struct LegSolve
 /// ★**clamp=false の rk::ik は Ok 以外で theta を書かない。** 呼び側は
 ///   ik_status == Ok を確かめるまで theta を読んではいけない（0 が入っている）。
 ///   servo[] のほうは ok() を確かめるまで読んではいけない（足首が未書き込み）。
+///
+/// ankle_offset は IK の後で足首の関節角に足す量 [rad]（[0] = θ5 ピッチ,
+/// [1] = θ6 ロール）。IMU の安定化の出力（pose_codec.hpp「安定化の補正」）。
+/// null なら足さない。theta には足した後の値が返る。
 inline LegSolve servoFromFootPose(
   const rk::LegServoParams & prm, const FootPose & foot,
-  double servo[rk::kNumJoints], double theta[rk::kNumJoints])
+  double servo[rk::kNumJoints], double theta[rk::kNumJoints],
+  const double * ankle_offset = nullptr)
 {
   LegSolve out;
   out.ik_status = rk::ik(prm.leg, foot.p, matFromRpy(foot.rpy), theta, /*clamp=*/false);
   if (out.ik_status != rk::IkStatus::Ok) {return out;}
+  if (ankle_offset) {
+    theta[rk::ANKLE_PITCH] += ankle_offset[0];
+    theta[rk::ANKLE_ROLL] += ankle_offset[1];
+  }
 
   // 丸めないが、エンベロープの外に出ていることは報告する（指令には影響しない）
   out.ankle_outside_envelope =

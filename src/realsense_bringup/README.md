@@ -18,13 +18,16 @@ ros2 launch realsense_bringup realsense.launch.py enable_color:=true
 
 # 点群が要らない（depth 画像だけ / CPU を空けたい）
 ros2 launch realsense_bringup realsense.launch.py enable_pointcloud:=false
+
+# IMU だけ（motion ノードの安定化用。roboone.launch.py の既定 imu:=true がこれ）
+ros2 launch realsense_bringup realsense.launch.py enable_depth:=false
 ```
 
 出るトピック。名前は `docs/ros-architecture.md` のトピック表に合わせてある。
 
 | トピック | 型 | 周期 | 受け側 |
 |---|---|---|---|
-| `/camera/imu` | sensor_msgs/Imu | 200Hz | imu_filter |
+| `/camera/imu` | sensor_msgs/Imu | 200Hz | motion（安定化。姿勢推定はノード内） |
 | `/camera/depth/color/points` | sensor_msgs/PointCloud2 | 30Hz | —（rviz 用）|
 | `/camera/depth/image_rect_raw` | sensor_msgs/Image (16UC1) | 30Hz | opponent_detector |
 | `/camera/color/image_raw` | sensor_msgs/Image (rgb8) | 30Hz | `enable_color:=true` のときだけ |
@@ -33,6 +36,7 @@ ros2 launch realsense_bringup realsense.launch.py enable_pointcloud:=false
 
 | 引数 | 既定 | 意味 |
 |---|---|---|
+| `enable_depth` | `true` | 深度を出すか。`false` で IMU だけ（点群も止まる） |
 | `enable_color` | `false` | RGB を出すか |
 | `enable_imu` | `true` | gyro+accel を出し `/camera/imu` を作るか |
 | `enable_pointcloud` | `true` | 点群を出すか |

@@ -5,7 +5,7 @@
 見た目には十分)。数値は 0.1 mm (4 桁) に丸めて JSON を小さくする。
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, List, Optional
 
 from roboone_walk_ref.walk_core import GaitParams, WalkEngine
@@ -15,13 +15,42 @@ ENGINE_DT = 0.005
 RECORD_EVERY = 2          # 100 Hz で記録
 
 
+class MarchWalkEngine(WalkEngine):
+    """足踏み (その場で歩を続ける) を試すための、**可視化専用**の包み。
+
+    実機の歩行エンジン (roboone_walk_core) にも、仕様原本の walk_core にも入っていない。
+    walk_core は「速度指令が小さい = 止まる」で歩き出しと歩き続けを決めるので、
+    指令ゼロでは足踏みにならない。march=True の周期だけ、その 2 つのしきい値
+    (v_start_eps / v_stop_eps) を無効にしたパラメータで回す。
+
+    速度指令は通常どおり a_max で整形されるので、前進から足踏みへ移るときも
+    踏み出し量はなめらかに 0 へ落ちる。踏み出し量を一気に 0 にすると純 FF では
+    発散する (2026-09-17 に試走で確認) ので、その経路は作らない。
+    JS 側の同じ包みは template.html の MarchWalkEngineJS。
+    """
+
+    def __init__(self, params: Optional[GaitParams] = None):
+        super().__init__(params)
+        self._p_base = self.p
+        self._p_march = replace(self.p, v_start_eps=-1.0, v_stop_eps=-1.0)
+
+    def update(self, vx_cmd: float, vy_cmd: float, dt: float,
+               estop: bool = False, march: bool = False):
+        self.p = self._p_march if march else self._p_base
+        try:
+            return super().update(vx_cmd, vy_cmd, dt, estop)
+        finally:
+            self.p = self._p_base
+
+
 @dataclass
 class Scenario:
     sid: str
     label: str
     desc: str
     duration: float
-    cmd: Callable[[float], tuple]   # t -> (vx, vy) 生指令
+    # t -> (vx, vy) 生指令。3 要素目に True を入れた周期は足踏み (MarchWalkEngine)
+    cmd: Callable[[float], tuple]
 
 
 def default_scenarios() -> List[Scenario]:
@@ -39,6 +68,13 @@ def default_scenarios() -> List[Scenario]:
                  lambda t: (0.08, 0.05) if 0.5 <= t < 4.5 else (0.0, 0.0)),
         Scenario('stick', 'スティック操縦', '前進 → 斜め右前 → 斜め左前 → 停止 と指令を切り替える', 10.0,
                  _stick_profile),
+        Scenario('march', '足踏み (試作)',
+                 'その場足踏みを 5 s → 停止。★可視化だけの試作で、実機の歩行エンジンには無い',
+                 9.0, lambda t: (0.0, 0.0, 0.5 <= t < 5.5)),
+        Scenario('march_mix', '前進と足踏み (試作)',
+                 '足踏み → 前進 0.10 m/s → 指令を離して足踏み → 停止。'
+                 '★可視化だけの試作で、実機の歩行エンジンには無い',
+                 14.0, _march_mix_profile),
     ]
 
 
@@ -54,6 +90,12 @@ def _stick_profile(t: float) -> tuple:
     return (0.0, 0.0)
 
 
+def _march_mix_profile(t: float) -> tuple:
+    march = 0.5 <= t < 10.5
+    vx = 0.10 if 2.5 <= t < 6.0 else 0.0
+    return (vx, 0.0, march)
+
+
 def _r(v: Optional[float], nd: int = 4):
     if v is None:
         return None
@@ -62,14 +104,15 @@ def _r(v: Optional[float], nd: int = 4):
 
 def record_scenario(sc: Scenario, params: Optional[GaitParams] = None) -> dict:
     p = params or GaitParams()
-    eng = WalkEngine(p)
+    eng = MarchWalkEngine(p)
     cols = {k: [] for k in (
         't', 'st', 'ph', 'sup', 'stop', 'lock',
         'cx', 'cy',            # 生指令 (ジョイスティック)
         'vx', 'vy',            # 整形後
         'xix', 'xiy', 'comx', 'comy', 'zx', 'zy',
         'lfx', 'lfy', 'lfz', 'rfx', 'rfy', 'rfz',
-        'pnx', 'pny', 'plx', 'ply', 'bx', 'by', 'xex', 'xey')}
+        'pnx', 'pny', 'plx', 'ply', 'bx', 'by', 'xex', 'xey',
+        'mf')}                 # 足踏み中か (MarchWalkEngine)
     boxes = []                 # クランプ域は変化時だけ [frame, xmin,xmax,ymin,ymax]
     last_box = object()
     n = int(round(sc.duration / ENGINE_DT))
@@ -77,7 +120,8 @@ def record_scenario(sc: Scenario, params: Optional[GaitParams] = None) -> dict:
     for i in range(n):
         t = i * ENGINE_DT
         raw = sc.cmd(t)
-        o = eng.update(raw[0], raw[1], ENGINE_DT)
+        march = len(raw) > 2 and bool(raw[2])
+        o = eng.update(raw[0], raw[1], ENGINE_DT, march=march)
         if i % RECORD_EVERY:
             continue
         cols['t'].append(_r(o.t, 3))
@@ -86,6 +130,7 @@ def record_scenario(sc: Scenario, params: Optional[GaitParams] = None) -> dict:
         cols['sup'].append(o.support)
         cols['stop'].append(1 if o.stopping else 0)
         cols['lock'].append(1 if o.locked else 0)
+        cols['mf'].append(1 if march else 0)
         cols['cx'].append(_r(raw[0]))
         cols['cy'].append(_r(raw[1]))
         cols['vx'].append(_r(o.v[0]))

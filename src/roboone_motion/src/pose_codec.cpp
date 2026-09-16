@@ -14,10 +14,12 @@ namespace
 std::string tag(int side) {return std::string(kSideTag[side]);}
 }  // namespace
 
-PoseCodec::Encoded PoseCodec::encode(const BodyPose & pose)
+PoseCodec::Encoded PoseCodec::encode(const BodyPose & pose, const PoseCorrection * corr)
 {
   Encoded out;
   out.arm_deg.assign(map_->num_arm(), 0.0);
+  if (corr && corr->zero()) {corr = nullptr;}
+  const double psi = body_pitch_ + (corr ? corr->body_pitch : 0.0);
 
   for (int s = 0; s < kNumSide; ++s) {
     std::vector<int16_t> pos(map_->bus(s).ids.size(), 0);
@@ -40,7 +42,7 @@ PoseCodec::Encoded PoseCodec::encode(const BodyPose & pose)
       for (std::size_t j = 0; j < rk::kNumJoints; ++j) {
         servo[j] = pose.leg_servo[s][j];
       }
-      bodyPitchApplyServo(map_->leg_params(s), servo, body_pitch_);
+      bodyPitchApplyServo(map_->leg_params(s), servo, psi);
       // 関節角は /motion/joint_commands のために出すだけ。出せなくても指令は送る。
       const rk::LegServoStatus jst =
         rk::legJointsFromServo(map_->leg_params(s), servo, theta, th6_cmd_seed_[s]);
@@ -57,8 +59,21 @@ PoseCodec::Encoded PoseCodec::encode(const BodyPose & pose)
       }
     } else {
       FootPose foot = pose.foot[s];
-      bodyPitchApply(foot, body_pitch_);
-      const LegSolve r = servoFromFootPose(map_->leg_params(s), foot, servo, theta);
+      bodyPitchApply(foot, psi);
+      const double * off = (corr && !corr->ankleZero(s)) ? corr->ankle[s] : nullptr;
+      LegSolve r = servoFromFootPose(map_->leg_params(s), foot, servo, theta, off);
+      if (!r.ok() && corr) {
+        // 補正のせいで解けないなら、補正を外して解き直す（ヘッダ「安定化の補正」）
+        foot = pose.foot[s];
+        bodyPitchApply(foot, body_pitch_);
+        r = servoFromFootPose(map_->leg_params(s), foot, servo, theta);
+        if (r.ok()) {
+          out.corr_dropped[s] = true;
+          ev_.warn(
+            tag(s) + "脚: 安定化の補正を入れると解けないので、補正を外して出した",
+            1000, "corr_dropped" + tag(s));
+        }
+      }
       if (!r.ok()) {
         // 解けない目標は**送らない**。前周期の指令が生きたままになるので、
         // 機体は直前の姿勢で止まる。ゼロや中途半端な解を送るより安全。

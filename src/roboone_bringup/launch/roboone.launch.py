@@ -15,7 +15,11 @@
     teleop:=true|false    joy + teleop ノード
     motion:=true|false    motion ノード（歩行 / 技 / IK / サーボ送信）
     allow_torque:=true|false  ★既定 true（機体が動く）。false で「読むだけ」の通し確認
-    camera:=false|true    RealSense。既定 OFF（USB 帯域と CPU を食うので、要るときだけ）
+    camera:=false|true    RealSense（深度 + 点群 + IMU）。既定 OFF（USB 帯域と CPU を
+                          食うので、要るときだけ）
+    imu:=true|false       RealSense を **IMU だけ** で上げる（深度・点群なし）。既定 ON。
+                          motion ノードの安定化（足首戦略）の入力 /camera/imu を出す。
+                          camera:=true のときは camera 側が IMU も出すので無視される
     detector:=false|true  opponent_detector（敵機検出）。camera:=true と対で使う
     behavior:=false|true  behavior（自律の行動判断）。detector:=true と対で使う
     record:=true|false    ros2 bag 記録（config/record_topics.yaml のトピック）。
@@ -54,7 +58,7 @@ from launch.actions import (DeclareLaunchArgument, ExecuteProcess,
                             IncludeLaunchDescription, OpaqueFunction)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 import yaml
 
@@ -80,6 +84,13 @@ def _recorder(context, *args, **kwargs):
         cwd=log_dir, output='screen')]
 
 
+def _imu_only():
+    """imu:=true かつ camera:=false のとき true になる置換。"""
+    return PythonExpression([
+        "'", LaunchConfiguration('imu'), "'.lower() in ('true', '1') and '",
+        LaunchConfiguration('camera'), "'.lower() not in ('true', '1')"])
+
+
 def generate_launch_description():
     teleop_share = get_package_share_directory('roboone_teleop')
 
@@ -94,6 +105,9 @@ def generate_launch_description():
                               description='★サーボにトルクを入れる。false で「読むだけ」の通し確認になる'),
         DeclareLaunchArgument('camera', default_value='false',
                               description='RealSense。USB 帯域と CPU を食うので既定 OFF'),
+        DeclareLaunchArgument('imu', default_value='true',
+                              description='RealSense を IMU だけで上げる（安定化の入力）。'
+                                          'camera:=true なら無視'),
         DeclareLaunchArgument('detector', default_value='false',
                               description='opponent_detector。camera:=true と対で使う'),
         DeclareLaunchArgument('behavior', default_value='false',
@@ -162,6 +176,23 @@ def generate_launch_description():
                 os.path.join(get_package_share_directory('realsense_bringup'),
                              'launch', 'realsense.launch.py')),
             condition=IfCondition(LaunchConfiguration('camera'))),
+
+        # --- 4b) IMU だけ（カメラを上げないとき）------------------------------
+        # motion ノードの安定化は /camera/imu を読む。深度と点群を止めた構成で
+        # RealSense を上げる。camera:=true なら上の include が IMU も出すので上げない。
+        # RealSense が挿さっていなくても motion は止まらない（安定化が効かないだけ。
+        # 起動 10 秒後に警告が出る）。
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(get_package_share_directory('realsense_bringup'),
+                             'launch', 'realsense.launch.py')),
+            condition=IfCondition(_imu_only()),
+            launch_arguments={
+                'enable_depth': 'false',
+                'enable_pointcloud': 'false',
+                'enable_color': 'false',
+                'enable_imu': 'true',
+            }.items()),
 
         # --- 5) 知覚（カメラを上げているときだけ意味がある）--------------------
         # 検出器は点群ではなく深度画像を直接読む（理由は

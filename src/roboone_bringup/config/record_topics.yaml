@@ -32,7 +32,12 @@ topics:
   #   サンプル数が落ちている区間はピークも取りこぼしている（低電圧で応答が欠けた）。
   - /motion/servo_current
   - /motion/diagnostics     # バスごとの電圧・最高温度・応答軸数・エラービット・最大電流（低電圧の追跡用）
-  - /imu/data
+  # IMU と安定化。/camera/imu は RealSense の生値（200Hz、1 本 ~300B で軽い）。
+  # 姿勢の推定は motion ノードの中にあるので、/imu/data は出ていない。
+  - /camera/imu
+  # 安定化の中身（姿勢・角速度・足首と胴体の補正・支持脚と位相）。100Hz。
+  # 並びは layout.dim[0].label（motion_node.cpp の kStabFields）
+  - /motion/stab
   # --- 判断層 ---
   - /opponent           # 敵機の位置・上端高さ・状態（roboone_interfaces/Opponent）
   - /ring_edge          # 方位ごとの床の切れ目。64 個の float なので軽い

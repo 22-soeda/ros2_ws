@@ -23,7 +23,6 @@ import http.server
 import json
 import os
 from pathlib import Path
-import socketserver
 import sys
 
 # walk_core は別パッケージ roboone_walk_ref (仕様原本) にある。ソース木から
@@ -83,7 +82,10 @@ def serve(directory: Path, port: int):
         def log_message(self, fmt, *args):
             pass
 
-    with socketserver.TCPServer(('0.0.0.0', port), Handler) as httpd:
+    # 1 接続ずつしか捌かないサーバーだと、ブラウザが先に開く空の接続 (preconnect) を
+    # 読み待ちしたまま固まり、本物の要求が受け付けられずページが出ない
+    # (2026-09-17 VSCode のポート転送越しに再現)。接続ごとにスレッドを立てる。
+    with http.server.ThreadingHTTPServer(('0.0.0.0', port), Handler) as httpd:
         print(f'配信中: http://0.0.0.0:{port}/walk_viz.html  (Ctrl-C で終了)')
         print(f'  SSH の PC からは  ssh -L {port}:localhost:{port} でトンネルして '
               f'http://localhost:{port}/walk_viz.html')

@@ -20,6 +20,22 @@
 // encode() は解けなかった脚の send[] を false にして返す。呼び側がその脚の指令を
 // 出さなければ、前周期の指令が生きたままになって機体は直前の姿勢で止まる。
 // ゼロや中途半端な解を送るより安全。
+//
+// ===========================================================================
+// 安定化の補正（PoseCorrection）
+// ===========================================================================
+// IMU の安定化（stabilizer.hpp）が出す補正も、この境界でだけ掛ける。上の層の
+// 姿勢（cur_pose_ / hold_pose_ / 技の補間）には一切混ぜない。混ぜると補正が
+// 保持姿勢や技の起点に焼き付いて、補正を切っても戻らなくなる。
+//
+//   body_pitch   胴体の前傾に足す。body_pitch_ と同じ経路（Σ_U -> Σ_B）
+//   ankle        足裏書きの脚だけ、IK の後・足首リンク変換の前に関節角へ足す
+//
+// **補正を入れると解けない周期は、補正を外して解き直す。** 補正のせいで脚の
+// 指令が止まる（= 前周期で固まる）のは、補正が無いより悪いので。
+//
+// ★decode() は補正を外さない（静的な body_pitch_ だけ外す）。実測姿勢を使うのは
+//   脱力中と武装の起点だけで、そこでは補正が 0 なので食い違わない。
 #ifndef ROBOONE_MOTION__POSE_CODEC_HPP_
 #define ROBOONE_MOTION__POSE_CODEC_HPP_
 
@@ -35,6 +51,19 @@
 
 namespace roboone_motion
 {
+
+/// サーボとの境界でだけ掛ける補正（安定化の出力）。全部 0 なら何もしない。
+struct PoseCorrection
+{
+  //! 足首の関節角に足す量 [rad]。[s][0] = θ5（ピッチ）, [s][1] = θ6（ロール）。
+  //! 足裏書きの脚にだけ効く（角度書きの脚は IK を通らないので触らない）
+  double ankle[kNumSide][2]{{0.0, 0.0}, {0.0, 0.0}};
+  //! 胴体の前傾に足す量 [rad]。body_pitch と同じ向き（+ で前へ倒す）
+  double body_pitch = 0.0;
+
+  bool ankleZero(int s) const {return ankle[s][0] == 0.0 && ankle[s][1] == 0.0;}
+  bool zero() const {return body_pitch == 0.0 && ankleZero(kRight) && ankleZero(kLeft);}
+};
 
 class PoseCodec
 {
@@ -57,8 +86,11 @@ public:
     //! 指令の関節角 [rad]（/motion/joint_commands 用）。send[s] のときだけ有効
     double theta[kNumSide][rk::kNumJoints]{};
     std::vector<double> arm_deg;                        //!< 指令の腕角 [deg]
+    //! 補正を入れると解けなかったので、補正を外して出した脚
+    bool corr_dropped[kNumSide]{false, false};
   };
-  Encoded encode(const BodyPose & pose);
+  /// corr が null なら補正なし（ティーチ・起動時の門と同じ変換）。
+  Encoded encode(const BodyPose & pose, const PoseCorrection * corr = nullptr);
 
   // --- 観測側 -----------------------------------------------------------
   struct Decoded

@@ -1,7 +1,9 @@
 # roboone_motion — motion ノード（200Hz ループの本体）
 
 `/cmd_walk`・`/cmd_motion`・`/estop` を受けて、歩行計画と技を走らせ、IK を通して
-Feetech サーボへ送る。**実機に位置指令を書くのは、通常運用ではこのノードだけ。**
+Feetech サーボへ送る。`/camera/imu`（RealSense 内蔵 IMU）から胴体の傾きを推定し、
+足首と股で立位・歩行を安定化する（下の「IMU の安定化」）。
+**実機に位置指令を書くのは、通常運用ではこのノードだけ。**
 `ros-architecture` §3 の「200Hz ループ」の実体。
 
 同じバスを 2 プロセスが掴むと壊れるので、`motion_node` を上げたまま
@@ -23,6 +25,8 @@ include/roboone_motion/
   motion_config.hpp  ★設定層    YAML の読み込みと起動時の門
   motion_library.hpp キーフレーム技の読み込みと再生
   motion_control.hpp ★生成層    状態機械・歩行・技の再生
+  imu_attitude.hpp   IMU の生値 -> 胴体のロール・ピッチと角速度
+  stabilizer.hpp     IMU の安定化。出力は PoseCodec へ渡す補正（PoseCorrection）
 src/
   motion_node.cpp    ROS の殻。パラメータを読んで層を組み、200Hz で回してログを流す
 ```
@@ -34,15 +38,15 @@ src/
 ### 1 周期はこれだけ
 
 ```
-bank_.states()  ->  codec_.decode()  ->  ctrl_.step()  ->  codec_.encode()
-                                                       ->  bank_.setTargets()
+bank_.states()  ->  codec_.decode()  ->  ctrl_.step()  ->  stab_.update()
+                ->  codec_.encode(目標, 補正)  ->  bank_.setTargets()
 ```
 
 ### スレッド
 
 | | 周期 | 仕事 |
 |---|---|---|
-| `main` | — | `rclcpp::spin`。購読コールバックが値を controller へ置くだけ |
+| `main` | — | `rclcpp::spin`。購読コールバックが値を controller へ置くだけ。`/camera/imu` は姿勢推定まで回す（数 µs） |
 | `control` | 200Hz | 上の 1 周期。**シリアルを触らない** |
 | `bus` ×2 | 書き 200Hz / 読み 50Hz | `ServoBank` が持つ。1 パケットで書く + 一定周期で読む |
 
@@ -58,7 +62,9 @@ bank_.states()  ->  codec_.decode()  ->  ctrl_.step()  ->  codec_.encode()
 /cmd_walk ─┐
 /cmd_motion├→ MotionController ─→ BodyPose [mm・Σ_U] ─→ PoseCodec.encode()
 /estop ────┘   状態機械 / WalkEngine / MotionPlayer         │ bodyPitchApply (Σ_U→Σ_B)
-                                                            │ IK + ankleClampJoints
+                          │ 支持脚・位相                     │   └ + 胴体の補正
+/camera/imu → ImuAttitude → Stabilizer ─→ PoseCorrection ──→│ IK
+                                                            │   └ + 足首の補正
                                                             │ legServoFromJoints
                                                             │ servo_limits.yaml で丸め
                                                             ↓
@@ -175,6 +181,29 @@ bank_.states()  ->  codec_.decode()  ->  ctrl_.step()  ->  codec_.encode()
 
 **`motion_selftest --strict` で実機なしに全部通せる。**
 
+## IMU の安定化（`imu_attitude.hpp` / `stabilizer.hpp`）
+
+設計の原本は `docs/imu_biped_walking.pdf` §4 と `docs/ros2_walk_implementation.pdf` §5・§9。
+そのうち**段 1〜3（足首のジャイロ減衰・傾きの比例・胴体の補正）**を入れてある。
+踏み出し補正（推定 ξ を walk_core の着地点へ入れる段 7・8）と接地判定・転倒検知はまだ無い。
+
+| | 中身 |
+|---|---|
+| 姿勢推定 | `/camera/imu` をジャイロで積分し、加速度の重力方向へ `tau_c` で引き戻す相補フィルタ。**歩行計画の重心加速度 ω²(x_C − p) を比力から引いてから**使う（横揺れで傾きがずれないように）。零点は `/motion/imu_zero`（カメラは水平付けなので、組み付けのずれを取るときだけ） |
+| 足首戦略 | 支持脚の足首 θ5 / θ6 に `kp·傾き + kd·角速度` ぶんの回転を足す。「胴体から見て足裏を回す量」を足首 2 軸へ直す行列は、ホーム姿勢の FK から数値で取る |
+| 胴体の補正 | `body_pitch` に `−k_torso·ピッチ` を足す（前へ倒れたら胴体を起こす） |
+| 効かせ方 | HOLD / WALK のときだけ。遊脚は離地で抜いて着地前に戻す。着地の前後はゲイン半分。技・その場保持・武装中は `fade_time` で抜き、脱力で即 0。IMU が古ければ抜く |
+| 掛ける場所 | **目標姿勢には混ぜず**、`PoseCodec::encode()` の境界でだけ掛ける。補正を入れると解けない周期は補正を外して出す |
+
+**ゲインの既定は全部 0。** 実行中に `ros2 param set /motion stab.kd_pitch 0.05` のように
+上げる（範囲は descriptor で縛ってある）。手順と見るもの（`/motion/stab`）は
+`docs/commands.md`「IMU の安定化」。
+
+★向き（符号）は `motion_selftest` の [8] が順運動学で検算している。前へ倒れているときに
+胴体から見てつま先を下げる（= 押し戻す）向きでなければ落ちる。文書の式 (47) の
+R_BL をそのまま `body_pitch` に読み替えると胴体の補正の向きが逆になる点は
+`stabilizer.hpp` の冒頭に書いた。
+
 ## 実行形
 
 | | 何 | サーボへの書き込み |
@@ -196,6 +225,7 @@ ros2 run roboone_motion motion_teach --format angle   # 脚をサーボ角で出
 # 自己検算
 ros2 run roboone_motion motion_selftest
 ros2 run roboone_motion motion_selftest --strict      # 設定の門のエラーも失敗にする
+#   [7] IMU の姿勢推定、[8] 安定化の向きも見る
 ros2 run roboone_motion motion_selftest --gait /tmp/g.yaml --home-pose /tmp/h.yaml --strict
 ```
 

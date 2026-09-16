@@ -204,6 +204,8 @@ void MotionController::tickWalk(double now, double dt)
   if (!opt_.walk_enable) {vx = vy = 0.0;}
 
   const rwc::WalkOutputs o = walk_.update(vx, vy, dt);
+  walk_out_ = o;
+  walk_ticked_ = true;
 
   // 世界座標 [m] -> 骨盤水平系 [m] -> Σ_B [mm]
   const rwc::Vec3 fp[kNumSide] = {o.right_foot_in_pelvis(), o.left_foot_in_pelvis()};
@@ -269,6 +271,7 @@ MotionController::Tick MotionController::step(
 {
   const State entry = state_;
   Tick tick;
+  walk_ticked_ = false;
 
   // --- 1) 技の要求を取り出す ---------------------------------------
   std::string req;

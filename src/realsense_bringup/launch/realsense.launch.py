@@ -9,8 +9,11 @@
     # 点群が要らない場合（depth 画像だけ使う / CPU を空けたい）
     ros2 launch realsense_bringup realsense.launch.py enable_pointcloud:=false
 
+    # IMU だけ（motion ノードの安定化用。深度も点群も出さない）
+    ros2 launch realsense_bringup realsense.launch.py enable_depth:=false
+
 出るトピック（docs/ros-architecture.md のトピック表に合わせてある）:
-    /camera/imu                        sensor_msgs/Imu          200Hz  → imu_filter
+    /camera/imu                        sensor_msgs/Imu          200Hz  → motion（安定化）
     /camera/depth/color/points         sensor_msgs/PointCloud2   30Hz  → rviz など
     /camera/depth/image_rect_raw       sensor_msgs/Image         30Hz  → opponent_detector
     /camera/color/image_raw            sensor_msgs/Image         30Hz  (enable_color:=true のとき)
@@ -57,9 +60,11 @@ def launch_setup(context, *args, **kwargs):
         return arg(name).lower() in _TRUE
 
     pc = arg("pointcloud_ns")
+    enable_depth = flag("enable_depth")
     enable_color = flag("enable_color")
     enable_imu = flag("enable_imu")
-    enable_pointcloud = flag("enable_pointcloud")
+    # 点群は深度から作るので、深度を止めたら点群も止める
+    enable_pointcloud = flag("enable_pointcloud") and enable_depth
 
     # 色付き点群を作るときだけ、depth と color を同じフレームセットに揃える必要がある。
     # RGB を使わないなら同期は不要（余計なバッファ遅延を作らない）。
@@ -79,7 +84,7 @@ def launch_setup(context, *args, **kwargs):
         # 起動時間を詰めたい場面では initial_reset:=false にできる。
         "initial_reset": flag("initial_reset"),
 
-        "enable_depth": True,
+        "enable_depth": enable_depth,
         "enable_color": enable_color,
         # 赤外の生画像は使わない（帯域と CPU の無駄）
         "enable_infra": False,
@@ -128,6 +133,9 @@ def launch_setup(context, *args, **kwargs):
 
 def generate_launch_description():
     return LaunchDescription([
+        DeclareLaunchArgument(
+            "enable_depth", default_value="true",
+            description="深度を出すか。false で IMU だけのモードになる（点群も止まる）"),
         DeclareLaunchArgument(
             "enable_color", default_value="false",
             description="RGB ストリームを出すか。既定 false（使う予定がなく、USB帯域を空けるため）"),

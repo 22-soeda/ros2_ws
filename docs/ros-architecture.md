@@ -35,9 +35,9 @@
 |---|---|---|---|---|
 | realsense2_camera | 既製（realsense-ros） | D435ifから点群・IMUを出す | — | 点群、IMU生値 |
 | opponent_detector | **自作** | RANSAC床面除去＋最近接クラスタ重心で相手位置を出す（厚木で検証済みのアルゴリズムをノード化） | 点群 | /opponent |
-| imu_filter | 既製（imu_filter_madgwick） | ジャイロ＋加速度から機体の傾きを推定 | IMU生値 | /imu/data |
+| （imu_filter） | — | ★2026-09-16: 別ノードにせず motion ノード内に取り込んだ（`roboone_motion/imu_attitude.hpp`）。下の「imu_filterの置き場所」 | — | — |
 | behavior | **自作** | 戦略ステートマシン。探索→接近→攻撃の状態遷移で、歩行指令と技指令を出す。/autonomy が true の間だけ出す | /opponent, /ring_edge, /motion/state, /autonomy | /cmd_walk, /cmd_motion, /behavior/state |
-| motion | **自作** | 歩行パターン生成・技（キーフレームモーション）再生・IK・IMUバランス補正・サーボ送信。**200Hzループ、この機体の心臓部** | /cmd_walk, /cmd_motion, /imu/data, /estop | /joint_states, /motion/state |
+| motion | **自作** | 歩行パターン生成・技（キーフレームモーション）再生・IK・IMUバランス補正・サーボ送信。**200Hzループ、この機体の心臓部** | /cmd_walk, /cmd_motion, /camera/imu, /estop | /joint_states, /motion/state, /motion/stab |
 | joy_node | 既製（joy） | PS3コントローラのボタンを読む | — | /joy |
 | teleop | **自作** | ボタン→指令変換。非常停止と、開発中の手動操作。自律動作の開始/停止と状態表示 | /joy | /estop, /cmd_walk, /cmd_motion, /autonomy, /ui/* |
 | ui | **自作** | OLED(QT095B)・RGB LED・ブザーで状態を提示（電圧・状態・検知の有無など。実体は下の表） | /motion/state, /joint_states | — |
@@ -109,8 +109,7 @@ uiノードが握る2つの出力デバイス。どちらもトピックの先�
 | トピック | 型 | 出す→受ける | 目安周期 |
 |---|---|---|---|
 | /camera/…/points | sensor_msgs/PointCloud2 | realsense2_camera → opponent_detector | 15–30Hz |
-| /camera/imu | sensor_msgs/Imu | realsense2_camera → imu_filter | 200Hz |
-| /imu/data | sensor_msgs/Imu（姿勢入り） | imu_filter → motion | 200Hz |
+| /camera/imu | sensor_msgs/Imu | realsense2_camera → motion | 200Hz |
 | /opponent | roboone_interfaces/Opponent（位置・上端高さ・速度） | opponent_detector → behavior | 約15Hz※ |
 | /cmd_walk | geometry_msgs/Twist | behavior・teleop → motion | 20Hz |
 | /cmd_motion | std_msgs/String（技名） | behavior・teleop → motion | イベント時 |
@@ -150,5 +149,6 @@ uiノードが握る2つの出力デバイス。どちらもトピックの先�
 - **制御ループ周波数**: 200Hzは仮置き。律速は18軸ぶんのシリアル送受信時間。FT-URT経由のsync write一斉送信＋フィードバック読み取りが実測何Hzで回るかを最初に測る。100Hzに落としても二足歩行は成立する
 - **検知処理時間**: RANSAC＋クラスタリングがPi 5上で1フレーム何msかかるか未実測。図3の25msは仮の数字
 - **imu_filterの置き場所**: 別ノード案で始めるが、/imu/data経由のジッタが補正に効くようなら、フィルタをmotionノード内に取り込む選択肢を残す
+  → 2026-09-16 に motion ノード内へ取り込んだ（imu_filter_madgwick が未導入で、プロセスを挟むぶん減衰項が遅れるため。歩行計画の重心加速度を比力から引けるのもノード内に置く利点）
 - **点群の解像度**: RealSense検証タスクの結論より、848x480@60は不安定（40%で異常）。デフォルト構成（848x480@30）か640x480@30から始める（詳細: A-2ndBRAIN/archive/0701-realsenseラズパイ実装/d435if_bandwidth_benchmark.md）
 - **ros2_controlへの載せ替え**: 当面しない。motionループのジッタが問題になった時、RTOS導入と合わせて再検討

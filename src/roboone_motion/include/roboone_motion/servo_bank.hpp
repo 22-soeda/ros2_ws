@@ -69,7 +69,8 @@ struct BankOptions
   int goal_torque = 1000;
   //! 位置指令の速度 (reg46/47)。★0 にしないこと。0 は「無制限」ではなく「動かない」
   int move_speed = 2000;
-  int move_acc = 50;
+  //! 位置指令の加速度 (reg41)。単位 100 step/s^2、0-254。★0 は使わない（motion_node.yaml）
+  int move_acc = 254;
   double loop_hz = 200.0;         //!< 書き込み周期
   double read_hz = 50.0;          //!< 読み出し周期（1 往復かかるので書き込みより遅く）
   bool dry_run = false;

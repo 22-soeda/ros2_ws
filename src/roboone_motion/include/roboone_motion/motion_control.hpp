@@ -126,12 +126,15 @@ public:
   /// 空白以降を無視するように作られている)。先頭語の意味を変える・コロンの
   /// 使い方を増やす変更は、behavior (roboone_behavior) と同時に直す。
   ///
-  /// 転倒 (FALL 相当) はまだ無い。姿勢を知る手段が機体に無く、/imu/data を出す
-  /// ノードが存在しないため (RealSense が出すのは生の /camera/imu で、姿勢は
-  /// 入っていない)。入れるなら IMU フィルタが先。
+  /// 転倒 (FALL 相当) はまだ無い。姿勢の推定は motion_node の中にある
+  /// (imu_attitude.hpp。/camera/imu から胴体のロール・ピッチを出している) ので、
+  /// 入れるならその出力を step() へ渡す形になる。
   std::string stateText() const;
 
   const BodyPose & currentPose() const {return cur_pose_;}
+  /// この周期に回した歩行計画の出力。回していない周期 (HOLD / WALK 以外) は null。
+  /// IMU の安定化が支持脚と位相を知るために読む (stabilizer.hpp)。
+  const rwc::WalkOutputs * walkOutputs() const {return walk_ticked_ ? &walk_out_ : nullptr;}
   const BodyPose & holdPose() const {return hold_pose_;}
   bool haveMeasured() const {return have_measured_;}
 
@@ -157,6 +160,8 @@ private:
   double body_pitch_ = 0.0;
 
   rwc::WalkEngine walk_{rwc::GaitParams{}};
+  rwc::WalkOutputs walk_out_;
+  bool walk_ticked_ = false;       //!< この周期に tickWalk を回したか
   MotionPlayer player_;
   Motion blend_motion_;
   BodyPose home_pose_, hold_pose_, cur_pose_;

@@ -3,7 +3,7 @@
 //   ros2 run roboone_motion motion_selftest
 //   ros2 run roboone_motion motion_selftest --motions /tmp/draft.yaml
 //
-// 見るのは 6 つ。どれも「実機で踏むと原因が非常に追いにくい」種類の食い違い。
+// 見るのは 8 つ。どれも「実機で踏むと原因が非常に追いにくい」種類の食い違い。
 //
 //   [1] T ポーズ基準角 [deg] <-> 絶対サーボ角 [rad] <-> 生カウント が一巡すること
 //       (servo_map.hpp の [1][2][3]。config に書く角と機体を流れる角の橋)
@@ -20,6 +20,10 @@
 //       その時どきの config（調整の途中なら当然エラーが出る）。混ぜると
 //       「テストはいつも赤いもの」になって [1]-[5] の赤に気付けなくなる。
 //       config を詰める側の作業では --strict を付けて落とす。
+//   [7] IMU の姿勢推定 (imu_attitude.hpp)。合成したサンプルで、光学座標系からの
+//       載せ替え・傾きと角速度の符号・歩行中の揺れへの強さ・零点合わせを見る
+//   [8] 安定化 (stabilizer.hpp)。**補正の向き**を順運動学で確かめる。符号を
+//       落とすと安定化が倒れる向きに効くので、実機に出す前にここで止める
 //
 // 落ちたら戻り値 1。config を書き換えたあとに 1 回通しておくところ。
 #include <algorithm>
@@ -33,9 +37,12 @@
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
+#include "roboone_motion/imu_attitude.hpp"
 #include "roboone_motion/motion_config.hpp"
 #include "roboone_motion/motion_control.hpp"
 #include "roboone_motion/motion_library.hpp"
+#include "roboone_motion/pose_codec.hpp"
+#include "roboone_motion/stabilizer.hpp"
 
 namespace rm = roboone_motion;
 namespace rk = roboone_kinematics;
@@ -92,6 +99,59 @@ const char * kAngleYaml =
   "        R_foot: {p: [0.0, -89.3, -600.0], rpy: [0, 0, 0]}\n"
   "      - t: 0.20\n"
   "        R_leg: {ID4: 40.0}\n";
+
+/// [7] 機体の姿勢と角速度から {O} の IMU サンプルを作って推定器へ流す。
+struct ImuSim
+{
+  rm::ImuAttitude f;
+  //! 本当の取り付け。実機は 0° だが、自明でない回転でも戻せるかを見るため 30° 下向きで作る
+  double mount[3]{0.0, 30.0 / kR2D, 0.0};
+  double t = 0.0;
+  double roll = 0.0, pitch = 0.0;           //!< 本当の姿勢 [rad]
+
+  ImuSim()
+  {
+    rm::ImuOptions o;
+    for (int k = 0; k < 3; ++k) {o.mount_rpy[k] = mount[k];}
+    f.configure(o);
+  }
+
+  /// 角速度 (Σ_B) で本当の姿勢を進めながら 1 サンプル流す。acc_w は世界座標の加速度。
+  /// ff を立てると、その水平成分を計画上の加速度として推定器にも教える。
+  void step(double wx, double wy, const rk::Vec3 & acc_w = rk::Vec3{}, bool ff = false)
+  {
+    f.setAccelFeedforward(ff ? acc_w.x : 0.0, ff ? acc_w.y : 0.0);
+    const double dt = 0.005;
+    // 小さい傾きの範囲なので、ロール・ピッチの速さ ≒ Σ_B の角速度でよい
+    roll += wx * dt;
+    pitch += wy * dt;
+    const double rpy[3] = {roll, pitch, 0.0};
+    const rk::Mat3 r_wb = rm::matFromRpy(rpy);
+    const rk::Vec3 f_b = r_wb.mulT(acc_w + rk::Vec3{0.0, 0.0, rm::ImuAttitude::kGravity});
+    const rk::Vec3 wo = rm::ImuAttitude::opticalFromBody(mount, rk::Vec3{wx, wy, 0.0});
+    const rk::Vec3 fo = rm::ImuAttitude::opticalFromBody(mount, f_b);
+    const double g[3] = {wo.x, wo.y, wo.z};
+    const double a[3] = {fo.x, fo.y, fo.z};
+    t += dt;
+    f.update(t, g, a);
+  }
+  void hold(double sec) {for (int i = 0; i < static_cast<int>(sec / 0.005); ++i) {step(0.0, 0.0);}}
+};
+
+/// [8] 胴体から見た足裏の小回転 D = R1 · R0^T の (roll, pitch) 成分。
+void footRotation(const rk::Mat3 & r1, const rk::Mat3 & r0, double & roll, double & pitch)
+{
+  double d[3][3]{};
+  for (int a = 0; a < 3; ++a) {
+    for (int b = 0; b < 3; ++b) {
+      for (int k = 0; k < 3; ++k) {
+        d[a][b] += r1(a, k) * r0(b, k);
+      }
+    }
+  }
+  roll = std::atan2(d[2][1] - d[1][2], d[1][1] + d[2][2]);
+  pitch = std::atan2(d[0][2] - d[2][0], d[0][0] + d[2][2]);
+}
 
 /// 立位に近い、左右対称な足裏の目標（点検の土台）。
 rm::BodyPose stancePose(std::size_t num_arm)
@@ -555,6 +615,431 @@ int main(int argc, char ** argv)
       check(t.state == rm::State::HOLD, "指令を止めたら HOLD に戻る");
       check(changes == 2, fmt("状態が変わったのは HOLD->WALK->HOLD の 2 回だけ (%d 回)", changes));
       drop(*c);
+    }
+  }
+
+
+  // =======================================================================
+  // [7] IMU の姿勢推定 — 合成したサンプルで符号と収束を見る
+  // =======================================================================
+  {
+    std::printf("\n[7] IMU の姿勢推定 (imu_attitude.hpp)\n");
+    {
+      ImuSim sim;
+      sim.hold(3.0);
+      const rm::Attitude & a = sim.f.attitude();
+      check(
+        a.valid && std::abs(a.roll) * kR2D < 0.05 && std::abs(a.pitch) * kR2D < 0.05,
+        fmt(
+          "水平に立っていれば 0 (30° 下向きの取り付けを戻せている): roll %.3f / pitch %.3f deg",
+          a.roll * kR2D, a.pitch * kR2D));
+    }
+    {
+      ImuSim sim;
+      sim.pitch = 10.0 / kR2D;
+      sim.hold(2.0);
+      const rm::Attitude & a = sim.f.attitude();
+      check(
+        std::abs(a.pitch * kR2D - 10.0) < 0.1 && std::abs(a.roll) * kR2D < 0.1,
+        fmt("前へ 10° 倒すと pitch = +10: %.3f deg (roll %.3f)", a.pitch * kR2D, a.roll * kR2D));
+    }
+    {
+      ImuSim sim;
+      sim.roll = 8.0 / kR2D;
+      sim.hold(2.0);
+      const rm::Attitude & a = sim.f.attitude();
+      check(
+        std::abs(a.roll * kR2D - 8.0) < 0.1 && std::abs(a.pitch) * kR2D < 0.1,
+        fmt("右へ 8° 倒すと roll = +8: %.3f deg (pitch %.3f)", a.roll * kR2D, a.pitch * kR2D));
+    }
+    {
+      // 角速度の符号と積分。0.2s で 0.1 rad 前へ回す
+      ImuSim sim;
+      sim.hold(1.0);
+      for (int i = 0; i < 40; ++i) {
+        sim.step(0.0, 0.5);
+      }
+      const rm::Attitude & a = sim.f.attitude();
+      check(
+        std::abs(a.gyro[1] - 0.5) < 0.01 && std::abs(a.gyro[0]) < 0.01,
+        fmt("前へ回っているとき gyro_y = +0.5: %.4f (gyro_x %.4f)", a.gyro[1], a.gyro[0]));
+      check(
+        std::abs(a.pitch - sim.pitch) * kR2D < 0.2,
+        fmt("ジャイロで追う: 本当 %.2f / 推定 %.2f deg", sim.pitch * kR2D, a.pitch * kR2D));
+      for (int i = 0; i < 40; ++i) {
+        sim.step(0.4, -0.5);
+      }
+      check(
+        std::abs(a.gyro[0] - 0.4) < 0.01 && std::abs(a.roll - sim.roll) * kR2D < 0.2,
+        fmt(
+          "右へ回っているとき gyro_x = +0.4: %.4f / roll 本当 %.2f 推定 %.2f deg",
+          a.gyro[0], sim.roll * kR2D, a.roll * kR2D));
+    }
+    {
+      // 歩行の揺れ: 横に ±2.6 m/s^2 の矩形（周期 2T = 1.2s。LIPM の横の重心加速度の形）。
+      // 加速度だけで傾きを出すと 15° ずれる量。計画上の加速度を教えれば消える
+      for (int use_ff = 0; use_ff < 2; ++use_ff) {
+        ImuSim sim;
+        sim.hold(1.0);
+        double worst = 0.0;
+        for (int i = 0; i < 2400; ++i) {
+          const double ay = (std::fmod(i * 0.005, 1.2) < 0.6) ? 2.6 : -2.6;
+          sim.step(0.0, 0.0, rk::Vec3{0.0, ay, 0.0}, use_ff != 0);
+          worst = std::max(worst, std::abs(sim.f.attitude().roll) * kR2D);
+        }
+        if (use_ff) {
+          check(
+            worst < 0.05,
+            fmt("横揺れ ±2.6 m/s^2 でも、計画上の加速度を引けば roll はずれない: 最大 %.3f deg",
+            worst));
+        } else {
+          // 引かない場合の大きさを残しておく（設計の根拠。落とす条件ではない）
+          std::printf(
+            "    (参考) 計画上の加速度を引かないと roll が最大 %.2f deg ずれる\n", worst);
+        }
+      }
+    }
+    {
+      // 零点: 取り付けを 25° と思い込ませた推定器を、本当は 30° の機体で水平に立たせる
+      ImuSim sim;
+      rm::ImuOptions o;
+      o.mount_rpy[1] = 25.0 / kR2D;
+      sim.f.configure(o);
+      std::string msg;
+      double m[3]{};
+      sim.hold(0.5);
+      check(!sim.f.zero(m, msg), "サンプルが足りないうちは零点を取らない: " + msg);
+      sim.hold(2.5);
+      const double before = sim.f.attitude().pitch * kR2D;
+      const bool ok = sim.f.zero(m, msg);
+      check(
+        ok && std::abs(m[1] * kR2D - 30.0) < 0.05 && std::abs(m[0]) * kR2D < 0.05,
+        fmt(
+          "零点で取り付けを取り直す: 前 pitch %.2f deg -> mount [%.3f, %.3f, %.3f]",
+          before, m[0] * kR2D, m[1] * kR2D, m[2] * kR2D));
+      check(
+        std::abs(sim.f.attitude().pitch) * kR2D < 0.05,
+        fmt("零点の直後は 0: %.3f deg", sim.f.attitude().pitch * kR2D));
+      // 0.35s で 10° 前へ回す
+      for (int i = 0; i < 70; ++i) {
+        sim.step(0.0, 0.5);
+      }
+      sim.hold(0.5);
+      check(
+        std::abs(sim.f.attitude().pitch - sim.pitch) * kR2D < 0.1,
+        fmt(
+          "零点のあと前へ倒すと同じだけ読む: 本当 %.3f / 推定 %.3f deg",
+          sim.pitch * kR2D, sim.f.attitude().pitch * kR2D));
+      for (int i = 0; i < 600; ++i) {
+        sim.step(0.0, 0.3);
+      }
+      check(!sim.f.zero(m, msg), "動いている間は零点を取らない: " + msg);
+      // 寝ている (大きく傾いた) まま零点を取ると取り付けが壊れる。断る
+      ImuSim lying;
+      lying.pitch = 60.0 / kR2D;
+      lying.hold(3.0);
+      const bool z = lying.f.zero(m, msg);
+      check(
+        !z && std::abs(lying.f.attitude().pitch * kR2D - 60.0) < 0.1,
+        "60° 傾いたままでは零点を取らない: " + msg);
+    }
+  }
+
+  // =======================================================================
+  // [8] 安定化 — 補正の向きを順運動学で確かめる
+  // =======================================================================
+  if (home_ok) {
+    std::printf("\n[8] 安定化 (stabilizer.hpp)\n");
+    const double dt = 1.0 / 200.0;
+    auto drain = [](rm::Stabilizer & st, bool print) {
+        rm::Event e;
+        int nwarn = 0;
+        while (st.popEvent(e)) {
+          if (print) {std::printf("    %s\n", e.text.c_str());}
+          nwarn += (e.level != rm::EventLevel::Info) ? 1 : 0;
+        }
+        return nwarn;
+      };
+    rm::Stabilizer st;
+    const bool cfg = st.configure(&map, home, body_pitch, gait);
+    const int cfg_warn = drain(st, true);
+    check(
+      cfg && cfg_warn == 0 && st.legReady(rm::kRight) && st.legReady(rm::kLeft),
+      "両脚の足首ヤコビアンが取れる");
+
+    // (a) 足裏を胴体に対して回す向き。ホーム姿勢の関節角に補正を足して FK で見る
+    for (int s = 0; s < rm::kNumSide; ++s) {
+      const rk::LegServoParams & prm = map.leg_params(s);
+      rm::FootPose f = home.foot[s];
+      rm::bodyPitchApply(f, body_pitch);
+      double th[rk::kNumJoints]{};
+      if (rk::ik(prm.leg, f.p, rm::matFromRpy(f.rpy), th, false) != rk::IkStatus::Ok) {
+        check(false, fmt("%s脚: ホーム姿勢が解けない", rm::kSideTag[s]));
+        continue;
+      }
+      rk::Vec3 p0;
+      rk::Mat3 r0;
+      rk::fk(prm.leg, th, p0, r0);
+      const double u = 0.05;
+      for (int k = 0; k < 2; ++k) {
+        const double ur = (k == 1) ? u : 0.0, up = (k == 0) ? u : 0.0;
+        double off[2];
+        st.ankleFromFootRotation(s, ur, up, off);
+        double th2[rk::kNumJoints];
+        std::copy(th, th + rk::kNumJoints, th2);
+        th2[rk::ANKLE_PITCH] += off[0];
+        th2[rk::ANKLE_ROLL] += off[1];
+        rk::Vec3 p1;
+        rk::Mat3 r1;
+        rk::fk(prm.leg, th2, p1, r1);
+        double gr, gp;
+        footRotation(r1, r0, gr, gp);
+        const bool close = std::abs(gr - ur) < 0.05 * u && std::abs(gp - up) < 0.05 * u;
+        if (k == 0) {
+          // 前へ倒れている -> 胴体から見てつま先を下げる（足裏の x 軸の z 成分が減る）
+          check(
+            close && r1(2, 0) < r0(2, 0),
+            fmt(
+              "%s脚: 前へ倒れているときはつま先を下げる (θ5 %+.4f θ6 %+.4f rad -> "
+              "roll %+.4f pitch %+.4f)", rm::kSideTag[s], off[0], off[1], gr, gp));
+        } else {
+          // 右へ倒れている -> 胴体から見て足裏の左縁を上げる（y 軸の z 成分が増える）
+          check(
+            close && r1(2, 1) > r0(2, 1),
+            fmt(
+              "%s脚: 右へ倒れているときは左縁を上げる (θ5 %+.4f θ6 %+.4f rad -> "
+              "roll %+.4f pitch %+.4f)", rm::kSideTag[s], off[0], off[1], gr, gp));
+        }
+      }
+    }
+
+    // (b) 変換層: 補正は IK の後の関節角に足される。解けない補正は外して出す
+    {
+      rm::PoseCodec codec;
+      codec.configure(&map, body_pitch);
+      const rm::PoseCodec::Encoded e0 = codec.encode(home);
+      rm::PoseCorrection c;
+      c.ankle[rm::kRight][0] = 0.03;
+      c.ankle[rm::kLeft][1] = -0.02;
+      const rm::PoseCodec::Encoded e1 = codec.encode(home, &c);
+      const double d_r = e1.theta[rm::kRight][rk::ANKLE_PITCH] -
+        e0.theta[rm::kRight][rk::ANKLE_PITCH];
+      const double d_l = e1.theta[rm::kLeft][rk::ANKLE_ROLL] - e0.theta[rm::kLeft][rk::ANKLE_ROLL];
+      const double d_hip = e1.theta[rm::kRight][rk::HIP_PITCH] -
+        e0.theta[rm::kRight][rk::HIP_PITCH];
+      check(
+        e1.send[rm::kRight] && e1.send[rm::kLeft] && std::abs(d_r - 0.03) < 1e-12 &&
+        std::abs(d_l + 0.02) < 1e-12 && std::abs(d_hip) < 1e-12 &&
+        e1.counts[rm::kRight] != e0.counts[rm::kRight],
+        fmt("足首の補正が関節角にそのまま乗る (R θ5 %+.4f / L θ6 %+.4f)", d_r, d_l));
+      rm::PoseCorrection big;
+      big.ankle[rm::kRight][0] = -1.4;   // θ5 がピッチの機構限界の外
+      const rm::PoseCodec::Encoded e2 = codec.encode(home, &big);
+      rm::Event ev;
+      while (codec.popEvent(ev)) {}
+      check(
+        e2.send[rm::kRight] && e2.corr_dropped[rm::kRight] && !e2.corr_dropped[rm::kLeft] &&
+        std::abs(e2.theta[rm::kRight][rk::ANKLE_PITCH] - e0.theta[rm::kRight][rk::ANKLE_PITCH]) <
+        1e-12,
+        fmt(
+          "解けない補正 (-1.4 rad) は外して、補正なしの指令を出す (send %d dropped %d/%d)",
+          e2.send[rm::kRight], e2.corr_dropped[rm::kRight], e2.corr_dropped[rm::kLeft]));
+    }
+
+    rm::Attitude att;
+    att.valid = true;
+    rm::Stabilizer::Input in;
+    in.layer_active = true;
+    in.att = &att;
+    in.att_age = 0.005;
+    auto run = [&](double sec) {
+        for (int i = 0; i < static_cast<int>(sec / dt); ++i) {
+          st.update(dt, in);
+        }
+        return st.correction();
+      };
+
+    // (c) ゲイン 0 なら何もしない
+    {
+      att.pitch = 0.1;
+      att.gyro[1] = 0.5;
+      st.setGains(rm::StabGains{});
+      const rm::PoseCorrection c = run(1.0);
+      check(c.zero(), "ゲインが 0 なら補正は 0");
+    }
+
+    // (d) 胴体の補正: 前へ倒れていたら前傾を減らす（胴体を起こす）向き
+    {
+      st.reset();
+      rm::StabGains g;
+      g.k_torso = 0.5;
+      st.setGains(g);
+      att = rm::Attitude{};
+      att.valid = true;
+      att.pitch = 0.1;
+      const rm::PoseCorrection c = run(1.0);
+      check(
+        std::abs(c.body_pitch + 0.05) < 1e-9,
+        fmt("前へ 0.1 rad 倒れていたら胴体の前傾を -0.05 rad (k_torso 0.5): %+.4f", c.body_pitch));
+      // body_pitch を減らすことが胴体を起こすことになっているか: 足裏を胴体から見て
+      // 前へ回す（= 股が伸びる）向きか
+      rm::FootPose f = home.foot[rm::kRight];
+      rm::FootPose f2 = f;
+      rm::bodyPitchApply(f, body_pitch);
+      rm::bodyPitchApply(f2, body_pitch + c.body_pitch);
+      check(
+        rm::matFromRpy(f2.rpy)(2, 0) < rm::matFromRpy(f.rpy)(2, 0),
+        "胴体を起こす補正は、胴体から見て足裏のつま先を下げる向き (足首戦略と同じ向き)");
+    }
+
+    // (e) 入れ方: fade で立ち上がり、上限で止まる
+    {
+      st.reset();
+      rm::StabGains g;
+      g.kp_pitch = 0.5;
+      st.setGains(g);
+      att = rm::Attitude{};
+      att.valid = true;
+      att.pitch = 0.1;
+      double full[2];
+      st.ankleFromFootRotation(rm::kRight, 0.0, 0.05, full);
+      const double a1 = std::abs(run(0.1).ankle[rm::kRight][0]);
+      const double a2 = std::abs(run(0.9).ankle[rm::kRight][0]);
+      check(
+        a1 > 0.0 && a1 < 0.3 * std::abs(full[0]) && std::abs(a2 - std::abs(full[0])) < 1e-9,
+        fmt("fade で立ち上がる: 0.1s %.4f -> 1.0s %.4f (目標 %.4f)", a1, a2, std::abs(full[0])));
+      att.pitch = 1.0;
+      const rm::PoseCorrection c = run(1.0);
+      check(
+        std::abs(std::abs(c.ankle[rm::kRight][0]) - g.ankle_clamp) < 1e-9,
+        fmt("上限で止まる: %.4f (上限 %.3f)", c.ankle[rm::kRight][0], g.ankle_clamp));
+      const double j0 = c.ankle[rm::kRight][0];
+      att.pitch = -1.0;
+      st.update(dt, in);
+      const double j1 = st.correction().ankle[rm::kRight][0];
+      check(
+        std::abs(j1 - j0) <= g.rate_limit * dt + 1e-12,
+        fmt("1 周期に動くのは rate_limit まで: %.4f rad", std::abs(j1 - j0)));
+    }
+
+    // (f) ジャイロの減衰の向き: 前へ回っている (gyro_y > 0) なら傾き (pitch > 0) と同じ向き
+    {
+      st.reset();
+      rm::StabGains g;
+      g.kd_pitch = 0.05;
+      g.kd_roll = 0.05;
+      st.setGains(g);
+      att = rm::Attitude{};
+      att.valid = true;
+      att.gyro[0] = -0.4;
+      att.gyro[1] = 0.4;
+      run(1.0);
+      check(
+        std::abs(st.debug().u_pitch - 0.02) < 1e-12 && std::abs(st.debug().u_roll + 0.02) < 1e-12,
+        fmt(
+          "u = kd·ω: pitch %+.4f / roll %+.4f", st.debug().u_pitch, st.debug().u_roll));
+    }
+
+    // (g) 抜き方: IMU が古い / HOLD・WALK 以外 / 脱力
+    {
+      att.gyro[0] = 0.0;
+      att.gyro[1] = 0.0;
+      att.pitch = 0.1;
+      rm::StabGains g;
+      g.kp_pitch = 0.5;
+      st.setGains(g);
+      st.reset();
+      run(1.0);
+      in.att_age = 0.5;
+      drain(st, false);
+      const rm::PoseCorrection c1 = run(1.0);
+      const int nw = drain(st, false);
+      check(c1.zero() && nw > 0, "IMU が古くなったら補正を抜いて警告する");
+      in.att_age = 0.005;
+      run(1.0);
+      in.layer_active = false;
+      const double b0 = std::abs(st.correction().ankle[rm::kRight][0]);
+      const double b1 = std::abs(run(0.2).ankle[rm::kRight][0]);
+      const rm::PoseCorrection c2 = run(0.5);
+      check(
+        b0 > 0.0 && (b1 < b0) && (b1 > 0.0) && c2.zero(),
+        fmt("HOLD / WALK 以外では fade で抜く (%.4f -> %.4f -> 0)", b0, b1));
+      in.layer_active = true;
+      run(1.0);
+      in.relax = true;
+      const rm::PoseCorrection c3 = run(dt);
+      check(c3.zero(), "脱力したら即座に 0");
+      in.relax = false;
+    }
+
+    // (h) 歩行中: 遊脚には効かせない。着地の前後はゲインを弱める
+    {
+      st.reset();
+      rm::StabGains g;
+      g.kp_pitch = 0.5;
+      st.setGains(g);
+      att = rm::Attitude{};
+      att.valid = true;
+      att.pitch = 0.1;
+      rm::rwc::WalkOutputs w;
+      w.state = rm::rwc::State::STEP;
+      w.support = rm::rwc::LEFT;
+      w.phase = 0.5;
+      in.walk = &w;
+      const rm::PoseCorrection c = run(1.0);
+      check(
+        c.ankleZero(rm::kRight) && !c.ankleZero(rm::kLeft),
+        "左足支持の歩の中ほどでは、右 (遊脚) の足首に補正を出さない");
+      w.phase = 0.01;
+      st.update(dt, in);
+      check(st.debug().weight[rm::kRight] > 0.9, "離地の直後は遊脚にもまだ効いている");
+      w.phase = st.touchPhase();
+      st.update(dt, in);
+      const bool gate_td = st.debug().gate;
+      const double u_td = st.debug().u_pitch;
+      w.phase = 0.5;
+      st.update(dt, in);
+      check(
+        gate_td && !st.debug().gate && std::abs(u_td - 0.5 * st.debug().u_pitch) < 1e-12,
+        fmt("予定の着地 (位相 %.3f) の前後はゲインを半分にする", st.touchPhase()));
+      w.phase = 0.999;
+      st.update(dt, in);
+      check(
+        st.debug().weight[rm::kRight] > 0.95,
+        "歩の終わりには遊脚にも戻っている (次の歩で支持脚になる)");
+      w.state = rm::rwc::State::IDLE;
+      w.support = 0;
+      st.update(dt, in);
+      check(
+        st.debug().weight[rm::kRight] == 1.0 && st.debug().weight[rm::kLeft] == 1.0,
+        "立っているときは両脚に効かせる");
+      in.walk = nullptr;
+    }
+
+    // (i) 状態機械は HOLD / WALK の周期にだけ歩行計画の出力を出す
+    {
+      rm::MotionController::Options copt;
+      auto c = std::make_unique<rm::MotionController>();
+      c->configure(&map, &lib5, gait, home, body_pitch, copt);
+      const std::string why = "(テスト)";
+      c->setEstop(false);
+      c->requestMotion("home");
+      double now = 0.0;
+      auto t = c->step(now, dt, &home, why, true);
+      for (int i = 0; i < 1000 && t.state != rm::State::HOLD; ++i) {
+        now += dt;
+        t = c->step(now, dt, &home, why, true);
+      }
+      // HOLD に入ったその周期はまだ歩行計画を回していないので、もう 1 周期進める
+      now += dt;
+      t = c->step(now, dt, &home, why, true);
+      const bool in_hold = (t.state == rm::State::HOLD) && c->walkOutputs() != nullptr;
+      c->requestMotion(rm::kHoldMotion);
+      now += dt;
+      t = c->step(now, dt, &home, why, true);
+      check(
+        in_hold && t.state == rm::State::STAY && c->walkOutputs() == nullptr,
+        "歩行計画の出力は HOLD で出て、STAY では出ない");
     }
   }
 

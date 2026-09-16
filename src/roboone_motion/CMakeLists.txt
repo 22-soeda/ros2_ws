@@ -15,6 +15,7 @@ find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(yaml-cpp REQUIRED)
@@ -30,6 +31,8 @@ find_package(roboone_walk_core REQUIRED)
 #   motion_config  設定層。YAML の読み込みと起動時の門
 #   motion_library キーフレームモーションの読み込みと再生
 #   motion_control 生成層。状態機械・歩行・技の再生
+#   imu_attitude   IMU の生値 -> 胴体のロール・ピッチと角速度
+#   stabilizer     IMU の安定化（足首戦略・胴体の補正）。出力は PoseCodec へ渡す補正
 #
 # motion ノードとティーチツールが同じものを使う。姿勢の解釈を 2 実装にしない。
 # **ROS を知らないので motion_selftest から実機なしで叩ける。**
@@ -40,7 +43,9 @@ add_library(roboone_motion_core SHARED
   src/pose_codec.cpp
   src/motion_config.cpp
   src/motion_library.cpp
-  src/motion_control.cpp)
+  src/motion_control.cpp
+  src/imu_attitude.cpp
+  src/stabilizer.cpp)
 target_include_directories(roboone_motion_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
@@ -56,7 +61,7 @@ target_compile_options(roboone_motion_core PRIVATE -Wall -Wextra)
 add_executable(motion_node src/motion_node.cpp)
 target_link_libraries(motion_node roboone_motion_core)
 ament_target_dependencies(motion_node
-  rclcpp std_msgs geometry_msgs sensor_msgs diagnostic_msgs ament_index_cpp)
+  rclcpp std_msgs std_srvs geometry_msgs sensor_msgs diagnostic_msgs ament_index_cpp)
 target_compile_options(motion_node PRIVATE -O2 -Wall -Wextra)
 
 # ---------------------------------------------------------------------------
@@ -70,7 +75,8 @@ target_compile_options(motion_teach PRIVATE -O2 -Wall -Wextra)
 
 # ---------------------------------------------------------------------------
 # 自己検算 (実機もサーボも要らない)
-#   角の 3 つの表し方・胴体の前傾の等価性・脚の角度書きの読み込みと補間
+#   角の 3 つの表し方・胴体の前傾の等価性・脚の角度書きの読み込みと補間・
+#   状態機械の順序・設定の門・IMU の姿勢推定・安定化の符号
 # ---------------------------------------------------------------------------
 # 足裏の目標 (x,y,z,rpy) を打って片脚 6 軸を動かす実機確認ツール。
 #   既定は読むだけ。--move を付けたときだけトルク ON と位置指令を出す。
