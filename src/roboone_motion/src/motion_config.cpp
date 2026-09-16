@@ -233,8 +233,8 @@ void checkPoseReachable(
         fmt(
           "%s の %s脚が解けない (ik=%d servo=%d)。config を直すこと",
           what, kSideTag[s], static_cast<int>(r.ik_status), static_cast<int>(r.servo_status)));
-    } else if (r.ankle_clamped) {
-      ev.warn(fmt("%s の %s脚: 足首が可動域で丸められた", what, kSideTag[s]));
+    } else if (r.ankle_outside_envelope) {
+      ev.warn(fmt("%s の %s脚: 足首がエンベロープの外（解けてはいる）", what, kSideTag[s]));
     }
   }
 }

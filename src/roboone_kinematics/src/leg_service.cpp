@@ -272,9 +272,10 @@ void printMech(const LegServoParams & sp, const double th[kNumJoints])
   std::printf("]}");
 
   // ---- 足首パラレルリンク ----
-  // 指令側と同じ順（エンベロープで丸めてから逆変換）。丸めた分は clamped で出す。
-  const AnkleClampResult env = ankleClampJoints(th[ANKLE_PITCH], th[ANKLE_ROLL]);
-  const AnkleIkResult ares = ankleIk(sp.ankle, env.th5, env.th6);
+  // 指令側と同じ順（丸めずに逆変換）。エンベロープの外かどうかは clamped で出すだけ。
+  const bool outside = ankleOutsideEnvelope(th[ANKLE_PITCH], th[ANKLE_ROLL]);
+  const AnkleIkResult ares =
+    ankleIk(sp.ankle, th[ANKLE_PITCH], th[ANKLE_ROLL], /*clamp=*/false);
   Vec3 o[5];
   Mat3 F[4];
   jointOrigins(sp.leg, th, o);
@@ -282,7 +283,8 @@ void printMech(const LegServoParams & sp, const double th[kNumJoints])
   const Mat3 & Rs = F[1];                       // Σ_s = 膝の後の Σ_4 と同じ向き
   std::printf(
     ",\"ankle\":{\"status\":\"%s\",\"clamped\":%d,\"th5\":%.4f,\"th6\":%.4f,\"u\":",
-    ankleIkStatusName(ares.status), env.clamped ? 1 : 0, env.th5 * d2, env.th6 * d2);
+    ankleIkStatusName(ares.status), outside ? 1 : 0,
+    th[ANKLE_PITCH] * d2, th[ANKLE_ROLL] * d2);
   printVec(Rs * Vec3{1.0, 0.0, 0.0});           // クランク円の基準方向 û（q = 0）
   std::printf(",\"v\":");
   printVec(Rs * Vec3{0.0, 0.0, 1.0});           // 同 v̂（q = 90°）
@@ -296,7 +298,8 @@ void printMech(const LegServoParams & sp, const double th[kNumJoints])
     std::printf(",\"K\":");
     printVec(o[2] + Rs * ankleCrank(sp.ankle, i, ares.q[i]));             // クランク先端
     std::printf(",\"B\":");
-    printVec(o[2] + Rs * ankleBall(sp.ankle, i, env.th5, env.th6));       // 足側ボール
+    printVec(
+      o[2] + Rs * ankleBall(sp.ankle, i, th[ANKLE_PITCH], th[ANKLE_ROLL]));  // 足側ボール
     std::printf("}");
   }
   std::printf("]}}");

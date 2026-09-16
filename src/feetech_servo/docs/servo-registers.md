@@ -51,7 +51,7 @@
 | 15 | `MIN_INPUT_VOLT` | 80 | 40 **★** | 入力電圧下限 8.0V / 4.0V |
 | 16 | `MAX_TORQUE` | 980 | 1000 **★** | 最大トルク（`TORQUE_LIMIT` の電源投入時の元値） |
 | 18 | `PHASE` | 80 | 116 **★** | 相設定 |
-| 19 | `UNLOADING_COND` | 12 | 13 **★** | 脱力する保護条件のビット |
+| 19 | `UNLOADING_COND` | ~~12~~ → **4** | ~~13~~ → **4** | 脱力する保護条件のビット。2026-09-15 に全 19 軸を **4（過熱のみ）** へ変更（下記） |
 | 20 | `LED_ALARM_COND` | 13 | 0 **★** | LED警告を出す条件のビット |
 | 21 | `P_COEF` | 32 | 32 | 位置ループ P ゲイン |
 | 22 | `D_COEF` | 32 | 32 | 位置ループ D ゲイン |
@@ -75,7 +75,38 @@
 - レジスタ名は SDK の HLS 定義（`vendor/scservo/include/scservo/HLSCL.h`）を優先し、
   HLS で未定義のものは SMS/STS 定義（`SMS_STS.h`）からの推定。addr 9/11/26/27/31/33/48/55 等は HLS 定義で確認済み。
 - 電源投入時の指令値の既定は 4618 が `GOAL_TORQUE=1000, GOAL_SPEED=110`、5130 が `GOAL_TORQUE=500, GOAL_SPEED=250`。
-  現状のコードは全軸に `goal_torque=1000` を書く（`TORQUE_LIMIT` 内なので範囲外ではない）。
+  現状のコードは全軸に `goal_torque=2047` を書く（`motion_node.yaml` の `goal_torque`）。
+  ★2047 は「トルク最大」ではなく Target Current の上限（LSB 6.5mA → 13.3A）。実際の天井は
+  `PROTECTION_CURRENT(28)`（4618 = 6.5A / 5130 = 3.25A）なので、1000 と 2047 で出るトルクは変わらない。
+
+## 脱力する保護を過熱のみにした（2026-09-15）
+
+`UNLOADING_COND(19)` を**全 19 軸 4（BIT2 = 過熱のみ）**に書き換えた。元の値は 4618 が 12
+（過熱 + 過電流）、5130 が 13（過熱 + 過電流 + 電圧）。**過電流と低電圧で脱力しなくなる**ので、
+失速したときの受けは `MAX_TEMP_LIMIT(13) = 80℃` だけになる。ケース温度は巻線より遅れて
+上がるため、完全拘束の失速では巻線が先に傷む。
+
+ビットの意味（[HLS メモリテーブル](https://wiki.aifitlab.com/feetech-servo-motor-docs/feetech-hls-servo-memory-table-analysis)）:
+BIT0 = 電圧 / BIT1 = 磁気エンコーダ / BIT2 = 過熱 / BIT3 = 過電流。
+`LED_ALARM_COND(20)` が同じビット構成の「LED だけ」版。**`status(65)` のエラービットは 19 とは
+無関係に立つ**ので、19 を変えてもエラー表示は消えない。
+
+戻すときは 4618（ID 1,2,3,4,7,8,9）に 12、5130（ID 5,6,10）に 13 を書く。
+
+```bash
+# ★EEPROM 書き込み。トルク OFF で、バスを他のプロセス（motion ノード / 別の shell）が
+#   掴んでいない状態で流すこと。setb が unlock(55=0) → 書き → lock を自動でやる。
+cd ~/ros2_ws && source install/setup.bash
+# 読むだけ（電圧・トルク・現在値）。電圧が 4618 の下限 8.0V を割ると 4618 系は全軸応答しない
+{ echo "bus 0"; for i in 1 2 3 4 5 6 7 8 9 10; do echo "getb 62 @$i"; echo "getb 40 @$i"; echo "getb 19 @$i"; done
+  echo "bus 1"; for i in 1 2 3 4 5 6 8 9 10;    do echo "getb 62 @$i"; echo "getb 40 @$i"; echo "getb 19 @$i"; done
+} | ros2 run feetech_servo feetech_shell
+
+# ★書き込み（右 ID1-10 / 左 ID1-6,8-10 の 19 軸。左の ID7 は欠番）
+{ echo "bus 0"; for i in 1 2 3 4 5 6 7 8 9 10; do echo "setb 19 4 @$i"; done
+  echo "bus 1"; for i in 1 2 3 4 5 6 8 9 10;    do echo "setb 19 4 @$i"; done
+} | ros2 run feetech_servo feetech_shell
+```
 
 ## 読み出し方
 

@@ -166,7 +166,9 @@ struct LegSolve
 {
   rk::IkStatus ik_status = rk::IkStatus::Ok;
   rk::LegServoStatus servo_status = rk::LegServoStatus::Ok;
-  bool ankle_clamped = false;        //!< 足首の指令が可動域で丸められた
+  //! 足首の指令がエンベロープの外。**丸めていない**ので指令には影響しない。
+  //! 「指令は通るが実測姿勢が読み戻せない」側の警告（ankleOutsideEnvelope）
+  bool ankle_outside_envelope = false;
   bool ok() const
   {
     return ik_status == rk::IkStatus::Ok && servo_status == rk::LegServoStatus::Ok;
@@ -177,22 +179,25 @@ struct LegSolve
 ///
 /// theta を返すのは /joint_states に出すため（同じ IK を 2 回解かない）。
 ///
-/// **足首は ankleClampJoints() を必ず通す。** ピッチ θ5 は Δ > 0 のまま特異点に
-/// 入るので逆変換だけでは止まらない（ankle_parallel.hpp の注記）。ここを飛ばすと
-/// 軌道生成が可動域を超えたときに足首が跳ねる。
+/// **丸めない（2026-09-15）。** 以前は rk::ik を clamp=true で呼び、足首を
+/// ankleClampJoints() でエンベロープに丸めていた。今は解けない目標を status で
+/// そのまま返し、指令を出すかどうかは呼び側が決める（pose_codec はその周期の
+/// 指令を送らない ＝ 不可行に入った瞬間から出るまで指令が止まる）。
+///
+/// ★**clamp=false の rk::ik は Ok 以外で theta を書かない。** 呼び側は
+///   ik_status == Ok を確かめるまで theta を読んではいけない（0 が入っている）。
+///   servo[] のほうは ok() を確かめるまで読んではいけない（足首が未書き込み）。
 inline LegSolve servoFromFootPose(
   const rk::LegServoParams & prm, const FootPose & foot,
   double servo[rk::kNumJoints], double theta[rk::kNumJoints])
 {
   LegSolve out;
-  out.ik_status = rk::ik(prm.leg, foot.p, matFromRpy(foot.rpy), theta, /*clamp=*/true);
-  if (out.ik_status == rk::IkStatus::NoBranch) {return out;}
+  out.ik_status = rk::ik(prm.leg, foot.p, matFromRpy(foot.rpy), theta, /*clamp=*/false);
+  if (out.ik_status != rk::IkStatus::Ok) {return out;}
 
-  const rk::AnkleClampResult ac =
-    rk::ankleClampJoints(theta[rk::ANKLE_PITCH], theta[rk::ANKLE_ROLL]);
-  theta[rk::ANKLE_PITCH] = ac.th5;
-  theta[rk::ANKLE_ROLL] = ac.th6;
-  out.ankle_clamped = ac.clamped;
+  // 丸めないが、エンベロープの外に出ていることは報告する（指令には影響しない）
+  out.ankle_outside_envelope =
+    rk::ankleOutsideEnvelope(theta[rk::ANKLE_PITCH], theta[rk::ANKLE_ROLL]);
 
   out.servo_status = rk::legServoFromJoints(prm, theta, servo);
   return out;

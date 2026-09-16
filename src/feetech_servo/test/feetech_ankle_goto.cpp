@@ -145,10 +145,11 @@ struct Target
 Target solve(const rk::AnkleParams & prm, double th5, double th6, const int home[2])
 {
   Target t;
-  const rk::AnkleClampResult cl = rk::ankleClampJoints(th5, th6);
-  t.th5 = cl.th5;
-  t.th6 = cl.th6;
-  t.clamped = cl.clamped;
+  // ★2026-09-15: 丸めをやめた。エンベロープの外かどうかは報告するだけで、
+  // 動かすかどうかは逆変換の status とクランクリミットで決める。
+  t.th5 = th5;
+  t.th6 = th6;
+  t.clamped = rk::ankleOutsideEnvelope(th5, th6);
   // clamp=false: 届かないときは最寄りを書き戻さず、status で弾く
   t.ik = rk::ankleIk(prm, t.th5, t.th6, /*clamp=*/false);
   for (int i = 0; i < rk::kAnkleChains; ++i) {

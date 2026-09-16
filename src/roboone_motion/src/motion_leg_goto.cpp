@@ -29,8 +29,11 @@
 //   * --move 有り: 「目標＝現在位置を書く → 6 軸のトルク ON → 始点から目標へ smoothstep
 //     で補間しながら 1 パケットで sync write」の順。6 軸が同じ区間で同時に動く。
 //     終了時トルクは入ったまま（--off で切る）。
-//   * 動かさない条件: IK が解けない / 膝・足首の機構が届かない / 関節リミットの外 /
-//     カウントが servo_limits.yaml の窓の外。理由を印字して止まる。
+//   * 動かさない条件は 2 つだけ: **IK が解けない**（膝の三角形が閉じない、足首の
+//     ロッドが届かない等）/ カウントが servo_limits.yaml の窓の外。理由を印字して止まる。
+//     ★2026-09-15: 足首のエンベロープ (TH5_ENVELOPE_DEG)・関節リミット
+//     (JOINT_LIMIT)・ReachLevel では止めない（解けるなら動かす）。外に出ていれば
+//     表示に ★ が付くだけなので、可動域は印字を見ながら手で詰めること。
 //
 // ★★ 脚 6 軸をまとめて動かす。トルクを入れた脚が床を蹴って機体が倒れる・机から落ちる。
 //     **必ず機体を吊るか、脚が空中にある姿勢で使うこと。**
@@ -111,13 +114,15 @@ const char * kServoLabel[rk::kNumJoints] = {
 struct Target
 {
   rm::FootPose foot;                     //!< 目標（Σ_B, rad）
-  rk::IkStatus ikExact{rk::IkStatus::Ok};   //!< clamp=false での判定
-  rm::LegSolve solve;                    //!< clamp=true で解いた結果（指令に使う）
+  rm::LegSolve solve;                    //!< 丸めなしで解いた結果（指令に使う）
   double theta[rk::kNumJoints]{};        //!< 関節角 [rad]
   double servo[rk::kNumJoints]{};        //!< 絶対サーボ角 [rad]
   int count[rk::kNumJoints]{};           //!< 生カウント
   bool clamped[rk::kNumJoints]{};        //!< servo_limits の窓で丸められた
-  bool jointOk{true};                    //!< JOINT_LIMIT の内側か
+  bool jointOk{true};                    //!< JOINT_LIMIT の内側か（表示だけ）
+  bool haveTheta{false};                 //!< 関節角の列が埋まっているか
+  bool haveServo{false};                 //!< サーボ角・count の列が埋まっているか
+  bool nearest{false};                   //!< 埋まっているのが「最寄り姿勢」（参考値）
   rm::ReachLevel level{rm::ReachLevel::None};
   bool ok{false};                        //!< 動かしてよいか
 };
@@ -128,30 +133,52 @@ Target solve(const rm::ServoMap & map, int side, const rm::FootPose & foot)
   t.foot = foot;
   const rk::LegServoParams & prm = map.leg_params(side);
 
-  double tmp[rk::kNumJoints]{};
-  t.ikExact = rk::ik(prm.leg, foot.p, rm::matFromRpy(foot.rpy), tmp, /*clamp=*/false);
+  // ★丸めない。解ければそのまま指令に使い、解けなければ理由を出して動かさない。
   t.solve = rm::servoFromFootPose(prm, foot, t.servo, t.theta);
+  t.haveTheta = (t.solve.ik_status == rk::IkStatus::Ok);
+  t.haveServo = t.solve.ok();
   t.level = rm::reachLevel(prm, foot);
 
-  // 関節リミット（膝は曲げ量で見る）
-  const double bend = rk::kneeBendFromLegAngle(prm.leg, t.theta[rk::KNEE]);
-  for (std::size_t j = 0; j < rk::kNumJoints; ++j) {
-    const double v = (j == rk::KNEE ? bend : t.theta[j]) * kDeg;
-    if (v < rk::config::JOINT_LIMIT_LO_DEG[j] - 1e-9 || v > rk::config::JOINT_LIMIT_HI_DEG[j] + 1e-9) {
-      t.jointOk = false;
+  // IK が解けなかったときだけ、**表示のために**最寄り姿勢を出す（指令には使わない）。
+  // 「どのくらい外なのか」が見えないと可動域の詰め方が分からないので。
+  if (!t.haveTheta && t.solve.ik_status != rk::IkStatus::NoBranch) {
+    if (rk::ik(prm.leg, foot.p, rm::matFromRpy(foot.rpy), t.theta, /*clamp=*/true) !=
+      rk::IkStatus::NoBranch)
+    {
+      const rk::AnkleClampResult ac =
+        rk::ankleClampJoints(t.theta[rk::ANKLE_PITCH], t.theta[rk::ANKLE_ROLL]);
+      t.theta[rk::ANKLE_PITCH] = ac.th5;
+      t.theta[rk::ANKLE_ROLL] = ac.th6;
+      t.haveTheta = true;
+      t.nearest = true;
+      t.haveServo =
+        (rk::legServoFromJoints(prm, t.theta, t.servo) == rk::LegServoStatus::Ok);
+    }
+  }
+
+  // 関節リミット（膝は曲げ量で見る）。★2026-09-15: 動かす条件からは外した。
+  // JOINT_LIMIT は幾何の限界ではなく方針の箱なので、ここで止めるのはやめて表示だけ。
+  if (t.haveTheta) {
+    const double bend = rk::kneeBendFromLegAngle(prm.leg, t.theta[rk::KNEE]);
+    for (std::size_t j = 0; j < rk::kNumJoints; ++j) {
+      const double v = (j == rk::KNEE ? bend : t.theta[j]) * kDeg;
+      if (v < rk::config::JOINT_LIMIT_LO_DEG[j] - 1e-9 ||
+        v > rk::config::JOINT_LIMIT_HI_DEG[j] + 1e-9)
+      {
+        t.jointOk = false;
+      }
     }
   }
   bool anyClamp = false;
-  if (t.solve.ik_status != rk::IkStatus::NoBranch) {
+  if (t.haveServo) {
     for (std::size_t j = 0; j < rk::kNumJoints; ++j) {
       t.count[j] = map.leg_count_from_servo(side, j, t.servo[j], &t.clamped[j]);
       anyClamp = anyClamp || t.clamped[j];
     }
   }
-  t.ok = (t.ikExact == rk::IkStatus::Ok) &&
-    (t.solve.servo_status == rk::LegServoStatus::Ok) &&
-    !t.solve.ankle_clamped && t.jointOk && !anyClamp &&
-    (t.level >= rm::ReachLevel::Mech);
+  // 動かす条件は「解けた」＋「生カウントが servo_limits の窓の中」だけ。
+  // エンベロープ・関節リミット・ReachLevel では止めない（解けるなら動かす）。
+  t.ok = t.solve.ok() && !anyClamp;
   return t;
 }
 
@@ -162,22 +189,32 @@ void printTarget(const rm::ServoMap & map, int side, const Target & t)
     t.foot.p.x, t.foot.p.y, t.foot.p.z,
     t.foot.rpy[0] * kDeg, t.foot.rpy[1] * kDeg, t.foot.rpy[2] * kDeg);
   std::printf("  IK %s / 機構 %s / 判定 %s%s\n",
-    ikStatusName(t.ikExact), servoStatusName(t.solve.servo_status),
-    rm::reachLevelName(t.level), t.solve.ankle_clamped ? "  ★足首をエンベロープに丸めた" : "");
-  if (t.solve.ik_status == rk::IkStatus::NoBranch) {return;}
+    ikStatusName(t.solve.ik_status), servoStatusName(t.solve.servo_status),
+    rm::reachLevelName(t.level),
+    t.solve.ankle_outside_envelope ? "  ★足首がエンベロープの外（丸めてはいない）" : "");
+  if (!t.haveTheta) {return;}
+  if (t.nearest) {
+    std::printf("  ※ 以下は参考値（解けないので**最寄り姿勢**を出している。指令には使わない）\n");
+  }
   const double bend = rk::kneeBendFromLegAngle(prm.leg, t.theta[rk::KNEE]);
   std::printf("  %-14s %8s   %-6s %-12s %8s %8s %6s\n",
     "関節", "関節角", "サーボ", "", "サーボ角", "Tポーズ", "count");
   for (std::size_t j = 0; j < rk::kNumJoints; ++j) {
-    std::printf("  %-14s %+8.2f   ID%-4d %-12s %+8.2f %+8.2f %6d%s\n",
-      kJointLabel[j], t.theta[j] * kDeg,
-      rm::kLegServoId[j], kServoLabel[j], t.servo[j] * kDeg,
-      map.leg_tpose_deg_from_servo(side, j, t.servo[j]), t.count[j],
-      t.clamped[j] ? "  ★servo_limits の窓の外" : "");
+    std::printf("  %-14s %+8.2f   ID%-4d %-12s ",
+      kJointLabel[j], t.theta[j] * kDeg, rm::kLegServoId[j], kServoLabel[j]);
+    if (t.haveServo) {
+      std::printf("%+8.2f %+8.2f %6d%s\n",
+        t.servo[j] * kDeg, map.leg_tpose_deg_from_servo(side, j, t.servo[j]), t.count[j],
+        t.clamped[j] ? "  ★servo_limits の窓の外" : "");
+    } else {
+      std::printf("%8s %8s %6s\n", "-", "-", "-");
+    }
   }
   std::printf("  （足首の 2 つのサーボは θ5・θ6 の両方から決まる。行の対応は並びだけ）\n");
   std::printf("  膝の曲げ量 %.2f deg\n", bend * kDeg);
-  if (!t.jointOk) {std::printf("  ★関節リミット (leg_config JOINT_LIMIT) の外\n");}
+  if (!t.jointOk) {
+    std::printf("  ★関節リミット (leg_config JOINT_LIMIT) の外（止めてはいない）\n");
+  }
   if (!t.ok) {std::printf("  → この目標には動かさない\n");}
 }
 

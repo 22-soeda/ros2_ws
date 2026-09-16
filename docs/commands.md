@@ -86,8 +86,8 @@ ls -la install/feetech_servo/share/feetech_servo/config/servo_limits.yaml
 ```bash
 # 反映されたかを数字で見る（★読むだけ。トルクも位置指令も出さない）
 ros2 run roboone_motion motion_leg_goto --leg R --p 0 -89.3 -261 --rpy 0 0 0
-#   関節リミットの外なら「★関節リミット (leg_config JOINT_LIMIT) の外」
-#   count 窓の外なら各行に「★servo_limits の窓の外」が付く
+#   count 窓の外なら各行に「★servo_limits の窓の外」が付く（これは動かさない条件）
+#   関節リミットの外なら「★関節リミット … の外（止めてはいない）」（表示だけ）
 ```
 
 servo_limits.yaml はここまで全部**ソフト側のクランプ**（`ServoMap` が count を丸める）。
@@ -359,6 +359,37 @@ ros2 run feetech_servo feetech_limits --csv            # 差分を取りたい�
 しきい値が半分なので、詰まるとしたらここから。
 
 ID7 は右バスにしか無い（左は 9 軸）。
+
+### 生レジスタを全軸まとめて読む / 書く
+
+`feetech_shell` は行末に `@ID` を付けるとその行だけ対象 ID を変えられるので、パイプで流せば
+全軸への一括操作になる。`bus 0` = `/dev/feetech_right`、`bus 1` = `/dev/feetech_left`。
+軸は右 ID1-10（10 軸）＋ 左 ID1-6, 8-10（9 軸）の計 19 軸（左の ID7 は欠番）。
+
+```bash
+# 読むだけ。addr 62 = 電圧(0.1V) / 40 = トルクON / 19 = 脱力する保護条件
+{ echo "bus 0"; for i in 1 2 3 4 5 6 7 8 9 10; do echo "getb 19 @$i"; done
+  echo "bus 1"; for i in 1 2 3 4 5 6 8 9 10;    do echo "getb 19 @$i"; done
+} | ros2 run feetech_servo feetech_shell
+
+# ★EEPROM 書き込み（addr < 40 は setb が unlock → 書き → lock を自動でやる）
+{ echo "bus 0"; for i in 1 2 3 4 5 6 7 8 9 10; do echo "setb 19 4 @$i"; done
+  echo "bus 1"; for i in 1 2 3 4 5 6 8 9 10;    do echo "setb 19 4 @$i"; done
+} | ros2 run feetech_servo feetech_shell
+```
+
+前提が 3 つある。
+
+- **バスを他のプロセスが掴んでいないこと。** motion ノードや別の `feetech_shell` が開いて
+  いると同じ tty に 2 者が書いて通信が壊れる。`fuser /dev/feetech_right /dev/feetech_left`
+  で確かめる（motion ノードは終了時に必ず全軸を脱力してから閉じる）。
+- **トルク OFF。** EEPROM 書き込みはトルクが入っていると通らない。`getb 40` が 0 か見る。
+- **電源が入っていること。** 電圧が 4618 の下限 8.0V を割ると 4618 系（股・膝・ID7,8,9）は
+  1 軸も応答せず、下限 4.0V の 5130（ID5,6,10）だけが返る。**この「半分だけ応答する」状態で
+  書くと一部の軸にしか入らない**ので、先に `getb 62` で 120 前後（12.0V）を確認する。
+
+2026-09-15 にこの手順で `UNLOADING_COND(19)` を全 19 軸 4（過熱のみ）にした。中身は
+[servo-registers.md](../src/feetech_servo/docs/servo-registers.md#脱力する保護を過熱のみにした2026-09-15)。
 
 ## ログを後から追う（沈み込み・追従誤差）
 
@@ -636,6 +667,35 @@ ros2 run roboone_motion motion_leg_goto --leg L --move --repl    # 対話。1 �
 ros2 run roboone_motion motion_leg_goto --leg R --off            # その脚 6 軸のトルクを切る
 ```
 
+**動かさない条件は 2 つだけ**（2026-09-15 に足首の丸めをやめた）:
+
+- **IK が解けない** … 膝の三角形が閉じない / 足首のロッドが届かない (Δ < 0) / 股中心に近すぎる。
+  この場合サーボ角と count の列は `-`（未計算）で出る。IK 自体が解けない目標では
+  「最寄り姿勢」を参考値として表示するが、指令には使わない
+- **count が `servo_limits.yaml` の窓の外** … 該当行に「★servo_limits の窓の外」が付く
+
+止めなくなったもの（外に出ていると ★ が付くだけで、解けるなら動く）:
+
+- 足首のエンベロープ `TH5_ENVELOPE_DEG` (±55 deg) … 「★足首がエンベロープの外（丸めてはいない）」。
+  ここから外は**逆変換は解けるが順変換（実測姿勢）が飛びうる**帯。深く屈むと出る
+- 関節リミット `JOINT_LIMIT`（`leg_config.hpp`）… 「★関節リミット … の外（止めてはいない）」
+- `ReachLevel`（`mech` / `design`）… 判定として表示するだけ
+
+```bash
+# 例: 深屈み。以前はエンベロープで丸められて拒否されていた目標（θ5 = -56.02 deg）
+ros2 run roboone_motion motion_leg_goto --leg R --p 10 -89.3 -160 --rpy 0 0 0
+#   → IK Ok / 機構 Ok / 判定 mech  ★足首がエンベロープの外（丸めてはいない）
+#      足首クランクは +59.4 / -59.0 deg で、CRANK_LIMIT の ±60 まで 0.6 deg しか無い
+
+# 例: ロッドが届かない目標（θ5 ≈ -69 deg）は動かさない
+ros2 run roboone_motion motion_leg_goto --leg R --p 10 -89.3 -160 --rpy 0 -12 0
+#   → 機構 AnkleUnreachable（足首のロッドが届かない） / → この目標には動かさない
+```
+
+motion ノード（200Hz）も同じで、**不可行に入った瞬間から出るまでその周期の指令を送らない**
+（前周期の指令が生きるので機体はそこで止まる）。歩行中に起きていないかは
+`/motion/diagnostics` の「IK が解けない」「足首がエンベロープの外」で見る。
+
 サーボの角度リミットを EEPROM に書くのは実機操作。**先に --dry-run で確認する。**
 
 ```bash
@@ -657,6 +717,18 @@ EEPROM と食い違う軸を**まとめて**書く。1 軸だけ直したつも�
 | サーボの EEPROM（addr 9 / 11） | **`feetech_set_limits` を流さないと変わらない** |
 
 `servo_home.yaml` はソフトしか読まないので、こちらは**再起動だけ**で足りる。
+
+この 2 つがずれていると、**ソフトは通すのにサーボが途中で止まる**。指令 count は窓の
+内側なので `*_goto` は `★servo_limits の窓の外` を出さず、ファームが目標位置を古い窓へ
+丸めるので、その軸だけ目標に届かない（2026-09-15 の実例: 右 ID1 の YAML を
+`[818, 3216]` に広げたが EEPROM は `[1100, 3200]` のままで、count 878 の指令が 1100 で
+止まった）。EEPROM の現物は 1 軸ずつ読める（★読むだけ・サーボは動かない）:
+
+```bash
+printf "id 1\ninfo\n" | ros2 run feetech_servo feetech_shell --port /dev/feetech_right
+#   角度リミット: 1100 .. 3200   ← これが EEPROM の現物。YAML と突き合わせる
+#   目標位置    : 878            ← 直前に送った指令。窓の外なら動かずここに残る
+```
 
 ### 腕（ID8/9/10）の可動域を手で探る
 

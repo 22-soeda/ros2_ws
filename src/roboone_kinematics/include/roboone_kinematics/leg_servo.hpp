@@ -65,8 +65,9 @@ enum class LegServoStatus
   AnkleDegenerate,    //!< 足首が退化姿勢
   AnkleNotConverged,  //!< 足首の順変換が収束しなかった
   AnkleSingular,      //!< 足首が特異姿勢
-  //! 足首を安全なエンベロープに丸めた。**姿勢としては使える**（暴れない）が、
-  //! 軌道生成が可動域を超えた合図なので記録すること
+  //! 足首の**順変換**がクランク箱か窓の縁に張り付いた。**姿勢としては使える**
+  //! （暴れない）が、実測がその縁を超えた合図なので記録すること。
+  //! ★指令側からは出ない（2026-09-15 にエンベロープの丸めをやめた）
   AnkleClamped,
 };
 
@@ -148,17 +149,20 @@ inline LegServoStatus legServoFromJoints(
 
   // J5・J6 は足首パラレルリンク (AP-8)
   //
-  // ★逆変換の前にエンベロープで丸める。ピッチ θ5 は **Δ が正のまま型 2 特異点に
-  //   入れてしまう**ので、Δ を見ている ankleIk() では止められない。ここで止めないと
-  //   「指令は通ったのに、その姿勢を順変換で読み戻せない」状態に持っていける。
-  const AnkleClampResult env =
-    ankleClampJoints(theta[ANKLE_PITCH], theta[ANKLE_ROLL]);
-  const AnkleIkResult ares = ankleIk(prm.ankle, env.th5, env.th6);
-  servo[ANKLE_PITCH] = ankleServoFromCrank(prm.ankle, 0, ares.q[0]);
-  servo[ANKLE_ROLL] = ankleServoFromCrank(prm.ankle, 1, ares.q[1]);
+  // ★2026-09-15: **丸めをやめた。** 以前は ankleClampJoints() で θ5 を
+  //   TH5_ENVELOPE_DEG に丸めてから逆変換していた（丸めた合図が AnkleClamped）。
+  //   今は (θ5, θ6) を素通しで渡し、ロッドが届かない目標は status で返す。
+  //   エンベロープの外かどうかは ankleOutsideEnvelope() で別に報告する。
+  //
+  // ★clamp=false なので、届かない鎖の q は**埋まらない**（0 のまま）。
+  //   status を見る前に servo[] へ書くと、足首がクランク中立へ飛ぶ指令になる。
+  //   判定してから書くこの順序を崩さないこと。
+  const AnkleIkResult ares =
+    ankleIk(prm.ankle, theta[ANKLE_PITCH], theta[ANKLE_ROLL], /*clamp=*/false);
   if (ares.status == AnkleIkStatus::Unreachable) {return LegServoStatus::AnkleUnreachable;}
   if (ares.status == AnkleIkStatus::Degenerate) {return LegServoStatus::AnkleDegenerate;}
-  if (env.clamped) {return LegServoStatus::AnkleClamped;}
+  servo[ANKLE_PITCH] = ankleServoFromCrank(prm.ankle, 0, ares.q[0]);
+  servo[ANKLE_ROLL] = ankleServoFromCrank(prm.ankle, 1, ares.q[1]);
   return LegServoStatus::Ok;
 }
 

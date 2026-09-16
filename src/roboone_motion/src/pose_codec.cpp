@@ -68,8 +68,11 @@ PoseCodec::Encoded PoseCodec::encode(const BodyPose & pose)
           ")。この周期の指令は送らない", 1000, "ik_unsolved" + tag(s));
         continue;
       }
-      if (r.ankle_clamped) {
-        ev_.warn(tag(s) + "脚: 足首が可動域で丸められた", 2000, "ankle_clamp" + tag(s));
+      if (r.ankle_outside_envelope) {
+        // 丸めていないので指令はこのまま出る。実測姿勢を読み戻せない帯に入った合図。
+        ev_.warn(
+          tag(s) + "脚: 足首がエンベロープの外 (指令はそのまま出す。実測姿勢が"
+          "読み戻せない可能性)", 2000, "ankle_envelope" + tag(s));
       }
     }
 

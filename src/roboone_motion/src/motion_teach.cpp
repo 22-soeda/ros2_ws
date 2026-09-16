@@ -440,7 +440,9 @@ int main(int argc, char ** argv)
             rm::kSideTag[s], e);
           note += b;
         }
-        if (r.ankle_clamped) {note += std::string(rm::kSideTag[s]) + "脚の足首が可動域の外 ";}
+        if (r.ankle_outside_envelope) {
+          note += std::string(rm::kSideTag[s]) + "脚の足首がエンベロープの外 ";
+        }
       }
 
       const std::string block = keyframeYaml(map, pose, half, t_next, fmt);
