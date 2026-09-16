@@ -12,6 +12,12 @@
     # 生成してそのまま配信 (ssh 先の PC のブラウザで見る)
     python3 .../gen_walk_viz.py --serve 8100
 
+    # 準静的歩行の試作 (可視化だけ) の設定を変える
+    python3 .../gen_walk_viz.py --serve 8100 --qs-inset 0.04 --qs-swing-height 0.03
+
+roboone_kinematics の leg_service がビルドしてあれば、記録シナリオの各時刻の足先が
+実機の脚で届くかも調べて画面に出す (--no-reach で省く)。
+
 生成物は自己完結の 1 ファイルで、ブラウザで開くだけで動く (外部依存なし)。
 SSH 接続の PC から見るには次のどちらか:
   * ポートフォワード:  ssh -L 8100:localhost:8100 <pi>  →  http://localhost:8100/
@@ -32,9 +38,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'roboone_walk_ref')
 if __package__ in (None, ''):
     # colcon を通さず直接実行されたとき用
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from roboone_viz.quasistatic import QsParams
+    from roboone_viz.reach import LegReach
     from roboone_viz.record import (Scenario, build_dataset,
                                     default_scenarios)
 else:
+    from .quasistatic import QsParams
+    from .reach import LegReach
     from .record import Scenario, build_dataset, default_scenarios
 
 from roboone_walk_ref.walk_core import GaitParams   # noqa: E402
@@ -53,21 +63,31 @@ def _gait_candidates():
 
 TEMPLATE = Path(__file__).with_name('template.html')
 WALKCORE_JS = Path(__file__).with_name('walkcore.js')
+QS_JS = Path(__file__).with_name('quasistatic.js')
 MARKER = '/*__WALK_DATA__*/null'
 MARKER_JS = '/*__WALK_CORE_JS__*/'
+MARKER_QS_JS = '/*__QS_JS__*/'
 
 
-def generate(out_path: Path, params: GaitParams, extra=None) -> Path:
+def generate(out_path: Path, params: GaitParams, extra=None,
+             qs: QsParams = None, reach=None) -> Path:
     scenarios = default_scenarios()
     if extra is not None:
         scenarios.append(extra)
-    data = build_dataset(scenarios, params)
+    data = build_dataset(scenarios, params, qs, reach)
     html = TEMPLATE.read_text(encoding='utf-8')
     assert MARKER in html, 'template.html のデータ差し込み位置が見つからない'
     assert MARKER_JS in html, 'template.html の walkcore.js 差し込み位置が見つからない'
+    assert MARKER_QS_JS in html, 'template.html の quasistatic.js 差し込み位置が見つからない'
     payload = json.dumps(data, ensure_ascii=False, separators=(',', ':'))
     html = html.replace(MARKER_JS, WALKCORE_JS.read_text(encoding='utf-8'))
+    html = html.replace(MARKER_QS_JS, QS_JS.read_text(encoding='utf-8'))
     html = html.replace(MARKER, payload)
+    if reach is not None:
+        for sc in data['scenarios']:
+            n = len(sc['ticks']['rk'])
+            mark = '  ★届かない時刻あり' if sc['reach_bad'] else ''
+            print(f"  到達 {sc['id']:10s} {sc['reach_bad']:4d} / {n} 点で脚が届かない{mark}")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html, encoding='utf-8')
     return out_path
@@ -106,6 +126,19 @@ def main(argv=None):
     ap.add_argument('--duration', type=float, default=8.0, help='追加シナリオの長さ [s]')
     ap.add_argument('--serve', type=int, default=None, metavar='PORT',
                     help='生成後にそのディレクトリを HTTP 配信する')
+    qd = QsParams()
+    g = ap.add_argument_group('準静的歩行の試作 (可視化だけ。実機には無い)')
+    g.add_argument('--qs-zmp-tol', type=float, default=qd.zmp_tol,
+                   help=f'ZMP が重心の真下からずれてよい量 [m] (既定 {qd.zmp_tol})')
+    g.add_argument('--qs-t-swing', type=float, default=qd.t_swing,
+                   help=f'振り出しの時間 [s] (既定 {qd.t_swing})')
+    g.add_argument('--qs-inset', type=float, default=qd.com_inset,
+                   help='振り出し中の重心を支持足の中心から内側へ寄せる量 [m] '
+                        f'(既定 {qd.com_inset})')
+    g.add_argument('--qs-swing-height', type=float, default=None,
+                   help='足上げの高さ [m] (既定は gait.yaml の swing_height)')
+    ap.add_argument('--no-reach', action='store_true',
+                    help='leg_service で足先が届くかを調べない')
     args = ap.parse_args(argv)
 
     gait = args.gait
@@ -125,7 +158,17 @@ def main(argv=None):
             args.duration,
             lambda t: (vx, vy) if 0.5 <= t < walk_end else (0.0, 0.0))
 
-    out = generate(Path(os.path.expanduser(args.out)), params, extra)
+    qs = QsParams(zmp_tol=args.qs_zmp_tol, t_swing=args.qs_t_swing,
+                  com_inset=args.qs_inset, swing_height=args.qs_swing_height)
+    reach = None if args.no_reach else LegReach.find()
+    if reach is None and not args.no_reach:
+        print('leg_service が見つからないので、足先が届くかは調べない '
+              '(colcon build --packages-select roboone_kinematics)')
+    try:
+        out = generate(Path(os.path.expanduser(args.out)), params, extra, qs, reach)
+    finally:
+        if reach is not None:
+            reach.close()
     size = out.stat().st_size / 1024
     print(f'生成した: {out}  ({size:.0f} kB)')
     if args.serve:

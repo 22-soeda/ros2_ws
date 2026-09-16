@@ -89,10 +89,14 @@
     # --- 歩行 -------------------------------------------------------------
     walk_enable: true
 
-    # 歩行計画の足位置に足す左右方向のオフセット [mm]。gait.yaml の foot_spacing が
-    # 実機の股間隔 (±89.3mm) と揃っている今は 0 でよい。foot_spacing を実機と違う
-    # 値で回したいときだけ使う（ただし横方向の力学は foot_spacing の値で計画される）。
-    stance_y_offset: 0.0
+    # 歩行計画の足位置に足す左右方向のオフセット [mm]（+ で外側）。実機の足は
+    # ±(gait.yaml の foot_spacing / 2 + これ)。横方向の力学は foot_spacing の値で
+    # 計画されるので、計画を広く・実機の足をそのままにすると、骨盤の横振りだけが増える。
+    #
+    # 2026-09-17: foot_spacing 170mm に対して -15 → 実機の足は ±70mm（校正値のまま）。
+    # 単脚支持で遊脚側へ倒れるのを止めるため（理由と候補の表は gait.yaml の foot_spacing）。
+    # HOLD の立位もこの足位置になる（tickWalk が上書きする）。起動時にしか読まない。
+    stance_y_offset: -15.0
 
     # 歩行中に技の指令が来たら、歩行を打ち切って技に入る。false にすると無視する。
     # 転んだ機体を起こす指令が「歩行中だから」で捨てられると詰むので既定 true。
@@ -137,10 +141,10 @@
     # 見るものは /motion/stab（並びは motion_node.cpp の kStabFields）。
     stab:
       enable: true
-      kd_pitch: 0.0         # [rad/(rad/s)] 足首ピッチのジャイロ減衰
-      kd_roll: 0.0          # [rad/(rad/s)] 足首ロールのジャイロ減衰
-      kp_pitch: 0.0         # [rad/rad] 足首ピッチの傾き比例
-      kp_roll: 0.0          # [rad/rad] 足首ロールの傾き比例
+      kd_pitch: 0.1         # [rad/(rad/s)] 足首ピッチのジャイロ減衰
+      kd_roll: 0.1          # [rad/(rad/s)] 足首ロールのジャイロ減衰
+      kp_pitch: 1.0         # [rad/rad] 足首ピッチの傾き比例
+      kp_roll: 1.0          # [rad/rad] 足首ロールの傾き比例
       k_torso: 0.0          # [rad/rad] 胴体を起こす股の補正（前後のみ）
       ankle_clamp: 0.12     # [rad] 足首の補正の上限（1 軸あたり。約 7 deg）
       torso_clamp: 0.15     # [rad] 胴体の補正の上限

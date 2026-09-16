@@ -475,6 +475,10 @@ ros2 launch roboone_bringup roboone.launch.py
 python3 scripts/bag_droop.py ~/roboone_logs/rosbag2_*
 python3 scripts/bag_droop.py ~/roboone_logs/rosbag2_* --state HOLD   # 静止区間だけ
 python3 scripts/bag_droop.py ~/roboone_logs/rosbag2_* --csv /tmp/d.csv
+
+# 歩行区間ごとのロールの揺れ（/motion/stab から。歩ごとの「遊脚側への傾き」を出す）
+python3 scripts/bag_walk_roll.py ~/roboone_logs/rosbag2_*
+python3 scripts/bag_walk_roll.py ~/roboone_logs/rosbag2_* --series 19 27   # その区間の時系列
 ```
 
 `/joint_states`（実測）だけでは沈み込みは分からないので、`/motion/joint_commands`
@@ -559,6 +563,13 @@ ros2 run roboone_motion motion_selftest --strict \
 # 歩行
 python3 src/roboone_viz/roboone_viz/gen_walk_viz.py --serve 8100
 python3 src/roboone_walk_core/tools/compare_walk_engines.py
+
+# 準静的歩行の試作（可視化だけ。実機には無い）の設定を変える。
+# --qs-inset: 振り出し中の重心を支持足の中心から内側へ寄せる [m] / --qs-swing-height: 足上げ [m]
+# 既定 (0 / gait.yaml の 0.05) だと遊脚が足首で届かない時刻が出る。0.04 か 0.02 で全時刻届く
+python3 src/roboone_viz/roboone_viz/gen_walk_viz.py --serve 8100 --qs-inset 0.04
+# leg_service による「足先が届くか」の判定を省く（roboone_kinematics 未ビルドなら自動で省く）
+python3 src/roboone_viz/roboone_viz/gen_walk_viz.py --serve 8100 --no-reach
 
 # ↑ を手元の PC で見る（どれか 1 つ）
 #   VSCode Remote-SSH の端末から: 手元のブラウザで開き、ポート転送も VSCode が張る
@@ -1044,7 +1055,9 @@ env -u AMENT_PREFIX_PATH -u ROS_DISTRO -u ROS_VERSION -u COLCON_PREFIX_PATH \
 
 **ZMP は歩の間ずっと支持足に固定されたまま**なので、ここを変えても DCM も `b` の閉形式も
 `a_max` の発散条件も変わらない。増えるのは支持多角形が広い時間だけで、**計画上の重心経路は
-変わらない**。yaml だけ、再ビルド不要、motion ノードの再起動で効く。
+変わらない**。yaml だけで済む。install の gait.yaml は symlink ではなく複製なので
+（2026-09-17 確認）、`colcon build --packages-select roboone_walk_ref` のあと motion ノードを
+上げ直すと効く（下の `-p gait_yaml:=$PWD/src/...` なら src を直接読む）。
 
 ```bash
 # 起動ログが実測値を出す（狙いの値はそのまま出ない。降下が td_speed_max で飽和するため）
@@ -1080,3 +1093,35 @@ done
 - WARN … 接地が `swing_lock_phase` より早い
 - ERROR … 遊脚が床に届かないまま歩が終わる（空中で支持脚が入れ替わる）。
   必要な `td_speed_max` を数値で出すので、その値以上へ上げるか `swing_height` を下げる
+
+## 歩行の横振り（foot_spacing と stance_y_offset）
+
+横の重心経路（骨盤をどこまで支持足へ寄せるか）は `gait.yaml` の **`foot_spacing`**（計画上の
+足間隔）で決まり、実機の足の位置は `foot_spacing / 2 + stance_y_offset`（`motion_node.yaml`、
+mm、+ で外側）になる。計画だけ広げてオフセットで足を戻すと、**足の位置はそのままで骨盤の
+横振りだけが増える**。2026-09-17 に `170mm / -15`（実機の足は ±70mm のまま）にした。
+理由と候補の表は `gait.yaml` の `foot_spacing` のコメント。
+
+- 単脚支持で**遊脚側へ**倒れる（`bag_walk_roll.py` の「遊脚側への傾き」が + で歩ごとに育つ）
+  → 横振りが足りない。`foot_spacing` を上げ、`stance_y_offset` を同じ量の半分だけ下げる
+- 支持足の**外側へ**倒れる（同じ値が −）→ 振りすぎ。逆に動かす
+- どちらのファイルも起動時にしか読まない。両方ビルドして motion を上げ直す
+
+```bash
+colcon build --packages-select roboone_walk_ref roboone_motion
+
+# 起動時の検査だけ見る（★バスを開かない。走っている /motion と混ざらないよう
+#   ドメインとノード名を分ける）
+ROS_DOMAIN_ID=87 timeout -s INT 8 ros2 run roboone_motion motion_node --ros-args \
+    -r __node:=motion_check \
+    --params-file install/roboone_motion/share/roboone_motion/config/motion_node.yaml \
+    -p dry_run:=true -p allow_torque:=false 2>&1 | grep -E "歩行|足先|足間隔"
+#   歩行 z_c=0.261m T=0.60s W=0.170m ... が出る
+#   「足先の箱の隅に **届かない** (ik止まり: R脚 p=[-40.0, -50.0, -211.0])」の ERROR は
+#   足間隔 140mm にした時点から出ている（オフセット 0・W=140 でも同じ点）。箱の隅
+#   （後ろ 40・内 20・足上げ 50mm）を同時に取る検査で、実際の歩行軌道では当たらない
+```
+
+実際の軌道で届くかは、walk_core（Python 版）を回して足先を `leg_service` に通して見た
+（`roboone_viz/reach.py` の `LegReach`）。横 140mm でも x=0 なら足上げ 52mm まで届くが、
+足が後ろにあると急に減る（x=−40 で 30mm）。`W=180 / -20` は全速前進で遊脚の頂点が届かない。

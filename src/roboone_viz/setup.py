@@ -12,7 +12,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
     ],
     package_data={
-        'roboone_viz': ['template.html', 'walkcore.js',
+        'roboone_viz': ['template.html', 'walkcore.js', 'quasistatic.js',
                         'knee3d.html', 'leg3d.html', 'legs3d.html'],
     },
     include_package_data=True,

@@ -26,6 +26,32 @@ python3 src/roboone_viz/roboone_viz/gen_walk_viz.py --serve 8100
 - **「🕹 操縦」タブ = ライブシミュレータ**: 右パネルのパッドをドラッグ
   (または WASD / 矢印キー) すると、JS 版 walk_core (`walkcore.js`) が 200 Hz で回って
   歩行がリアルタイムに生成される。離すと停止シーケンスに入る
+- **足踏み (試作)**: タブ「足踏み (試作)」「前進と足踏み (試作)」と、操縦タブの
+  「足踏み」ボタン (M キー)。**可視化だけの試作で、実機の歩行エンジン
+  (roboone_walk_core) にも仕様原本にも walkcore.js にも入っていない。**
+  `record.py` の `MarchWalkEngine` と `template.html` の `MarchWalkEngineJS` が
+  walk_core を包み、足踏み中だけ歩き出し・歩き続けのしきい値 (v_start_eps /
+  v_stop_eps) を無効にして回す。速度指令は a_max で整形されたままなので、前進から
+  足踏みへはなめらかに移る（踏み出し量を一気に 0 にすると純 FF では発散する）
+- **準静的歩行 (試作)**: タブ「準静的 前進 / 左移動 / 足踏み (試作)」と、操縦タブの
+  「計画」ボタン (P キー)。**これも可視化だけの試作で、実機には無い**
+  (`quasistatic.py` / `quasistatic.js`)。walk_core は ZMP を支持足に固定するので、
+  周期を延ばしても支持足の交代で重心が両足の中間を約 0.43 m/s で横切る。こちらは
+  重心を直接計画し、両足支持で重心を次の支持足の上へ移してから足を振り出す。
+  重心移動の時間は「ZMP と重心のずれ ≤ zmp_tol」から決まる (5 mm で足間隔 140 mm に約 2.1 s)。
+  歩幅は walk_core と同じ L = vT で、1 歩に約 3 s かかる
+- **実機の脚で届くか**: `leg_service` がビルドしてあれば、記録シナリオの各時刻の足先を
+  IK と機構層 (膝・足首リンク) に通し、届かない足を注意色で囲む (`--no-reach` で省く)。
+  足裏は水平で見ている (home_pose の rpy・body_pitch が 0 の前提)。
+  **準静的の既定 (内寄せ 0・足上げ 50 mm) では、外へ開いた遊脚が足首で届かない時刻が出る**
+  (骨盤から横 140 mm なら足上げ 22 mm まで、横 100 mm なら 50 mm まで)。
+  `--qs-inset 0.04` か `--qs-swing-height 0.02` で全時刻届く (2026-09-17)
+
+```bash
+# 準静的の設定を変える (どれも可視化だけ)
+python3 src/roboone_viz/roboone_viz/gen_walk_viz.py --serve 8100 \
+    --qs-zmp-tol 0.005 --qs-t-swing 0.8 --qs-inset 0.04 --qs-swing-height 0.03
+```
 
 ## 脚・膝の機構の可視化
 
@@ -47,6 +73,8 @@ python3 src/roboone_viz/roboone_viz/serve_knee3d.py --demo
 | `gen_walk_viz.py` | 歩行の可視化 HTML を生成して配信する。`walk_viz` として install される |
 | `record.py` | walk_core を回してシナリオごとのデータセットを作る |
 | `walkcore.js` | walk_core の JS 移植（ブラウザのライブシミュレータ用） |
+| `quasistatic.py` / `quasistatic.js` | 準静的歩行の試作（可視化だけ。2 つは同じロジック） |
+| `reach.py` | 記録した足先が届くかを `leg_service` で調べる |
 | `serve_leg3d.py` / `serve_legs3d.py` | `leg_service` を叩く脚の 3D ビューア |
 | `serve_knee3d.py` | 膝 4 節リンクのビューア |
 | `template.html` `*3d.html` | 配信するページの雛形 |
