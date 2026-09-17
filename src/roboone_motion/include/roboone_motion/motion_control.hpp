@@ -22,11 +22,16 @@
 //     捌いておけば hold_pose_ がホーム姿勢になった状態で武装に入れる。逆順に
 //     すると、最初の 1 本が「立ち上げ中なので出さない」で捨てられる。
 //
-// [2] **実測姿勢が 1 度も取れていないうちは武装しない。** 立ち上げは
-//     「実測姿勢 -> 保持姿勢」の補間なので、起点が分からないまま始めると補間に
-//     ならない。以前ここで hold_pose_ を起点に代用していたが、起点と終点が同じ
-//     = 補間が無いのと同じで、**トルクが入るだけで動かない** (2026-08-28 実機)。
-//     代用すると今度は保持姿勢へ一気に飛ぶので、どちらにしても代用してはいけない。
+// [2] **補間の起点は「その周期の」実測サーボ角。取れない・経路が通らないなら
+//     武装しない。** 立ち上げは「実測姿勢 -> 保持姿勢」の補間なので、起点が
+//     分からないまま始めると補間にならない。以前ここで hold_pose_ を起点に代用して
+//     いたが、起点と終点が同じ = 補間が無いのと同じで、**トルクが入るだけで動かない**
+//     (2026-08-28 実機)。代用すると今度は保持姿勢へ一気に飛ぶので、代用はしない。
+//     起点はサーボ角で持ち、補間もサーボ角の空間で回す (pose_codec.hpp
+//     「実測姿勢」)。足首は閉ループなので、トルクを入れる前と補間を始める前に
+//     「起点 -> 保持姿勢」がサーボ角の直線で組めたまま通るかを確かめる
+//     (rk::legServoPath)。2026-09-18 までは「FK が 1 度でも解けたら以後ずっと
+//     取れた扱い」で、脱力中に手で足首を動かすと古い起点のまま武装していた。
 //
 // [3] **WALK -> HOLD は少し待ってから。** 歩き始めは指令がレート制限で立ち上がる
 //     ので、歩行エンジンの状態が IDLE と START の間を数十 ms 単位で往復する
@@ -136,16 +141,17 @@ public:
   /// IMU の安定化が支持脚と位相を知るために読む (stabilizer.hpp)。
   const rwc::WalkOutputs * walkOutputs() const {return walk_ticked_ ? &walk_out_ : nullptr;}
   const BodyPose & holdPose() const {return hold_pose_;}
-  bool haveMeasured() const {return have_measured_;}
 
   bool popEvent(Event & e) {return ev_.pop(e);}
 
-  // --- テスト用（motion_selftest）----------------------------------------
-  /// 実測が取れた扱いにする。実機なしで武装の順序を確かめるときだけ使う。
-  void injectMeasured(const BodyPose & p);
-
 private:
+  //! 武装の経路が通らなかったとき、次に確かめ直すまでの間 [s]（検査が数 ms かかる）
+  static constexpr double kArmRecheck = 0.25;
+
   bool canArm() const {return !opt_.require_home_before_arm || seen_motion_;}
+  /// from（実測。サーボ角の本体を持つこと）から hold_pose_ へ、サーボ角の直線で
+  /// 脚が組めたまま動けるか。ダメなら why に理由を足して false（ヘッダ [2]）。
+  bool armPathClear(const BodyPose & from, std::string & why) const;
   void setState(State s);
   /// 今の姿勢 (cur_pose_) から to へ time 秒で移る 1 区間の補間を仕込む。
   void startBlend(const BodyPose & to, double time, double now, const char * what);
@@ -177,7 +183,7 @@ private:
   bool want_torque_ = false;
   bool arm_in_place_ = false;      //!< hold を受けた: 次の武装は実測姿勢のまま
   bool stay_after_arm_ = false;    //!< その武装が終わったら HOLD ではなく STAY へ
-  bool have_measured_ = false;     //!< 実測姿勢が 1 度でも取れたか
+  double arm_check_at_ = -1.0;     //!< 武装の経路をこの時刻まで確かめ直さない
   double idle_since_ = -1.0;
   int reach_tick_ = 0;
   State state_ = State::RELAX;

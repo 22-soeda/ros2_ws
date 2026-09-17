@@ -148,6 +148,7 @@ PoseCodec::Decoded PoseCodec::decode(const std::vector<ServoState> st[kNumSide])
     double servo[rk::kNumJoints];
     double theta[rk::kNumJoints]{};
     bool all = true;
+    std::string wrapped;
     for (std::size_t j = 0; j < rk::kNumJoints; ++j) {
       if (!st[s][j].valid) {
         all = false;
@@ -155,30 +156,46 @@ PoseCodec::Decoded PoseCodec::decode(const std::vector<ServoState> st[kNumSide])
         break;
       }
       servo[j] = map_->leg_servo_from_count(s, j, st[s][j].pos);
+      if (st[s][j].pos < 0 || st[s][j].pos > 4095) {
+        wrapped += " ID" + std::to_string(kLegServoId[j]) + "=" + std::to_string(st[s][j].pos);
+      }
     }
     if (!all) {
       out.ok = false;
       continue;
     }
+
+    // --- 武装の起点: サーボ角そのもの（ヘッダ「実測姿勢」）-----------------
+    // 指令側 (encode) の bodyPitchApplyServo と対。Σ_U へ戻しておけば、そのまま
+    // encode に通すと実測と同じカウントに戻る（= 補間の初周期で動かない）。
+    for (std::size_t j = 0; j < rk::kNumJoints; ++j) {out.pose.leg_servo[s][j] = servo[j];}
+    bodyPitchRemoveServo(map_->leg_params(s), out.pose.leg_servo[s], body_pitch_);
+    out.pose.leg_servo_valid[s] = true;
+    out.pose.leg_mode[s] = LegMode::Servo;
+    if (!wrapped.empty()) {
+      // 多回転の軸（servo_limits.yaml が [0, 0]）で巻き数が乗った。サーボ角のまま
+      // 補間すると、その軸を 1 回転させる指令になる
+      out.ok = false;
+      out.why += tag(s) + "脚: カウントが 0-4095 の外 (多回転の巻き数ずれ)" + wrapped + " ";
+    } else {
+      const rk::LegServoPathResult arm = rk::legServoArmable(map_->leg_params(s), servo);
+      if (!arm.ok()) {
+        out.ok = false;
+        out.why += tag(s) + "脚: " + legPathWhy(arm) + " ";
+      }
+    }
+
+    // --- 足裏の影: 表示と /joint_states 用 -----------------------------------
+    // 足首が CRANK_LIMIT_DEG の箱の外にいると AnkleClamped（箱の縁で解いた値）に
+    // なるが、もう武装を止める理由にはしない（起点はサーボ角のほうなので）。
     // theta は 0 で初期化してある。legJointsFromServo は膝で失敗すると theta[KNEE]
-    // を書かずに早期リターンするので、未初期化のまま fk() に入れると出鱈目な姿勢が
-    // 出る (それを「実測」として補間の起点にすると事故る)。
+    // を書かずに早期リターンするので、未初期化のまま fk() に入れると出鱈目な姿勢が出る。
     const rk::LegServoStatus lst = footPoseFromServo(
       map_->leg_params(s), servo, out.pose.foot[s], theta, th6_meas_seed_[s]);
-    // 指令側 (encode) と対になる境界。実測は Σ_B で出てくるので Σ_U へ戻す。
-    // これを忘れると、武装時の「実測姿勢 -> 保持姿勢」の補間の起点だけが別の系に
-    // なり、トルクを入れた瞬間に前傾ぶんだけ跳ねる。
+    // 実測は Σ_B で出てくるので Σ_U へ戻す（encode の bodyPitchApply と対）。
     // ★theta は Σ_B の関節角のまま置く。/joint_states は実機の値を出す場所なので。
     bodyPitchRemove(out.pose.foot[s], body_pitch_);
     out.status[s] = lst;
-    if (lst != rk::LegServoStatus::Ok) {
-      out.ok = false;
-      out.why += tag(s) + "脚: 変換できない(status=" +
-        std::to_string(static_cast<int>(lst)) + ", 膝サーボ " +
-        std::to_string(
-        static_cast<int>(
-          map_->leg_tpose_deg_from_count(s, rk::KNEE, st[s][rk::KNEE].pos))) + "deg) ";
-    }
     for (std::size_t j = 0; j < rk::kNumJoints; ++j) {
       out.theta[s][j] = theta[j];
     }

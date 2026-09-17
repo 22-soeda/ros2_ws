@@ -67,8 +67,10 @@
 #ifndef ROBOONE_KINEMATICS__ANKLE_PARALLEL_HPP_
 #define ROBOONE_KINEMATICS__ANKLE_PARALLEL_HPP_
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <initializer_list>
 
 #include "roboone_kinematics/ankle_config.hpp"
 #include "roboone_kinematics/leg_kinematics.hpp"
@@ -620,6 +622,99 @@ inline AnkleJacobian ankleJacobian(
   }
   J.det = J.jt[0][0] * J.jt[1][1] - J.jt[0][1] * J.jt[1][0];
   return J;
+}
+
+// ---------------------------------------------------------------------------
+// クランク角の直線経路    武装時の補間の事前検査
+// ---------------------------------------------------------------------------
+// motion ノードの武装は「実測のサーボ角 -> 保持姿勢のサーボ角」をサーボ角の直線で
+// 補間する（足先空間で補間すると、起点を順変換で出す必要があり、脱力中の足首は
+// たいてい順変換の箱の外にいる。ankle_config.hpp の ARM_CRANK_LIMIT_DEG）。
+// 足首は 2 本のクランクで 2 自由度を決める閉ループなので、両端が組めていても
+// **途中が組めるとは限らない**。そこを刻みで順変換して確かめる。
+enum class AnkleCrankPathStatus
+{
+  Ok = 0,
+  //! 始点か終点が ARM_CRANK_LIMIT_DEG の外。多回転の巻き数ずれもここに落ちる
+  OutsideBox,
+  //! 途中で組めない（ロッドが届かない / ロールが窓の外）
+  NoPose,
+  //! 途中で型 2 特異点に触れる（det Jθ が 0 に近い、または符号が変わる）
+  Singular,
+  //! 途中で関節角が跳ぶ（順変換が不連続）
+  Jump,
+};
+
+struct AnkleCrankPathResult
+{
+  AnkleCrankPathStatus status{AnkleCrankPathStatus::Ok};
+  //! 詰まった所のクランク角 [rad]。Ok なら終点
+  double q[kAnkleChains]{0.0, 0.0};
+};
+
+/// クランク角を qa から qb へ**直線で**動かしたとき、足首が組めたまま通れるか。
+///
+/// ARM_PATH_STEP_DEG 刻みで、箱を ARM_CRANK_LIMIT_DEG に広げた順変換を解く。
+/// 各点で「解ける（窓の中に根がある）」「det Jθ の符号が始点と同じで 0 から離れて
+/// いる」「関節角が前の点から跳んでいない」を見る。qa == qb なら始点 1 点だけの
+/// 検査になる（実測が武装の起点として使えるか）。
+///
+/// 刻みの数はクランクの移動量に比例する（60° で 120 点、Pi 5 で 1.5ms 程度）。
+/// 200Hz の中で毎周期呼ぶものではない。
+inline AnkleCrankPathResult ankleCrankPath(
+  const AnkleParams & prm, const double qa[kAnkleChains], const double qb[kAnkleChains])
+{
+  using namespace ankle_config;
+  const double d = M_PI / 180.0;
+  AnkleCrankPathResult res;
+
+  // ankleFk() は入力を qMin/qMax に丸めるので、箱を広げた複製で解く
+  AnkleParams w = prm;
+  double span = 0.0;
+  for (int i = 0; i < kAnkleChains; ++i) {
+    w.qMin[i] = ARM_CRANK_LIMIT_DEG[0] * d;
+    w.qMax[i] = ARM_CRANK_LIMIT_DEG[1] * d;
+    span = std::max(span, std::fabs(qb[i] - qa[i]));
+  }
+  for (const double * e : {qa, qb}) {
+    for (int i = 0; i < kAnkleChains; ++i) {
+      if (e[i] < w.qMin[i] || e[i] > w.qMax[i]) {
+        res.status = AnkleCrankPathStatus::OutsideBox;
+        res.q[0] = e[0];
+        res.q[1] = e[1];
+        return res;
+      }
+    }
+  }
+
+  const int n = std::max(1, static_cast<int>(std::ceil(span / (ARM_PATH_STEP_DEG * d))));
+  // 1e-9 は根の許容誤差ぶん（同じ q を 2 回解いても 1e-12 程度は揺れる）
+  const double jumpMax = ARM_PATH_JUMP_RATIO * span / n + 1e-9;
+  double th5 = 0.0, th6 = 0.0, det0 = 0.0;
+  for (int k = 0; k <= n; ++k) {
+    const double u = static_cast<double>(k) / n;
+    for (int i = 0; i < kAnkleChains; ++i) {res.q[i] = qa[i] + (qb[i] - qa[i]) * u;}
+
+    const AnkleFkResult f = ankleFk(w, res.q, th6);
+    if (f.status != AnkleFkStatus::Ok || f.crankClamped) {
+      res.status = AnkleCrankPathStatus::NoPose;
+      return res;
+    }
+    const double det = ankleJacobian(w, res.q, f.th5, f.th6).det;
+    if (std::fabs(det) < SINGULARITY_DET_MIN || (k > 0 && det * det0 < 0.0)) {
+      res.status = AnkleCrankPathStatus::Singular;
+      return res;
+    }
+    if (k == 0) {
+      det0 = det;
+    } else if (std::max(std::fabs(f.th5 - th5), std::fabs(f.th6 - th6)) > jumpMax) {
+      res.status = AnkleCrankPathStatus::Jump;
+      return res;
+    }
+    th5 = f.th5;
+    th6 = f.th6;
+  }
+  return res;
 }
 
 // ---------------------------------------------------------------------------

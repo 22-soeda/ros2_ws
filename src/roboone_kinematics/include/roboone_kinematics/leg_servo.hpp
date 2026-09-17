@@ -43,6 +43,7 @@
 #ifndef ROBOONE_KINEMATICS__LEG_SERVO_HPP_
 #define ROBOONE_KINEMATICS__LEG_SERVO_HPP_
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 
@@ -225,6 +226,62 @@ inline LegServoStatus legKneeAngleFromServo(
   if (st != KneeStatus::Ok) {return lsdetail::fromKnee(st);}
   theta4B = legAngleFromKneeBend(prm.leg, bend);
   return LegServoStatus::Ok;
+}
+
+// ---------------------------------------------------------------------------
+// サーボ角の直線経路    武装時の補間の事前検査
+// ---------------------------------------------------------------------------
+/// legServoPath() の結果。膝と足首を別々に返す（どちらで詰まったかを言うため）。
+struct LegServoPathResult
+{
+  KneeStatus knee{KneeStatus::Ok};   //!< 膝が途中で組めない
+  double kneeServo{0.0};             //!< 膝が詰まったサーボ角 [rad]
+  AnkleCrankPathResult ankle;        //!< 足首（ankleCrankPath）
+  bool ok() const {return knee == KneeStatus::Ok && ankle.status == AnkleCrankPathStatus::Ok;}
+};
+
+/// サーボ角を from から to へ軸ごとの直線で動かしたとき、脚が組めたまま通れるか。
+///
+/// motion ノードの武装（実測のサーボ角 -> 保持姿勢のサーボ角）の事前検査。
+/// 股 3 軸はサーボ直結なので見ない。膝は 1 自由度だが、組めるサーボ角が
+/// 区間とは限らないので足首と同じ刻みで順変換する。足首は ankleCrankPath()。
+inline LegServoPathResult legServoPath(
+  const LegServoParams & prm, const double from[kNumJoints], const double to[kNumJoints])
+{
+  LegServoPathResult r;
+  const double step = ankle_config::ARM_PATH_STEP_DEG * M_PI / 180.0;
+  const double span = std::fabs(to[KNEE] - from[KNEE]);
+  const int n = std::max(1, static_cast<int>(std::ceil(span / step)));
+  for (int k = 0; k <= n; ++k) {
+    const double s = from[KNEE] + (to[KNEE] - from[KNEE]) * k / n;
+    double bend = 0.0;
+    const KneeStatus st = kneeBendFromServo(prm.knee, s, bend);
+    if (st != KneeStatus::Ok) {
+      r.knee = st;
+      r.kneeServo = s;
+      break;
+    }
+  }
+
+  const double qa[kAnkleChains] = {
+    ankleCrankFromServo(prm.ankle, 0, from[ANKLE_PITCH]),
+    ankleCrankFromServo(prm.ankle, 1, from[ANKLE_ROLL])};
+  const double qb[kAnkleChains] = {
+    ankleCrankFromServo(prm.ankle, 0, to[ANKLE_PITCH]),
+    ankleCrankFromServo(prm.ankle, 1, to[ANKLE_ROLL])};
+  r.ankle = ankleCrankPath(prm.ankle, qa, qb);
+  return r;
+}
+
+/// 実測のサーボ角が武装の起点として使えるか（legServoPath の始点 1 点だけ）。
+///
+/// legJointsFromServo() が Ok を返すかとは別の問い。あちらは足首を
+/// CRANK_LIMIT_DEG の箱で解くので、脱力して垂れた足首はたいてい AnkleClamped に
+/// なる。こちらは ARM_CRANK_LIMIT_DEG の箱で「その姿勢で組めているか」だけを見る。
+inline LegServoPathResult legServoArmable(
+  const LegServoParams & prm, const double servo[kNumJoints])
+{
+  return legServoPath(prm, servo, servo);
 }
 
 }  // namespace roboone_kinematics

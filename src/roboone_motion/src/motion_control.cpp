@@ -56,12 +56,6 @@ std::string MotionController::stateText() const
   return s;
 }
 
-void MotionController::injectMeasured(const BodyPose & p)
-{
-  cur_pose_ = p;
-  have_measured_ = true;
-}
-
 void MotionController::setWalkCmd(double vx, double vy, double wz, double stamp)
 {
   std::lock_guard<std::mutex> lk(walk_mtx_);
@@ -93,6 +87,37 @@ void MotionController::reportPlayerWarning()
 {
   if (player_.warning().empty()) {return;}
   ev_.warn(player_.warning(), 2000, "player_warning");
+}
+
+bool MotionController::armPathClear(const BodyPose & from, std::string & why) const
+{
+  bool ok = true;
+  for (int s = 0; s < kNumSide; ++s) {
+    const rk::LegServoParams & prm = map_->leg_params(s);
+    if (from.leg_mode[s] != LegMode::Servo || !from.leg_servo_valid[s]) {
+      why += std::string(kSideTag[s]) + "脚: 実測にサーボ角が無い ";
+      ok = false;
+      continue;
+    }
+    // 行き先のサーボ角。足裏書きなら MotionPlayer::start() と同じく補正なしの IK の影
+    double to[rk::kNumJoints];
+    if (hold_pose_.leg_mode[s] == LegMode::Servo && hold_pose_.leg_servo_valid[s]) {
+      for (std::size_t j = 0; j < rk::kNumJoints; ++j) {to[j] = hold_pose_.leg_servo[s][j];}
+    } else {
+      double theta[rk::kNumJoints];
+      if (!servoFromFootPose(prm, hold_pose_.foot[s], to, theta).ok()) {
+        why += std::string(kSideTag[s]) + "脚: 保持姿勢が IK で解けない ";
+        ok = false;
+        continue;
+      }
+    }
+    const rk::LegServoPathResult r = rk::legServoPath(prm, from.leg_servo[s], to);
+    if (!r.ok()) {
+      why += std::string(kSideTag[s]) + "脚: 保持姿勢までの途中で" + legPathWhy(r) + " ";
+      ok = false;
+    }
+  }
+  return ok;
 }
 
 void MotionController::startBlend(
@@ -287,8 +312,6 @@ MotionController::Tick MotionController::step(
   // --- 2) 技の要求を捌く。★武装の判定より 先（ヘッダ [1]）------------
   if (!req.empty()) {handleMotionRequest(req, now);}
 
-  if (measured) {have_measured_ = true;}
-
   // --- 3) 脱力 (最優先。どの状態からでも即座に落ちる) ----------------
   if (estop_.load()) {
     if (state_ != State::RELAX) {
@@ -304,16 +327,33 @@ MotionController::Tick MotionController::step(
     //   実測が揃わずに武装待ちが長引くほど踏みやすい。
     want_torque_ = false;
   } else if (state_ == State::RELAX && canArm()) {
-    // ★実測姿勢が 1 度も取れていないうちは武装しない（ヘッダ [2]）。
-    if (!have_measured_) {
-      ev_.warn(
-        "実測姿勢が取れないので武装しない: " + (why.empty() ? std::string("(理由不明)") : why),
-        2000, "arm_no_measure");
-    } else {
-      want_torque_ = true;
-      if (torque_ready) {
-        // cur_pose_ は RELAX 中に毎周期更新している「最後に取れた実測姿勢」。
-        if (measured) {cur_pose_ = *measured;}
+    // ★起点はこの周期の実測。取れない・経路が通らないなら武装しない（ヘッダ [2]）。
+    bool checked = false;   //!< この周期にもう経路を確かめた（検査は数 ms かかる）
+    if (!want_torque_) {
+      if (!measured) {
+        ev_.warn(
+          "実測姿勢が取れないので武装しない: " + (why.empty() ? std::string("(理由不明)") : why),
+          2000, "arm_no_measure");
+      } else if (now >= arm_check_at_) {
+        // hold は起点 = 行き先なので経路は無い（起点として使えるかは decode が見た）
+        std::string pwhy;
+        if (arm_in_place_ || armPathClear(*measured, pwhy)) {
+          want_torque_ = true;
+          checked = true;
+        } else {
+          arm_check_at_ = now + kArmRecheck;
+          ev_.warn("武装しない: " + pwhy, 2000, "arm_path");
+        }
+      }
+    }
+    if (want_torque_ && torque_ready) {
+      if (!measured) {
+        // トルクは実測位置を目標にして入っている（servo_bank）ので、待っても動かない
+        ev_.warn(
+          "トルクは入ったが実測姿勢が取れないので補間を待つ: " + why, 1000, "arm_wait_measure");
+      } else {
+        cur_pose_ = *measured;
+        std::string pwhy;
         if (arm_in_place_) {
           // hold: 実測姿勢をそのまま保持姿勢にする。補間距離ゼロ = その場で固まる
           arm_in_place_ = false;
@@ -326,13 +366,18 @@ MotionController::Tick MotionController::step(
               "トルクオン (その場保持)。実測姿勢 R[%.1f, %.1f, %.1f] のまま動かない",
               cur_pose_.foot[kRight].p.x, cur_pose_.foot[kRight].p.y,
               cur_pose_.foot[kRight].p.z));
+        } else if (!checked && !armPathClear(cur_pose_, pwhy)) {
+          // 検査からトルクが入るまでの数 ms に姿勢が変わった。脱力して出直す
+          want_torque_ = false;
+          arm_check_at_ = now + kArmRecheck;
+          ev_.warn("トルクは入ったが補間の経路が通らないので脱力に戻す: " + pwhy);
         } else {
           startBlend(hold_pose_, opt_.torque_on_time, now, "arming");
           setState(State::ARMING);
           ev_.info(
             fmt(
-              "トルクオン。実測姿勢 R[%.1f, %.1f, %.1f] から %.1fs かけて保持姿勢へ移る",
-              cur_pose_.foot[kRight].p.x, cur_pose_.foot[kRight].p.y,
+              "トルクオン。実測姿勢 R[%.1f, %.1f, %.1f] から %.1fs かけて保持姿勢へ"
+              "（サーボ角で補間）", cur_pose_.foot[kRight].p.x, cur_pose_.foot[kRight].p.y,
               cur_pose_.foot[kRight].p.z, opt_.torque_on_time));
         }
       }
@@ -345,8 +390,8 @@ MotionController::Tick MotionController::step(
   // --- 4) 状態ごとに目標姿勢を作る ----------------------------------
   switch (state_) {
     case State::RELAX:
-      // 脱力中は目標を作らない。手で動かされるので、実測を追いかけて
-      // おくと復帰時の補間の起点がそのまま使える。
+      // 脱力中は目標を作らない。手で動かされるので実測を追いかけておく
+      // （表示用。武装の起点はその周期の実測を使う。ヘッダ [2]）。
       if (measured) {
         cur_pose_ = *measured;
       } else {

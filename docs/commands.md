@@ -216,7 +216,8 @@ watch -n 0.5 'ros2 topic echo --once /joint_states --field position'   # 雑に�
 ros2 topic pub -t 3 /cmd_motion std_msgs/msg/String "{data: home}"
 ros2 topic pub -t 3 --qos-durability transient_local --qos-reliability reliable \
   /estop std_msgs/msg/Bool "{data: false}"          # トルクオン（★実測姿勢から
-                                                    #   torque_on_time かけてホーム姿勢へ移る）
+                                                    #   torque_on_time かけてホーム姿勢へ移る。
+                                                    #   サーボ角で補間するので足首は垂れたままでよい）
 ros2 topic pub -t 3 --qos-durability transient_local --qos-reliability reliable \
   /estop std_msgs/msg/Bool "{data: true}"           # 脱力
 ros2 topic pub -t 3 /cmd_motion std_msgs/msg/String "{data: squat}"   # 動作確認用の技
@@ -713,7 +714,8 @@ ros2 run roboone_kinematics ankle_dump --limits --home 2033 2193 --right    # �
 # ある姿勢の中間量（IK の Δ、順変換の反復数、ヤコビアン）を並べる
 ros2 run roboone_kinematics ankle_dump --th5 10 --th6 -30
 
-# 検算（「型 2 特異点と順変換の頑健性」の節が再発防止用）
+# 検算（「型 2 特異点と順変換の頑健性」の節が再発防止用。「武装の経路」の節は
+# motion の武装（垂れた足首からサーボ角の直線でホーム姿勢へ）が通ることの確認）
 ros2 run roboone_kinematics ankle_selftest -n 3000
 ```
 
@@ -901,7 +903,8 @@ ros2 bag play ~/roboone_logs/rosbag2_YYYY_MM_DD-HH_MM_SS
 
 # 生カウントが 0-4095 の外へ出ていないかを軸ごとに見る（多回転の巻き数ずれの検出）。
 # 足首 ID5/ID6 は servo_limits.yaml が [0, 0] = 多回転可。脱力で手早く動かすと巻き数が
-# ±4096 ぶん乗ることがあり、そのまま運動学へ流れて「実測姿勢が取れない」で武装しなくなる。
+# ±4096 ぶん乗ることがあり、「実測姿勢が取れないので武装しない: ... カウントが 0-4095 の外
+# (多回転の巻き数ずれ)」で武装しなくなる（2026-09-18 から理由に軸とカウントが出る）。
 # （2026-09-10 実機: R_ID6 -1672 / L_ID6 6103 = ちょうど ∓4096 ずれ）
 BAG=~/roboone_logs/rosbag2_YYYY_MM_DD-HH_MM_SS
 python3 -c '

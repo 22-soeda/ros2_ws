@@ -469,6 +469,88 @@ void testSingularity(const AnkleParams & prm)
   check(!e3.clamped, "窓の中の指令はそのまま通す");
 }
 
+// ------------------------------------------------------------ 武装の経路
+// motion ノードの武装は「実測のクランク角 -> 保持姿勢のクランク角」を直線で
+// 補間する（ankleCrankPath の注記）。脱力した足首は順変換の箱の外にいるのが普通。
+void testArmPath(const AnkleParams & prm)
+{
+  std::printf("\n武装の経路（ankleCrankPath、箱 [%.0f, %.0f] deg）\n",
+    ankle_config::ARM_CRANK_LIMIT_DEG[0], ankle_config::ARM_CRANK_LIMIT_DEG[1]);
+  const double d = 1.0 / kDeg;
+  using St = AnkleCrankPathStatus;
+  const AnkleIkResult neutral = ankleIk(prm, 0.0, 0.0, false);
+  check(ankleCrankPath(prm, neutral.q, neutral.q).status == St::Ok, "中立は起点として使える");
+
+  // 2026-09-17 の bag: 起動直後の脱力で両脚ともこのクランク角に垂れていた
+  const double droop[kAnkleChains] = {94.5 * d, 94.0 * d};
+  const AnkleFkResult fd = ankleFk(prm, droop, 0.0);
+  std::printf("    垂れた足首 q = (%.1f, %.1f) deg: 箱 CRANK_LIMIT_DEG で解くと crankClamped=%d\n",
+    droop[0] * kDeg, droop[1] * kDeg, fd.crankClamped ? 1 : 0);
+  check(fd.crankClamped, "垂れた足首は順変換の箱 (CRANK_LIMIT_DEG) の外");
+  check(ankleCrankPath(prm, droop, droop).status == St::Ok, "それでも武装の起点として使える");
+
+  // 行き先は (θ5, θ6) で与える。設計域の角・ホーム姿勢のあたり・エンベロープの端
+  const double targets[][2] = {
+    {0, 0}, {-15, 0}, {15, 0}, {0, -15}, {0, 15}, {-35, 0}, {-30, -10}, {-55, 0}};
+  double tq[8][kAnkleChains];
+  bool ikOk = true;
+  for (int t = 0; t < 8; ++t) {
+    const AnkleIkResult ik = ankleIk(prm, targets[t][0] * d, targets[t][1] * d, false);
+    ikOk = ikOk && ik.status == AnkleIkStatus::Ok;
+    tq[t][0] = ik.q[0];
+    tq[t][1] = ik.q[1];
+  }
+  check(ikOk, "行き先がすべて逆変換で解ける");
+  bool droopOk = true;
+  for (int t = 0; t < 8; ++t) {
+    droopOk = droopOk && ankleCrankPath(prm, droop, tq[t]).status == St::Ok;
+  }
+  check(droopOk, "垂れた足首から行き先のどれへも直線で通れる");
+
+  // 使えない起点
+  const double wrapped[kAnkleChains] = {droop[0] + 2.0 * M_PI, droop[1]};
+  check(ankleCrankPath(prm, wrapped, neutral.q).status == St::OutsideBox,
+    "巻き数ずれ (クランク +360 deg) は箱の外");
+  check(ankleCrankPath(prm, neutral.q, wrapped).status == St::OutsideBox, "終点も箱で見る");
+  const double neg[kAnkleChains] = {-60.0 * d, -60.0 * d};
+  check(ankleCrankPath(prm, neg, neutral.q).status == St::OutsideBox,
+    "両クランク -60 deg (型 2 特異点の側) は箱の外");
+
+  // 組めない姿勢。本機の寸法では箱の中が全部組めるので、testErrors と同じく
+  // ロッドを伸ばして壊した幾何で見る（中立のクランク角に解が無い）
+  AnkleParams broken = prm;
+  broken.rod[1] = 200.0;
+  broken.finalize();
+  check(ankleCrankPath(broken, neutral.q, neutral.q).status == St::NoPose,
+    "組めない始点は NoPose");
+
+  // 箱の中の格子（20 deg 刻み）: どこから始めても、行き先のどれへも直線で通れる。
+  // ARM_CRANK_LIMIT_DEG の - 側を -42 deg で止めている根拠（ankle_config.hpp）
+  int starts = 0, bad = 0;
+  for (double a = ankle_config::ARM_CRANK_LIMIT_DEG[0]; a <= ankle_config::ARM_CRANK_LIMIT_DEG[1];
+    a += 20.0)
+  {
+    for (double b = ankle_config::ARM_CRANK_LIMIT_DEG[0];
+      b <= ankle_config::ARM_CRANK_LIMIT_DEG[1]; b += 20.0)
+    {
+      const double q[kAnkleChains] = {a * d, b * d};
+      if (ankleCrankPath(prm, q, q).status != St::Ok) {++bad; continue;}
+      ++starts;
+      for (int t = 0; t < 8; ++t) {
+        const AnkleCrankPathResult r = ankleCrankPath(prm, q, tq[t]);
+        if (r.status != St::Ok) {
+          if (++bad <= 3) {
+            std::printf("    (%.0f, %.0f) -> 行き先 %d: status=%d at (%.1f, %.1f) deg\n",
+              a, b, t, static_cast<int>(r.status), r.q[0] * kDeg, r.q[1] * kDeg);
+          }
+        }
+      }
+    }
+  }
+  std::printf("    格子の始点 %d 点 × 行き先 8: 通らない %d\n", starts, bad);
+  checkRef(bad == 0, "箱の中の始点はどれも組めて、行き先のどれへも直線で通れる");
+}
+
 // ------------------------------------------------------------------ 整合確認
 void testConsistency(const AnkleParams & prm)
 {
@@ -524,6 +606,7 @@ int main(int argc, char ** argv)
   testScan(prm);
   testErrors(prm);
   testSingularity(prm);
+  testArmPath(prm);
 
   std::printf("\n%s（失敗 %d 件）\n", g_fail == 0 ? "すべて通過" : "失敗あり", g_fail);
   return g_fail == 0 ? 0 : 1;

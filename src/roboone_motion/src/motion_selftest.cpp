@@ -13,7 +13,9 @@
 //   [3] 実機の motions.yaml が読めること
 //   [4] 脚の角度書き (R_leg / L_leg) の読み込み・引き継ぎ・書き方が混ざる区間
 //   [5] 状態機械の順序 (motion_control.hpp「順序の約束」)。**全部、実機でしか
-//       踏めなかったバグの修正**なので、テストが無いと再発しても気付けない
+//       踏めなかったバグの修正**なので、テストが無いと再発しても気付けない。
+//       武装の起点 (pose_codec.hpp「実測姿勢」) は生カウントから decode() を通して
+//       確かめる。脱力して垂れた足首 (2026-09-17 の bag の値) から跳ばずに立つこと
 //   [6] 設定の門 (motion_config.hpp)。gait.yaml / home_pose.yaml を書き換えたあと、
 //       実機を起こす前にここで確かめられる。**既定では報告だけで落とさない。**
 //       [1]-[5] はコードの検算なので赤いままにしてはいけないが、[6] が見ているのは
@@ -151,6 +153,28 @@ void footRotation(const rk::Mat3 & r1, const rk::Mat3 & r0, double & roll, doubl
   }
   roll = std::atan2(d[2][1] - d[1][2], d[1][1] + d[2][2]);
   pitch = std::atan2(d[0][2] - d[2][0], d[0][0] + d[2][2]);
+}
+
+/// decode() が出すのと同じ形の実測姿勢（本体 = サーボ角、足裏は影）。
+rm::BodyPose asMeasured(const rm::ServoMap & map, const rm::BodyPose & p)
+{
+  rm::BodyPose m = p;
+  for (int s = 0; s < rm::kNumSide; ++s) {
+    rm::fillLegServoFromFoot(map.leg_params(s), m, s);
+    m.leg_mode[s] = rm::LegMode::Servo;
+  }
+  return m;
+}
+
+/// 生カウントを「全軸読めた」ServoState の列にする（decode() の入力）。
+std::vector<feetech_servo::ServoState> statesFromCounts(const std::vector<int16_t> & counts)
+{
+  std::vector<feetech_servo::ServoState> st(counts.size());
+  for (std::size_t k = 0; k < counts.size(); ++k) {
+    st[k].pos = counts[k];
+    st[k].valid = true;
+  }
+  return st;
 }
 
 /// 立位に近い、左右対称な足裏の目標（点検の土台）。
@@ -456,8 +480,8 @@ int main(int argc, char ** argv)
     const double dt = 1.0 / 200.0;
     rm::MotionController::Options copt;   // 既定のまま (require_home_before_arm = true)
 
-    // 実測姿勢として使う「取れている姿勢」。ホーム姿勢なら必ず IK で解ける。
-    const rm::BodyPose meas = home;
+    // 実測姿勢として使う「取れている姿勢」。ホーム姿勢のサーボ角（必ず IK で解ける）。
+    const rm::BodyPose meas = asMeasured(map, home);
     const std::string why = "(テスト)";
 
     auto make = [&]() {
@@ -488,7 +512,7 @@ int main(int argc, char ** argv)
       drop(*c);
     }
 
-    // [5-2] 実測姿勢が 1 度も取れていないうちは武装しない。
+    // [5-2] その周期の実測姿勢が取れないうちは武装しない。
     //   起点が無いまま始めると補間にならず、「トルクが入るだけで動かない」
     //   (2026-08-28 実機)。代用すると今度は保持姿勢へ一気に飛ぶ。
     {
@@ -501,6 +525,21 @@ int main(int argc, char ** argv)
         "実測姿勢が取れないうちは武装せず、トルクも要求しない");
       t = c->step(dt, dt, &meas, why, true);
       check(t.state == rm::State::ARMING, "実測姿勢が取れたら武装する");
+      drop(*c);
+    }
+    //   脱力中に 1 度取れても、武装する周期に取れていなければ武装しない。
+    //   2026-09-18 までは「1 度取れたら以後ずっと取れた扱い」で、手で足首を動かして
+    //   読めなくなった後も、古い実測を起点にして武装していた。
+    {
+      auto c = make();
+      c->setEstop(true);
+      c->requestMotion("home");
+      auto t = c->step(0.0, dt, &meas, why, true);
+      c->setEstop(false);
+      t = c->step(dt, dt, nullptr, why, true);
+      check(
+        t.state == rm::State::RELAX && !t.want_torque,
+        "★前に取れた実測があっても、その周期に取れなければ武装しない");
       drop(*c);
     }
 
@@ -615,6 +654,147 @@ int main(int argc, char ** argv)
       check(t.state == rm::State::HOLD, "指令を止めたら HOLD に戻る");
       check(changes == 2, fmt("状態が変わったのは HOLD->WALK->HOLD の 2 回だけ (%d 回)", changes));
       drop(*c);
+    }
+
+    // [5-7] 武装の起点はサーボ角。脱力して垂れた足首から跳ばずに立つ。
+    //   2026-09-17 の bag: 起動直後の脱力で両脚とも足首クランク ≈ (+94.5°, +94.0°)。
+    //   CRANK_LIMIT_DEG の箱の外なので、FK で足裏を出す旧方式では武装しなかった
+    //   （毎回手で戻していた）。ロッドが死点を越えた姿勢で、FK の足裏を IK で戻すと
+    //   別のクランク角になる = 足裏で補間すると初周期に跳ぶ。
+    {
+      rm::PoseCodec codec;
+      codec.configure(&map, body_pitch);
+      const rm::PoseCodec::Encoded eh = codec.encode(home);
+      std::vector<int16_t> cnt[rm::kNumSide];
+      std::vector<feetech_servo::ServoState> st[rm::kNumSide];
+      const double q_droop[2] = {94.5 / kR2D, 94.0 / kR2D};
+      for (int s = 0; s < rm::kNumSide; ++s) {
+        const rk::AnkleParams & ap = map.leg_params(s).ankle;
+        cnt[s] = eh.counts[s];
+        cnt[s][rk::ANKLE_PITCH] = static_cast<int16_t>(
+          map.leg_count_from_servo(s, rk::ANKLE_PITCH, rk::ankleServoFromCrank(ap, 0, q_droop[0])));
+        cnt[s][rk::ANKLE_ROLL] = static_cast<int16_t>(
+          map.leg_count_from_servo(s, rk::ANKLE_ROLL, rk::ankleServoFromCrank(ap, 1, q_droop[1])));
+        st[s] = statesFromCounts(cnt[s]);
+      }
+      const rm::PoseCodec::Decoded d = codec.decode(st);
+      check(
+        d.status[rm::kRight] == rk::LegServoStatus::AnkleClamped &&
+        d.status[rm::kLeft] == rk::LegServoStatus::AnkleClamped,
+        "垂れた足首は FK の箱の外 (AnkleClamped。旧方式ではここで武装しなかった)");
+      check(d.ok, d.ok ? "それでも武装の起点としては使える" : "武装の起点として使えない: " + d.why);
+      bool servo_body = true;
+      for (int s = 0; s < rm::kNumSide; ++s) {
+        servo_body = servo_body && d.pose.leg_mode[s] == rm::LegMode::Servo &&
+          d.pose.leg_servo_valid[s];
+      }
+      check(servo_body, "実測姿勢の本体はサーボ角");
+
+      // 逆変換で戻すと別のクランク角になる（足裏で補間しない理由）
+      {
+        const rk::AnkleParams & ap = map.leg_params(rm::kRight).ankle;
+        rk::AnkleParams wide = ap;
+        for (int i = 0; i < rk::kAnkleChains; ++i) {
+          wide.qMin[i] = rk::ankle_config::ARM_CRANK_LIMIT_DEG[0] / kR2D;
+          wide.qMax[i] = rk::ankle_config::ARM_CRANK_LIMIT_DEG[1] / kR2D;
+        }
+        const rk::AnkleFkResult f = rk::ankleFk(wide, q_droop, 0.0);
+        const rk::AnkleIkResult b = rk::ankleIk(ap, f.th5, f.th6, false);
+        check(
+          f.status == rk::AnkleFkStatus::Ok &&
+          std::max(std::abs(b.q[0] - q_droop[0]), std::abs(b.q[1] - q_droop[1])) * kR2D > 5.0,
+          fmt(
+            "垂れた足首 θ5 %.1f deg を逆変換で戻すとクランク (%.1f, %.1f) deg (実測 94.5, 94.0)",
+            f.th5 * kR2D, b.q[0] * kR2D, b.q[1] * kR2D));
+      }
+
+      // decode -> encode で実測と同じカウントに戻る（前傾も往復する）
+      {
+        const rm::PoseCodec::Encoded e = codec.encode(d.pose);
+        int worst = 0;
+        for (int s = 0; s < rm::kNumSide; ++s) {
+          for (std::size_t j = 0; j < rk::kNumJoints; ++j) {
+            worst = std::max(worst, std::abs(e.counts[s][j] - cnt[s][j]));
+          }
+        }
+        check(
+          e.send[rm::kRight] && e.send[rm::kLeft] && worst == 0,
+          fmt("実測姿勢をそのまま指令にすると実測のカウントに戻る (最大ずれ %d)", worst));
+      }
+
+      // 武装: 初周期は実測のまま、補間中は滑らかに、終わりはホーム姿勢
+      {
+        auto c = make();
+        c->setEstop(false);
+        c->requestMotion("home");
+        double now = 0.0;
+        auto t = c->step(now, dt, &d.pose, why, true);
+        check(t.state == rm::State::ARMING, "垂れた足首のまま武装に入る");
+        std::vector<int16_t> prev[rm::kNumSide];
+        int first = 0, step_max = 0;
+        bool all_sent = true;
+        for (int i = 0; i < 1000 && t.state == rm::State::ARMING; ++i) {
+          const rm::PoseCodec::Encoded e = codec.encode(*t.target);
+          for (int s = 0; s < rm::kNumSide; ++s) {
+            all_sent = all_sent && e.send[s];
+            if (!e.send[s]) {continue;}
+            for (std::size_t j = 0; j < rk::kNumJoints; ++j) {
+              const int v = e.counts[s][j];
+              if (i == 0) {first = std::max(first, std::abs(v - cnt[s][j]));}
+              if (!prev[s].empty()) {step_max = std::max(step_max, std::abs(v - prev[s][j]));}
+            }
+            prev[s] = e.counts[s];
+          }
+          now += dt;
+          t = c->step(now, dt, &d.pose, why, true);
+        }
+        check(first <= 1, fmt("補間の初周期は実測のカウント (最大ずれ %d)", first));
+        check(all_sent, "補間中は毎周期両脚の指令が出る (IK で詰まらない)");
+        // 足首 ~66 deg ≈ 750 カウントを 2 秒の 5 次補間で: 最大 ~3.5 カウント/周期
+        check(step_max <= 15, fmt("補間中に跳ばない (1 周期の最大 %d カウント)", step_max));
+        check(t.state == rm::State::HOLD, "補間が終わって HOLD");
+        const rm::PoseCodec::Encoded e = codec.encode(c->currentPose());
+        int to_home = 0;
+        for (int s = 0; s < rm::kNumSide; ++s) {
+          for (std::size_t j = 0; j < rk::kNumJoints; ++j) {
+            to_home = std::max(to_home, std::abs(e.counts[s][j] - eh.counts[s][j]));
+          }
+        }
+        check(to_home <= 1, fmt("行き着く先はホーム姿勢 (最大ずれ %d カウント)", to_home));
+        drop(*c);
+      }
+
+      // 起点として使えない実測: 巻き数ずれ / 武装の箱の外
+      {
+        std::vector<feetech_servo::ServoState> bad[rm::kNumSide] = {st[0], st[1]};
+        bad[rm::kLeft][rk::ANKLE_PITCH].pos += 4096;
+        const rm::PoseCodec::Decoded w = codec.decode(bad);
+        check(
+          !w.ok && w.why.find("巻き数") != std::string::npos,
+          "カウントが 0-4095 の外なら使わない (多回転の巻き数ずれ): " + w.why);
+
+        bad[rm::kLeft] = st[rm::kLeft];
+        const rk::AnkleParams & ap = map.leg_params(rm::kLeft).ankle;
+        for (int i = 0; i < rk::kAnkleChains; ++i) {
+          const std::size_t j = (i == 0) ? rk::ANKLE_PITCH : rk::ANKLE_ROLL;
+          bad[rm::kLeft][j].pos = map.leg_count_from_servo(
+            rm::kLeft, j, rk::ankleServoFromCrank(ap, i, -60.0 / kR2D));
+        }
+        const rm::PoseCodec::Decoded o = codec.decode(bad);
+        check(
+          !o.ok && o.why.find("武装の箱") != std::string::npos,
+          "両クランク -60 deg (型 2 特異点の側) は使わない: " + o.why);
+
+        // decode の判定を素通りしても、状態機械の経路検査で止まる
+        auto c = make();
+        c->setEstop(false);
+        c->requestMotion("home");
+        const auto t = c->step(0.0, dt, &o.pose, why, true);
+        check(
+          t.state == rm::State::RELAX && !t.want_torque,
+          "その実測を起点に渡されても、状態機械はトルクを要求しない");
+        drop(*c);
+      }
     }
   }
 
@@ -1022,21 +1202,22 @@ int main(int argc, char ** argv)
       auto c = std::make_unique<rm::MotionController>();
       c->configure(&map, &lib5, gait, home, body_pitch, copt);
       const std::string why = "(テスト)";
+      const rm::BodyPose meas = asMeasured(map, home);
       c->setEstop(false);
       c->requestMotion("home");
       double now = 0.0;
-      auto t = c->step(now, dt, &home, why, true);
+      auto t = c->step(now, dt, &meas, why, true);
       for (int i = 0; i < 1000 && t.state != rm::State::HOLD; ++i) {
         now += dt;
-        t = c->step(now, dt, &home, why, true);
+        t = c->step(now, dt, &meas, why, true);
       }
       // HOLD に入ったその周期はまだ歩行計画を回していないので、もう 1 周期進める
       now += dt;
-      t = c->step(now, dt, &home, why, true);
+      t = c->step(now, dt, &meas, why, true);
       const bool in_hold = (t.state == rm::State::HOLD) && c->walkOutputs() != nullptr;
       c->requestMotion(rm::kHoldMotion);
       now += dt;
-      t = c->step(now, dt, &home, why, true);
+      t = c->step(now, dt, &meas, why, true);
       check(
         in_hold && t.state == rm::State::STAY && c->walkOutputs() == nullptr,
         "歩行計画の出力は HOLD で出て、STAY では出ない");

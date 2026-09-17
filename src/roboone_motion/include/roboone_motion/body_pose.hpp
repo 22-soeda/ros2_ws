@@ -29,6 +29,8 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
+#include <string>
 #include <vector>
 
 #include "roboone_kinematics/leg_servo.hpp"
@@ -161,6 +163,13 @@ inline void bodyPitchApplyServo(
   servo[rk::HIP_PITCH] += -psi * prm.leg.sign[rk::HIP_PITCH];
 }
 
+/// bodyPitchApplyServo の逆（Σ_B -> Σ_U）。実測のサーボ角を Σ_U に戻す。
+inline void bodyPitchRemoveServo(
+  const rk::LegServoParams & prm, double servo[rk::kNumJoints], double psi)
+{
+  servo[rk::HIP_PITCH] += psi * prm.leg.sign[rk::HIP_PITCH];
+}
+
 /// 片足の変換結果。どこで詰まったかを呼び側が切り分けられるように分けて返す。
 struct LegSolve
 {
@@ -272,6 +281,41 @@ inline bool fillFootFromLegServo(
   if (st != rk::LegServoStatus::Ok && st != rk::LegServoStatus::AnkleClamped) {return false;}
   pose.foot[side] = f;
   return true;
+}
+
+/// rk::legServoPath() の結果を 1 行の理由にする（ok() なら空）。角度は deg。
+inline std::string legPathWhy(const rk::LegServoPathResult & r)
+{
+  const double r2d = 180.0 / M_PI;
+  char buf[160];
+  if (r.knee != rk::KneeStatus::Ok) {
+    std::snprintf(
+      buf, sizeof(buf), "膝がサーボ角 %.1f deg で組めない (status=%d)",
+      r.kneeServo * r2d, static_cast<int>(r.knee));
+    return buf;
+  }
+  const double q0 = r.ankle.q[0] * r2d, q1 = r.ankle.q[1] * r2d;
+  switch (r.ankle.status) {
+    case rk::AnkleCrankPathStatus::Ok:
+      return {};
+    case rk::AnkleCrankPathStatus::OutsideBox:
+      // 巻き数ずれならクランク角は ±360° ずれるので、±180° を超えていたらそれを疑う
+      std::snprintf(
+        buf, sizeof(buf), "足首クランク (%.1f, %.1f) deg が武装の箱 [%.0f, %.0f] の外%s", q0, q1,
+        rk::ankle_config::ARM_CRANK_LIMIT_DEG[0], rk::ankle_config::ARM_CRANK_LIMIT_DEG[1],
+        (std::abs(q0) > 180.0 || std::abs(q1) > 180.0) ? " (多回転の巻き数ずれ)" : "");
+      break;
+    case rk::AnkleCrankPathStatus::NoPose:
+      std::snprintf(buf, sizeof(buf), "足首がクランク (%.1f, %.1f) deg で組めない", q0, q1);
+      break;
+    case rk::AnkleCrankPathStatus::Singular:
+      std::snprintf(buf, sizeof(buf), "足首がクランク (%.1f, %.1f) deg で特異点に触れる", q0, q1);
+      break;
+    default:
+      std::snprintf(buf, sizeof(buf), "足首の姿勢がクランク (%.1f, %.1f) deg で跳ぶ", q0, q1);
+      break;
+  }
+  return buf;
 }
 
 /// 足裏の目標が「どこまで安心して使えるか」の 3 段階。
