@@ -51,6 +51,9 @@ SWING = 'SWING'
 K_QUINTIC = 10.0 / math.sqrt(3.0)   # 5 次多項式の加速度ピーク係数
 SWING_RISE = 0.45                   # 振り出しのうち足を上げる区間 (walk_core の遊脚と同じ)
 
+#: [m] 接地とみなす高さ。td_overdrive = 0 の「ちょうど 0 で着く」計画を弾かないための許容
+LAND_EPS = 1e-9
+
 __all__ = ['StaticWalkEngine', 'check_static_gait', 'support_margin',
            'SHIFT', 'SWING', 'IDLE', 'STOP', 'ESTOP', 'LEFT', 'RIGHT']
 
@@ -104,7 +107,9 @@ def check_static_gait(p: StaticGaitParams) -> dict:
         if falling and z - p.td_speed_max * dt > z_ref + 1e-12:
             r['saturated'] = True
         z = swing_height_at(p, tau, z, dt)
-        if not r['lands'] and z <= 0.0:
+        # td_overdrive = 0 なら最後の周期でちょうど 0 に着く。浮動小数の丸めで
+        # +1e-18 のような値が残るので、1nm 以下は接地とみなす (C++ と同じ許容)
+        if not r['lands'] and z <= LAND_EPS:
             r['lands'] = True
             r['touch_phase'] = tau
     r['z_end'] = z

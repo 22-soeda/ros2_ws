@@ -89,6 +89,9 @@ namespace detail
 {
 constexpr double kStaticQuintic = 10.0 / 1.7320508075688772;  // 10/√3 (加速度ピーク係数)
 constexpr double kSwingRise = 0.45;       // 振り出しのうち足を上げる区間 (walk_core と同じ)
+// [m] 接地とみなす高さ。td_overdrive = 0 の「ちょうど 0 で着く」計画を、浮動小数の
+// 丸め (+1e-18 のような値) で「届かない」と弾かないための許容 (Python 原本と同じ)
+constexpr double kLandEps = 1e-9;
 
 // 5 次多項式 s(u) と 1 階・2 階微分
 inline void quintic3(double u, double & s, double & ds, double & dds)
@@ -159,7 +162,7 @@ inline StaticGaitCheck checkStaticGait(const StaticGaitParams & p)
     const double z_ref = detail::swingRef(p, tau, falling);
     if (falling && z - p.td_speed_max * dt > z_ref + 1e-12) {r.saturated = true;}
     z = staticSwingHeight(p, tau, z, dt);
-    if (!r.lands && z <= 0.0) {
+    if (!r.lands && z <= detail::kLandEps) {
       r.lands = true;
       r.touch_phase = tau;
     }
