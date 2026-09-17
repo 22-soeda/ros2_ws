@@ -195,8 +195,8 @@ details.params .grid span:nth-child(odd) { color: var(--ink-2); }
     <div class="card">
       <h2>指令 → 1 歩のパラメータ (毎周期)</h2>
       <canvas id="joy" width="140" height="140" style="width:140px;height:140px;margin:4px auto 0;display:block"></canvas>
-      <div class="joyhint">パッドをドラッグ / WASD・矢印キーで操縦。離すと停止。M で足踏み (試作)、P で計画の切り替え</div>
-      <button class="ctrl" id="plannerBtn" title="準静的は可視化だけの試作。実機の歩行エンジンには無い">計画: 動的 (walk_core)</button>
+      <div class="joyhint">パッドをドラッグ / WASD・矢印キーで操縦。離すと停止。M で足踏み (試作)、P で動歩行と静歩行の切り替え</div>
+      <button class="ctrl" id="plannerBtn" title="動歩行 (walk_core) と静歩行 (static_walk) を切り替える">計画: 動歩行 (walk_core)</button>
       <button class="ctrl" id="marchBtn" title="可視化だけの試作。実機の歩行エンジンには無い">足踏み (試作): OFF</button>
       <dl class="pipe" id="pipe"></dl>
     </div>
@@ -225,7 +225,7 @@ details.params .grid span:nth-child(odd) { color: var(--ink-2); }
 /*__WALK_CORE_JS__*/
 </script>
 <script>
-/*__QS_JS__*/
+/*__STATIC_WALK_JS__*/
 </script>
 <script>
 'use strict';
@@ -253,11 +253,24 @@ class MarchWalkEngineJS extends WalkEngineJS {
   }
 }
 
-// 5, 6 は準静的歩行の試作 (quasistatic.js) だけが使う。record.py の STATE_CODE と揃える
+// 静歩行の足踏み。**可視化専用**で、staticwalk.js (3 実装照合の対象) には入っていない。
+// record.py の MarchStaticWalkEngine と同じ作りで、march の間は指令の大きさに関係なく
+// 「歩いている」とみなす。
+class MarchStaticWalkEngineJS extends StaticWalkEngineJS {
+  constructor(params) {
+    super(params);
+    this.march = false;
+  }
+
+  _moving(eps) { return this.march || super._moving(eps); }
+}
+
+// 5, 6 は静歩行 (staticwalk.js) だけが使う。record.py の STATE_CODE と揃える
 const STATES = ['IDLE', 'START', 'STEP', 'STOP', 'ESTOP', 'SHIFT', 'SWING'];
 const STATE_CODE = { IDLE: 0, START: 1, STEP: 2, STOP: 3, ESTOP: 4, SHIFT: 5, SWING: 6 };
 const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-const FOOT_L = 0.048, FOOT_W = 0.030;   // 足裏の描画サイズ (見た目用)
+// 足裏の描画サイズ。静歩行の支持多角形の判定に使っている実寸 (static_gait.yaml) で描く
+const FOOT_L = DATA.static.params.sole_length, FOOT_W = DATA.static.params.sole_width;
 
 // ---------------------------------------------------------------- テーマ
 const themeBtn = document.getElementById('themeBtn');
@@ -280,7 +293,7 @@ let playing = true;
 let speed = 1;
 let lastTs = null;
 let live = null;          // ライブ操縦モード (null = 記録シナリオ再生)
-let livePlanner = 'dcm';  // ライブ操縦の計画器: 'dcm' (walk_core) / 'qs' (準静的の試作)
+let livePlanner = 'dcm';  // ライブ操縦の計画器: 'dcm' (動歩行 walk_core) / 'static' (静歩行)
 
 const nFrames = s => s.ticks.t.length;
 
@@ -294,10 +307,10 @@ function makeLive() {
   for (const k of ['t','st','ph','sup','stop','lock','cx','cy','vx','vy',
                    'xix','xiy','comx','comy','zx','zy',
                    'lfx','lfy','lfz','rfx','rfy','rfz',
-                   'pnx','pny','plx','ply','bx','by','xex','xey','mf']) cols[k] = [];
-  // 準静的は gait.yaml の値 (DATA.params) で回す。動的は従来どおり walkcore.js の既定値
-  const eng = (livePlanner === 'qs')
-    ? new QuasiStaticWalkerJS(Object.assign(walkDefaultParams(), DATA.params), DATA.qs)
+                   'pnx','pny','plx','ply','bx','by','xex','xey','mf','sm']) cols[k] = [];
+  // 静歩行は static_gait.yaml の値 (DATA.static.params) で回す。動歩行は従来どおり walkcore.js の既定値
+  const eng = (livePlanner === 'static')
+    ? new MarchStaticWalkEngineJS(DATA.static.params)
     : new MarchWalkEngineJS();
   return {
     eng,
@@ -338,6 +351,7 @@ function pushLiveFrame(o, cmd) {
   k.t.push(o.t); k.st.push(stCode); k.ph.push(o.phase); k.sup.push(o.support);
   k.stop.push(o.stopping ? 1 : 0); k.lock.push(o.locked ? 1 : 0);
   k.mf.push(live.eng.march ? 1 : 0);
+  k.sm.push(null);          // 静的余裕は記録シナリオ (record.py) だけが出す
   k.cx.push(cmd[0]); k.cy.push(cmd[1]); k.vx.push(o.v[0]); k.vy.push(o.v[1]);
   k.xix.push(o.xi[0]); k.xiy.push(o.xi[1]);
   k.comx.push(o.com[0]); k.comy.push(o.com[1]);
@@ -469,14 +483,14 @@ function toggleMarch() {
 marchBtn.onclick = () => { toggleMarch(); marchBtn.blur(); };
 const plannerBtn = document.getElementById('plannerBtn');
 function updatePlannerBtn() {
-  const qs = livePlanner === 'qs';
-  plannerBtn.textContent = '計画: ' + (qs ? '準静的 (試作)' : '動的 (walk_core)');
-  plannerBtn.classList.toggle('on', qs);
+  const st = livePlanner === 'static';
+  plannerBtn.textContent = '計画: ' + (st ? '静歩行 (static_walk)' : '動歩行 (walk_core)');
+  plannerBtn.classList.toggle('on', st);
 }
 function togglePlanner() {
   if (!live) return;
   const march = live.eng.march;
-  livePlanner = (livePlanner === 'qs') ? 'dcm' : 'qs';
+  livePlanner = (livePlanner === 'static') ? 'dcm' : 'static';
   enterLive();                        // 計画器を替えたら立位からやり直す
   live.eng.march = march;             // 足踏みの入り切りは引き継ぐ
   updateMarchBtn();
@@ -703,7 +717,7 @@ function drawTopdown() {
       ctx.stroke(); ctx.restore();
       // 高さをリングの大きさで示す
       const [sx, sy] = W2S(fx, fy, r);
-      const rad = 4 + fz / DATA.params.swing_height * 8;
+      const rad = 4 + fz / (sc.planner === 'static' ? DATA.static.params : DATA.params).swing_height * 8;
       ctx.strokeStyle = css('--ink-2'); ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.arc(sx, sy, rad, 0, 7); ctx.stroke();
     }
@@ -898,8 +912,9 @@ function reachRow(k, f) {
   return ['実機の脚で届くか', 'IK', txt];
 }
 
-function drawPipeQs(k, f) {
-  const T = DATA.params.t_step;
+function drawPipeStatic(k, f) {
+  const sp = DATA.static.params;
+  const T = sp.stride_time;
   const mm = v => (v * 1000).toFixed(1) + ' mm';
   const dz = Math.hypot(k.zx[f] - k.comx[f], k.zy[f] - k.comy[f]);
   let dsup = '— (両足)';
@@ -910,14 +925,18 @@ function drawPipeQs(k, f) {
   }
   const phaseName = { SHIFT: '重心移動', SWING: '振り出し', STOP: '中点へ戻す', IDLE: '立位' };
   const st = STATES[k.st[f]];
+  const sm = k.sm ? k.sm[f] : null;
+  const smTxt = sm == null ? '—'
+    : (sm < 0 ? `<span class="reachwarn">⚠ 外 ${mm(-sm)}</span>` : mm(sm));
   return [
-    ['計画', '', '準静的 (試作。実機には無い)'],
+    ['計画', '', '静歩行 (static_walk)'],
     ['生指令 v_cmd', '', fmt(k.cx[f], k.cy[f], 3) + ' m/s'],
     ['整形後 v', '', fmt(k.vx[f], k.vy[f], 3) + ' m/s'],
-    ['歩幅 L = vT', '', fmt(k.vx[f] * T, k.vy[f] * T, 3) + ' m'],
+    ['歩幅 L = v·stride_time', '', fmt(k.vx[f] * T, k.vy[f] * T, 3) + ' m'],
     ['着地点 p_land', '', fmt(k.plx[f], k.ply[f])],
-    ['|ZMP − 重心|', `許容 ${(DATA.qs.zmp_tol * 1000).toFixed(1)} mm`, mm(dz)],
-    ['重心と支持足の中心', `内寄せ ${(DATA.qs.com_inset * 1000).toFixed(0)} mm`, dsup],
+    ['|ZMP − 重心|', `許容 ${(sp.zmp_tol * 1000).toFixed(1)} mm`, mm(dz)],
+    ['ZMP の静的余裕', '支持多角形の縁まで', smTxt],
+    ['重心と支持足の中心', `横ずらし ${(sp.com_offset_y * 1000).toFixed(0)} mm`, dsup],
     ['状態 / 位相', '', `${st} ${phaseName[st] || ''} / ${(k.ph[f] ?? 0).toFixed(2)}`],
     ['支持足', '', k.sup[f] === 1 ? '左' : (k.sup[f] === -1 ? '右' : '両足')],
   ];
@@ -927,7 +946,7 @@ function drawPipe() {
   const k = sc.ticks, f = Math.floor(frame);
   const T = DATA.params.t_step;
   const clampedNow = isClampedNow(f);
-  const rows = sc.planner === 'qs' ? drawPipeQs(k, f) : [
+  const rows = sc.planner === 'static' ? drawPipeStatic(k, f) : [
     ['生指令 v_cmd', '', fmt(k.cx[f], k.cy[f], 3) + ' m/s'],
     ['整形後 v', '式(1)(2)', fmt(k.vx[f], k.vy[f], 3) + ' m/s'],
     ['歩幅 L = vT', '式(4)', fmt(k.vx[f] * T, k.vy[f] * T, 3) + ' m'],
@@ -1028,16 +1047,20 @@ const paramGrid = document.getElementById('paramGrid');
     ['b_x @0.10 m/s', (d['b_x_at_0.10'] * 1000).toFixed(2) + ' mm'],
     ['b_y (横振り)', (d.b_y_lateral * 1000).toFixed(2) + ' mm'],
   ];
-  if (DATA.qs) {
-    const q = DATA.qs;
+  if (DATA.static) {
+    const s = DATA.static, q = s.params;
     rows.push(
-      ['準静的 (試作): ZMP 許容', (q.zmp_tol * 1000).toFixed(1) + ' mm'],
-      ['準静的: 重心加速度の上限', q.a_lim + ' m/s²'],
-      ['準静的: 足間隔ぶんの重心移動', q.t_shift_w + ' s'],
-      ['準静的: 振り出し時間', q.t_swing + ' s'],
-      ['準静的: 重心の内寄せ', (q.com_inset * 1000).toFixed(0) + ' mm'],
-      ['準静的: 足上げ高さ', (q.h_sw * 1000).toFixed(0) + ' mm'],
+      ['静歩行: 足間隔 W', q.foot_spacing + ' m'],
+      ['静歩行: 足裏 (前後×左右)', `${q.sole_length * 1000} × ${q.sole_width * 1000} mm`],
+      ['静歩行: ZMP 許容', (q.zmp_tol * 1000).toFixed(1) + ' mm'],
+      ['静歩行: 重心加速度の上限', s.a_lim + ' m/s²'],
+      ['静歩行: 足間隔ぶんの重心移動', s.t_shift_step + ' s'],
+      ['静歩行: 振り出し時間', q.t_swing + ' s'],
+      ['静歩行: 重心の横ずらし (+外)', (q.com_offset_y * 1000).toFixed(0) + ' mm'],
+      ['静歩行: 足上げ高さ', (q.swing_height * 1000).toFixed(0) + ' mm'],
+      ['静歩行: 全速前進の 1 歩', `${s.t_cycle_fwd} s (${s.v_fwd_real} m/s)`],
     );
+    for (const e of s.errors) rows.push(['<span class="reachwarn">⚠ 静歩行の設定</span>', e]);
   }
   paramGrid.innerHTML = rows.map(([a, b]) => `<span>${a}</span><span>${b}</span>`).join('');
 }

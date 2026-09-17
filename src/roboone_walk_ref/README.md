@@ -20,6 +20,9 @@
   **motion ノードもこれを share から読む**（設定の原本もここに一本化してある）
 - `config/home_pose.yaml` — ホーム姿勢 (足裏の位置姿勢)。同じく motion ノードが読む
 - `test/test_walk_core.py` — 文書 §9 の単体テスト (LIPM 整合・決定性・収束など)
+- `roboone_walk_ref/static_walk/` — **静歩行**の計画ライブラリ (仕様原本)。下の節
+- `config/static_gait.yaml` — 静歩行の設定 (gait.yaml とは別ファイル・別の型)
+- `test/test_static_walk.py` — 静歩行の単体テスト
 
 可視化は `roboone_viz` に分けてある。
 
@@ -67,3 +70,33 @@ out = eng.update(vx, vy, 0.005)   # 200 Hz で回す
 ```
 
 可視化は `src/roboone_viz/README.md` を見ること。
+
+## 静歩行 (static_walk)
+
+重心を直接計画して、各瞬間で静的に立っている歩き方を作る。walk_core と同じく
+`update(vx, vy, dt)` の入力列だけで決まり、出力は walk_core の `WalkOutputs` と同じ型
+(state は IDLE / SHIFT / SWING / STOP / ESTOP)。
+
+    IDLE -> SHIFT (両足支持で重心を支持足の上へ) -> SWING (止めたまま反対の足を振り出す)
+         -> SHIFT -> ... -> 指令ゼロ: 足を揃える -> STOP (重心を中点へ) -> IDLE
+
+- 重心移動の時間は「ZMP が重心の真下から `zmp_tol` 以上ずれない」ように距離から決める
+  (5mm で足間隔 140mm に 2.07 s)
+- 歩幅は `v·stride_time` で、振り出しの開始時に固定する。全速前進で 1 歩 2.96 s・0.020 m/s
+- `foot_spacing` は実機の足間隔そのもの (動歩行の stance_y_offset の仕掛けは使わない)
+- 足裏 118 × 74 mm (2026-09-17 実測) を IK の目標点中心の長方形とみなし、
+  `support_margin()` で ZMP の静的余裕を出す。テストは全時刻でこれが正であることを見る
+- 足上げは 25mm。重心を支持足の上に置くと遊脚が骨盤から横へ 140mm 以上開き、
+  足首リンクが高く上げられない (表は static_gait.yaml)
+
+walk_core と同じく 3 実装を揃える (JS は `roboone_viz/staticwalk.js`、
+C++ は `roboone_walk_core` に入れる予定で未実装)。
+
+```bash
+python3 -m pytest src/roboone_walk_ref/test/test_static_walk.py -q
+python3 src/roboone_walk_core/tools/compare_walk_engines.py --engine static
+
+from roboone_walk_ref.static_walk import StaticWalkEngine, StaticGaitParams
+eng = StaticWalkEngine(StaticGaitParams.from_yaml('config/static_gait.yaml'))
+out = eng.update(vx, vy, 0.005)
+```

@@ -5,8 +5,8 @@
 見た目には十分)。数値は 0.1 mm (4 桁) に丸めて JSON を小さくする。
 
 計画器はシナリオごとに選ぶ:
-  planner='dcm'  walk_core (実機と同じ計画) を MarchWalkEngine で包んだもの
-  planner='qs'   準静的歩行の試作 (quasistatic.py)。**実機には無い**
+  planner='dcm'     動歩行 walk_core を MarchWalkEngine で包んだもの
+  planner='static'  静歩行 static_walk を MarchStaticWalkEngine で包んだもの
 
 reach (LegReach) を渡すと、記録した各時刻の足先が実機の脚で届くかを leg_service で
 調べて rk 列に入れる (0 = 両脚とも届く / 1 = 左が届かない / 2 = 右 / 3 = 両方)。
@@ -15,14 +15,11 @@ reach (LegReach) を渡すと、記録した各時刻の足先が実機の脚で
 from dataclasses import dataclass, replace
 from typing import Callable, List, Optional
 
+from roboone_walk_ref.static_walk import (check_static_gait, StaticGaitParams,
+                                          StaticWalkEngine, support_margin)
 from roboone_walk_ref.walk_core import GaitParams, WalkEngine
 
-try:
-    from .quasistatic import QsParams, QuasiStaticWalker
-except ImportError:               # colcon を通さず直接実行されたとき
-    from roboone_viz.quasistatic import QsParams, QuasiStaticWalker
-
-# 5, 6 は準静的歩行の試作だけが使う (template.html の STATES と揃える)
+# 5, 6 は静歩行だけが使う (template.html の STATES・walk_engine.hpp の State と揃える)
 STATE_CODE = {'IDLE': 0, 'START': 1, 'STEP': 2, 'STOP': 3, 'ESTOP': 4,
               'SHIFT': 5, 'SWING': 6}
 ENGINE_DT = 0.005
@@ -57,6 +54,27 @@ class MarchWalkEngine(WalkEngine):
             self.p = self._p_base
 
 
+class MarchStaticWalkEngine(StaticWalkEngine):
+    """静歩行の足踏み。**可視化専用**で、static_walk (仕様原本) には入っていない。
+
+    march=True の周期だけ、指令の大きさに関係なく「歩いている」とみなす
+    (_moving を差し替える)。歩幅は整形後の指令のままなので、指令ゼロなら
+    その場で足を踏み替える。JS 側の同じ包みは template.html の MarchStaticWalkEngineJS。
+    """
+
+    def __init__(self, params: Optional[StaticGaitParams] = None):
+        super().__init__(params)
+        self._march = False
+
+    def _moving(self, eps):
+        return self._march or super()._moving(eps)
+
+    def update(self, vx_cmd: float, vy_cmd: float, dt: float,
+               estop: bool = False, march: bool = False):
+        self._march = march
+        return super().update(vx_cmd, vy_cmd, dt, estop)
+
+
 @dataclass
 class Scenario:
     sid: str
@@ -65,10 +83,10 @@ class Scenario:
     duration: float
     # t -> (vx, vy) 生指令。3 要素目に True を入れた周期は足踏み
     cmd: Callable[[float], tuple]
-    planner: str = 'dcm'          # 'dcm' (walk_core) / 'qs' (準静的の試作)
+    planner: str = 'dcm'          # 'dcm' (動歩行 walk_core) / 'static' (静歩行 static_walk)
     record_every: int = RECORD_EVERY
     # None 以外なら、duration を過ぎても立位 (IDLE) がこの秒数続くまで記録を延ばす
-    # (最長 duration の 4 倍)。準静的の設定次第で止まるまでの時間が変わるため
+    # (最長 duration の 4 倍)。静歩行は設定次第で止まるまでの時間が変わるため
     settle_tail: Optional[float] = None
 
 
@@ -94,20 +112,23 @@ def default_scenarios() -> List[Scenario]:
                  '足踏み → 前進 0.10 m/s → 指令を離して足踏み → 停止。'
                  '★可視化だけの試作で、実機の歩行エンジンには無い',
                  14.0, _march_mix_profile),
-        # --- 準静的歩行の試作 (quasistatic.py)。1 歩に約 3 s かかるので 50 Hz で記録する
-        Scenario('qs_fwd', '準静的 前進 (試作)',
-                 '重心を支持足の上へ移してから足を振り出す。vx=+0.10 m/s を 9 s → 停止。'
-                 '★可視化だけの試作で、実機の歩行エンジンには無い',
+        # --- 静歩行 (static_walk)。1 歩に約 3 s かかるので 50 Hz で記録する
+        Scenario('st_fwd', '静歩行 前進',
+                 '重心を支持足の上へ移してから足を振り出す。vx=+0.10 m/s を 9 s → 停止',
                  18.0, lambda t: (0.10, 0.0) if 0.5 <= t < 9.5 else (0.0, 0.0),
-                 planner='qs', record_every=4, settle_tail=1.5),
-        Scenario('qs_left', '準静的 左移動 (試作)',
-                 'vy=+0.04 m/s を 9 s → 停止。★可視化だけの試作で、実機の歩行エンジンには無い',
+                 planner='static', record_every=4, settle_tail=1.5),
+        Scenario('st_left', '静歩行 左移動',
+                 'vy=+0.04 m/s を 9 s → 停止',
                  15.0, lambda t: (0.0, 0.04) if 0.5 <= t < 9.5 else (0.0, 0.0),
-                 planner='qs', record_every=4, settle_tail=1.5),
-        Scenario('qs_march', '準静的 足踏み (試作)',
-                 'その場足踏みを 9 s → 停止。★可視化だけの試作で、実機の歩行エンジンには無い',
+                 planner='static', record_every=4, settle_tail=1.5),
+        Scenario('st_diag', '静歩行 斜め後ろ (右)',
+                 'vx=−0.08, vy=−0.025 を 9 s → 停止',
+                 15.0, lambda t: (-0.08, -0.025) if 0.5 <= t < 9.5 else (0.0, 0.0),
+                 planner='static', record_every=4, settle_tail=1.5),
+        Scenario('st_march', '静歩行 足踏み (試作)',
+                 'その場足踏みを 9 s → 停止。★足踏みは可視化だけの試作で、static_walk には無い',
                  14.0, lambda t: (0.0, 0.0, 0.5 <= t < 9.5),
-                 planner='qs', record_every=4, settle_tail=1.5),
+                 planner='static', record_every=4, settle_tail=1.5),
     ]
 
 
@@ -136,12 +157,11 @@ def _r(v: Optional[float], nd: int = 4):
 
 
 def record_scenario(sc: Scenario, params: Optional[GaitParams] = None,
-                    qs: Optional[QsParams] = None, reach=None) -> dict:
+                    sparams: Optional[StaticGaitParams] = None, reach=None) -> dict:
     p = params or GaitParams()
-    if sc.planner == 'qs':
-        eng = QuasiStaticWalker(p, qs or QsParams())
-    else:
-        eng = MarchWalkEngine(p)
+    sp = sparams or StaticGaitParams()
+    static = sc.planner == 'static'
+    eng = MarchStaticWalkEngine(sp) if static else MarchWalkEngine(p)
     every = max(1, int(sc.record_every))
     rel = []                   # 到達の判定用: 骨盤から見た足先 [mm] (L, R)
     cols = {k: [] for k in (
@@ -151,7 +171,8 @@ def record_scenario(sc: Scenario, params: Optional[GaitParams] = None,
         'xix', 'xiy', 'comx', 'comy', 'zx', 'zy',
         'lfx', 'lfy', 'lfz', 'rfx', 'rfy', 'rfz',
         'pnx', 'pny', 'plx', 'ply', 'bx', 'by', 'xex', 'xey',
-        'mf')}                 # 足踏み中か (MarchWalkEngine)
+        'mf',                  # 足踏み中か (MarchWalkEngine)
+        'sm')}                 # 静歩行: ZMP の静的余裕 [m] (支持多角形の縁まで。負なら外)
     boxes = []                 # クランプ域は変化時だけ [frame, xmin,xmax,ymin,ymax]
     last_box = object()
     n = int(round(sc.duration / ENGINE_DT))
@@ -186,6 +207,7 @@ def record_scenario(sc: Scenario, params: Optional[GaitParams] = None,
         cols['stop'].append(1 if o.stopping else 0)
         cols['lock'].append(1 if o.locked else 0)
         cols['mf'].append(1 if march else 0)
+        cols['sm'].append(_r(support_margin(o, sp)) if static else None)
         cols['cx'].append(_r(raw[0]))
         cols['cy'].append(_r(raw[1]))
         cols['vx'].append(_r(o.v[0]))
@@ -244,14 +266,12 @@ def record_scenario(sc: Scenario, params: Optional[GaitParams] = None,
 
 def build_dataset(scenarios: Optional[List[Scenario]] = None,
                   params: Optional[GaitParams] = None,
-                  qs: Optional[QsParams] = None, reach=None) -> dict:
+                  sparams: Optional[StaticGaitParams] = None, reach=None) -> dict:
     p = params or GaitParams()
-    q = qs or QsParams()
+    sp = sparams or StaticGaitParams()
     scs = scenarios or default_scenarios()
     b_ss = 0.10 * p.t_step / (p.e_wt - 1.0)
-    # 準静的: ZMP のずれを zmp_tol に収める重心加速度と、足間隔ぶん移すのにかかる時間
-    a_lim = p.omega ** 2 * q.zmp_tol
-    d_w = max(p.foot_spacing - 2.0 * q.com_inset, 0.0)
+    chk = check_static_gait(sp)
     return {
         'params': p.to_dict(),
         'derived': {
@@ -260,10 +280,14 @@ def build_dataset(scenarios: Optional[List[Scenario]] = None,
             'b_x_at_0.10': round(b_ss, 5),
             'b_y_lateral': round(p.foot_spacing / (p.e_wt + 1.0), 5),
         },
-        'qs': dict(q.to_dict(),
-                   a_lim=round(a_lim, 4),
-                   t_shift_w=round(max(q.t_shift_min, (10 / 3 ** 0.5 * d_w / a_lim) ** 0.5), 3),
-                   h_sw=p.swing_height if q.swing_height is None else q.swing_height),
+        'static': {
+            'params': sp.to_dict(),
+            'a_lim': round(sp.omega ** 2 * sp.zmp_tol, 4),
+            't_shift_step': round(chk['t_shift_step'], 3),
+            't_cycle_fwd': round(chk['t_cycle_fwd'], 3),
+            'v_fwd_real': round(chk['v_fwd_real'], 4),
+            'errors': chk['errors'],
+        },
         'reach_checked': reach is not None,
-        'scenarios': [record_scenario(s, p, q, reach) for s in scs],
+        'scenarios': [record_scenario(s, p, sp, reach) for s in scs],
     }

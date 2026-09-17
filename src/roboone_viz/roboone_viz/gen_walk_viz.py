@@ -12,8 +12,8 @@
     # 生成してそのまま配信 (ssh 先の PC のブラウザで見る)
     python3 .../gen_walk_viz.py --serve 8100
 
-    # 準静的歩行の試作 (可視化だけ) の設定を変える
-    python3 .../gen_walk_viz.py --serve 8100 --qs-inset 0.04 --qs-swing-height 0.03
+    # 静歩行の設定を変えて見る (static_gait.yaml の上に重ねる。yaml は書き換えない)
+    python3 .../gen_walk_viz.py --serve 8100 --static-com-offset 0.01 --static-swing-height 0.02
 
 roboone_kinematics の leg_service がビルドしてあれば、記録シナリオの各時刻の足先が
 実機の脚で届くかも調べて画面に出す (--no-reach で省く)。
@@ -38,50 +38,51 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'roboone_walk_ref')
 if __package__ in (None, ''):
     # colcon を通さず直接実行されたとき用
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from roboone_viz.quasistatic import QsParams
     from roboone_viz.reach import LegReach
     from roboone_viz.record import (Scenario, build_dataset,
                                     default_scenarios)
 else:
-    from .quasistatic import QsParams
     from .reach import LegReach
     from .record import Scenario, build_dataset, default_scenarios
 
+from roboone_walk_ref.static_walk import StaticGaitParams   # noqa: E402
 from roboone_walk_ref.walk_core import GaitParams   # noqa: E402
 
 
-def _gait_candidates():
-    """gait.yaml の置き場の候補。ソース木 → install の share の順。"""
+def _config_candidates(name):
+    """roboone_walk_ref の config/<name> の置き場の候補。ソース木 → install の share の順。"""
     here = Path(__file__).resolve()
-    yield here.parents[2] / 'roboone_walk_ref' / 'config' / 'gait.yaml'
+    yield here.parents[2] / 'roboone_walk_ref' / 'config' / name
     try:
         from ament_index_python.packages import get_package_share_directory
-        yield Path(get_package_share_directory('roboone_walk_ref')) / 'config' / 'gait.yaml'
+        yield Path(get_package_share_directory('roboone_walk_ref')) / 'config' / name
     except Exception:
         pass
 
 
 TEMPLATE = Path(__file__).with_name('template.html')
 WALKCORE_JS = Path(__file__).with_name('walkcore.js')
-QS_JS = Path(__file__).with_name('quasistatic.js')
+STATIC_JS = Path(__file__).with_name('staticwalk.js')
 MARKER = '/*__WALK_DATA__*/null'
 MARKER_JS = '/*__WALK_CORE_JS__*/'
-MARKER_QS_JS = '/*__QS_JS__*/'
+MARKER_STATIC_JS = '/*__STATIC_WALK_JS__*/'
 
 
 def generate(out_path: Path, params: GaitParams, extra=None,
-             qs: QsParams = None, reach=None) -> Path:
+             sparams: StaticGaitParams = None, reach=None) -> Path:
     scenarios = default_scenarios()
     if extra is not None:
         scenarios.append(extra)
-    data = build_dataset(scenarios, params, qs, reach)
+    data = build_dataset(scenarios, params, sparams, reach)
+    for e in data['static']['errors']:
+        print(f'  ★静歩行の設定: {e}')
     html = TEMPLATE.read_text(encoding='utf-8')
     assert MARKER in html, 'template.html のデータ差し込み位置が見つからない'
     assert MARKER_JS in html, 'template.html の walkcore.js 差し込み位置が見つからない'
-    assert MARKER_QS_JS in html, 'template.html の quasistatic.js 差し込み位置が見つからない'
+    assert MARKER_STATIC_JS in html, 'template.html の staticwalk.js 差し込み位置が見つからない'
     payload = json.dumps(data, ensure_ascii=False, separators=(',', ':'))
     html = html.replace(MARKER_JS, WALKCORE_JS.read_text(encoding='utf-8'))
-    html = html.replace(MARKER_QS_JS, QS_JS.read_text(encoding='utf-8'))
+    html = html.replace(MARKER_STATIC_JS, STATIC_JS.read_text(encoding='utf-8'))
     html = html.replace(MARKER, payload)
     if reach is not None:
         for sc in data['scenarios']:
@@ -126,26 +127,31 @@ def main(argv=None):
     ap.add_argument('--duration', type=float, default=8.0, help='追加シナリオの長さ [s]')
     ap.add_argument('--serve', type=int, default=None, metavar='PORT',
                     help='生成後にそのディレクトリを HTTP 配信する')
-    qd = QsParams()
-    g = ap.add_argument_group('準静的歩行の試作 (可視化だけ。実機には無い)')
-    g.add_argument('--qs-zmp-tol', type=float, default=qd.zmp_tol,
-                   help=f'ZMP が重心の真下からずれてよい量 [m] (既定 {qd.zmp_tol})')
-    g.add_argument('--qs-t-swing', type=float, default=qd.t_swing,
-                   help=f'振り出しの時間 [s] (既定 {qd.t_swing})')
-    g.add_argument('--qs-inset', type=float, default=qd.com_inset,
-                   help='振り出し中の重心を支持足の中心から内側へ寄せる量 [m] '
-                        f'(既定 {qd.com_inset})')
-    g.add_argument('--qs-swing-height', type=float, default=None,
-                   help='足上げの高さ [m] (既定は gait.yaml の swing_height)')
+    g = ap.add_argument_group('静歩行 (static_gait.yaml の上に重ねる。yaml は書き換えない)')
+    g.add_argument('--static-gait', default=None,
+                   help='static_gait.yaml のパス (省略時は roboone_walk_ref の config/static_gait.yaml)')
+    g.add_argument('--static-zmp-tol', type=float, default=None,
+                   help='ZMP が重心の真下からずれてよい量 [m]')
+    g.add_argument('--static-t-swing', type=float, default=None, help='振り出しの時間 [s]')
+    g.add_argument('--static-com-offset', type=float, default=None,
+                   help='振り出し中の重心を支持足の中心から横へずらす量 [m] (+ で外側)')
+    g.add_argument('--static-swing-height', type=float, default=None,
+                   help='足上げの高さ [m]')
     ap.add_argument('--no-reach', action='store_true',
                     help='leg_service で足先が届くかを調べない')
     args = ap.parse_args(argv)
 
-    gait = args.gait
-    if gait is None:
-        # gait.yaml の原本は roboone_walk_ref が持つ。ソース木と install の両方を見る。
-        gait = next((c for c in _gait_candidates() if c.exists()), None)
+    # gait.yaml / static_gait.yaml の原本は roboone_walk_ref が持つ。ソース木と install の両方を見る。
+    gait = args.gait or next((c for c in _config_candidates('gait.yaml') if c.exists()), None)
     params = GaitParams.from_yaml(str(gait)) if gait else GaitParams()
+    sgait = args.static_gait or next(
+        (c for c in _config_candidates('static_gait.yaml') if c.exists()), None)
+    sparams = StaticGaitParams.from_yaml(str(sgait)) if sgait else StaticGaitParams()
+    for key, val in (('zmp_tol', args.static_zmp_tol), ('t_swing', args.static_t_swing),
+                     ('com_offset_y', args.static_com_offset),
+                     ('swing_height', args.static_swing_height)):
+        if val is not None:
+            setattr(sparams, key, val)
 
     extra = None
     if args.vx is not None or args.vy is not None:
@@ -158,14 +164,12 @@ def main(argv=None):
             args.duration,
             lambda t: (vx, vy) if 0.5 <= t < walk_end else (0.0, 0.0))
 
-    qs = QsParams(zmp_tol=args.qs_zmp_tol, t_swing=args.qs_t_swing,
-                  com_inset=args.qs_inset, swing_height=args.qs_swing_height)
     reach = None if args.no_reach else LegReach.find()
     if reach is None and not args.no_reach:
         print('leg_service が見つからないので、足先が届くかは調べない '
               '(colcon build --packages-select roboone_kinematics)')
     try:
-        out = generate(Path(os.path.expanduser(args.out)), params, extra, qs, reach)
+        out = generate(Path(os.path.expanduser(args.out)), params, extra, sparams, reach)
     finally:
         if reach is not None:
             reach.close()

@@ -33,24 +33,27 @@ python3 src/roboone_viz/roboone_viz/gen_walk_viz.py --serve 8100
   walk_core を包み、足踏み中だけ歩き出し・歩き続けのしきい値 (v_start_eps /
   v_stop_eps) を無効にして回す。速度指令は a_max で整形されたままなので、前進から
   足踏みへはなめらかに移る（踏み出し量を一気に 0 にすると純 FF では発散する）
-- **準静的歩行 (試作)**: タブ「準静的 前進 / 左移動 / 足踏み (試作)」と、操縦タブの
-  「計画」ボタン (P キー)。**これも可視化だけの試作で、実機には無い**
-  (`quasistatic.py` / `quasistatic.js`)。walk_core は ZMP を支持足に固定するので、
-  周期を延ばしても支持足の交代で重心が両足の中間を約 0.43 m/s で横切る。こちらは
-  重心を直接計画し、両足支持で重心を次の支持足の上へ移してから足を振り出す。
-  重心移動の時間は「ZMP と重心のずれ ≤ zmp_tol」から決まる (5 mm で足間隔 140 mm に約 2.1 s)。
-  歩幅は walk_core と同じ L = vT で、1 歩に約 3 s かかる
+- **静歩行**: タブ「静歩行 前進 / 左移動 / 斜め後ろ / 足踏み (試作)」と、操縦タブの
+  「計画」ボタン (P キー)。計画は `roboone_walk_ref` の static_walk (仕様原本) で、
+  ライブ操縦はその JS 版 `staticwalk.js`。設定は `static_gait.yaml` を読む。
+  重心を両足支持で次の支持足の上へ移してから足を振り出すので、1 歩に約 3 s かかる。
+  パイプ欄に ZMP の静的余裕 (支持多角形の縁まで。足裏 118 × 74 mm) を出す。
+  **motion ノードにはまだ入っていない** (C++ 版が未実装)。足踏みは可視化だけの包み
+  (`record.py` の `MarchStaticWalkEngine` / `template.html` の `MarchStaticWalkEngineJS`)
+- 足裏は実寸 (static_gait.yaml の sole_length / sole_width) で描く
 - **実機の脚で届くか**: `leg_service` がビルドしてあれば、記録シナリオの各時刻の足先を
   IK と機構層 (膝・足首リンク) に通し、届かない足を注意色で囲む (`--no-reach` で省く)。
   足裏は水平で見ている (home_pose の rpy・body_pitch が 0 の前提)。
-  **準静的の既定 (内寄せ 0・足上げ 50 mm) では、外へ開いた遊脚が足首で届かない時刻が出る**
-  (骨盤から横 140 mm なら足上げ 22 mm まで、横 100 mm なら 50 mm まで)。
-  `--qs-inset 0.04` か `--qs-swing-height 0.02` で全時刻届く (2026-09-17)
+  ★動歩行のシナリオは `stance_y_offset` (motion_node.yaml) を掛けずに計画の足間隔
+  (gait.yaml の 170 mm) のまま見ているので、実機 (140 mm) より届かない点が多く出る
 
 ```bash
-# 準静的の設定を変える (どれも可視化だけ)
+# 静歩行の設定を変えて見る (static_gait.yaml の上に重ねる。yaml は書き換えない)
 python3 src/roboone_viz/roboone_viz/gen_walk_viz.py --serve 8100 \
-    --qs-zmp-tol 0.005 --qs-t-swing 0.8 --qs-inset 0.04 --qs-swing-height 0.03
+    --static-zmp-tol 0.005 --static-t-swing 0.8 --static-com-offset 0.01 --static-swing-height 0.02
+
+# 静歩行の設定ごとに、足先が届くかを走査する (static_gait.yaml の表を作ったもの)
+python3 src/roboone_viz/roboone_viz/static_reach.py --swing-height 0.03,0.025 --com-offset 0,0.005
 ```
 
 ## 脚・膝の機構の可視化
@@ -73,8 +76,9 @@ python3 src/roboone_viz/roboone_viz/serve_knee3d.py --demo
 | `gen_walk_viz.py` | 歩行の可視化 HTML を生成して配信する。`walk_viz` として install される |
 | `record.py` | walk_core を回してシナリオごとのデータセットを作る |
 | `walkcore.js` | walk_core の JS 移植（ブラウザのライブシミュレータ用） |
-| `quasistatic.py` / `quasistatic.js` | 準静的歩行の試作（可視化だけ。2 つは同じロジック） |
+| `staticwalk.js` | 静歩行 static_walk の JS 移植（ライブシミュレータ用。3 実装照合の対象） |
 | `reach.py` | 記録した足先が届くかを `leg_service` で調べる |
+| `static_reach.py` | 静歩行の設定ごとに、足先が届くかを走査する |
 | `serve_leg3d.py` / `serve_legs3d.py` | `leg_service` を叩く脚の 3D ビューア |
 | `serve_knee3d.py` | 膝 4 節リンクのビューア |
 | `template.html` `*3d.html` | 配信するページの雛形 |

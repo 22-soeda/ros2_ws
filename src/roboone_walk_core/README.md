@@ -24,9 +24,14 @@ walk_core は 3 か所に同じロジックがある。**変更は必ず 3 つ�
 | C++ | この walk_engine.hpp | motion ノード (実機 200 Hz) |
 | JS | roboone_viz/walkcore.js | ブラウザのライブ操縦シミュレータ |
 
+静歩行 (static_walk) も同じ扱い。原本は `roboone_walk_ref/static_walk/engine.py`、
+JS は `roboone_viz/staticwalk.js`。C++ 版 (`static_walk_engine.hpp` / `static_walk_dump`) は
+まだ無く、照合ツールは C++ をスキップする。
+
 ```bash
 colcon build --packages-select roboone_walk_core
-python3 src/roboone_walk_core/tools/compare_walk_engines.py
+python3 src/roboone_walk_core/tools/compare_walk_engines.py            # 動歩行と静歩行
+python3 src/roboone_walk_core/tools/compare_walk_engines.py --engine static
 # → 全指令ケースで最大誤差 ~1e-15 (機械精度) を確認済み。許容は 1e-6 m
 ```
 

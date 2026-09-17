@@ -113,6 +113,7 @@ python3 -m pytest src/roboone_behavior/test/test_behavior.py -q
 # Python リファレンス実装
 python3 -m pytest scripts/test_knee_fourbar.py -q
 python3 -m pytest src/roboone_walk_ref/test/test_walk_core.py
+python3 -m pytest src/roboone_walk_ref/test/test_static_walk.py -q   # 静歩行（全時刻 ZMP が支持多角形の中 / 停止 / 歩幅の固定）
 python3 -m pytest src/roboone_teleop/test/test_params.py -q   # teleop の調整表と config の整合（ROS 不要）
 colcon test --packages-select roboone_teleop                     # 結線テスト（デッドマン / ウォッチドッグ / 2 段トルクオン / 自律の割り込み）
 
@@ -562,12 +563,13 @@ ros2 run roboone_motion motion_selftest --strict \
 ```bash
 # 歩行
 python3 src/roboone_viz/roboone_viz/gen_walk_viz.py --serve 8100
-python3 src/roboone_walk_core/tools/compare_walk_engines.py
+python3 src/roboone_walk_core/tools/compare_walk_engines.py   # 動歩行と静歩行の両方。--engine static で静歩行だけ
 
-# 準静的歩行の試作（可視化だけ。実機には無い）の設定を変える。
-# --qs-inset: 振り出し中の重心を支持足の中心から内側へ寄せる [m] / --qs-swing-height: 足上げ [m]
-# 既定 (0 / gait.yaml の 0.05) だと遊脚が足首で届かない時刻が出る。0.04 か 0.02 で全時刻届く
-python3 src/roboone_viz/roboone_viz/gen_walk_viz.py --serve 8100 --qs-inset 0.04
+# 静歩行の設定を変えて見る（static_gait.yaml の上に重ねるだけ。yaml は書き換えない）
+# --static-com-offset: 振り出し中の重心の横ずらし [m]（+ で外側） / --static-swing-height: 足上げ [m]
+# --static-zmp-tol / --static-t-swing / --static-gait <yaml> もある。
+# 届かない組み合わせは画面の足の枠が注意色になる（表は static_gait.yaml の swing_height の注記）
+python3 src/roboone_viz/roboone_viz/gen_walk_viz.py --serve 8100 --static-com-offset 0.01 --static-swing-height 0.02
 # leg_service による「足先が届くか」の判定を省く（roboone_kinematics 未ビルドなら自動で省く）
 python3 src/roboone_viz/roboone_viz/gen_walk_viz.py --serve 8100 --no-reach
 
@@ -1045,6 +1047,28 @@ python tools/run_teleop_tests_without_ros.py -k hold  # pytest の引数はそ�
 env -u AMENT_PREFIX_PATH -u ROS_DISTRO -u ROS_VERSION -u COLCON_PREFIX_PATH \
     -u PYTHONPATH -u LD_LIBRARY_PATH -u ROS_PYTHON_VERSION -u AMENT_PYTHON_EXECUTABLE \
     python3 tools/run_teleop_tests_without_ros.py
+```
+
+## 静歩行（static_walk）
+
+重心を支持足の上へ移してから足を振り出す歩き方。設定は
+`src/roboone_walk_ref/config/static_gait.yaml`（動歩行の gait.yaml とは別ファイル）。
+仕様の原本は `roboone_walk_ref/static_walk/engine.py`、JS 版は `roboone_viz/staticwalk.js`。
+**2026-09-18 時点で motion ノードにはまだ入っていない**（C++ 版と `walk_mode:=static` は未実装）。
+
+```bash
+# 単体テストと Python / JS の照合（C++ 版が無い間は C++ をスキップする）
+python3 -m pytest src/roboone_walk_ref/test/test_static_walk.py -q
+python3 src/roboone_walk_core/tools/compare_walk_engines.py --engine static   # 「照合: 全て一致」
+
+# 足先が実機の脚で届くかを設定ごとに走査（static_gait.yaml の swing_height の表を作ったもの）
+# 先に colcon build --packages-select roboone_kinematics（leg_service を使う）。-v で最初に届かない点を出す
+python3 src/roboone_viz/roboone_viz/static_reach.py \
+    --swing-height 0.035,0.03,0.025,0.02 --com-offset 0.01,0.005,0,-0.005,-0.01
+python3 src/roboone_viz/roboone_viz/static_reach.py --swing-height 0.03 -v
+
+# 設定を変えたら install へ入れ直す（yaml は symlink ではなく複製）
+colcon build --packages-select roboone_walk_ref roboone_viz
 ```
 
 ## 両足支持区間（swing_ratio）
