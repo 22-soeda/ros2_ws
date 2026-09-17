@@ -564,7 +564,7 @@ ros2 run roboone_motion motion_selftest --strict \
 ```bash
 # 歩行
 python3 src/roboone_viz/roboone_viz/gen_walk_viz.py --serve 8100
-python3 src/roboone_walk_core/tools/compare_walk_engines.py   # 動歩行と静歩行の両方。--engine static で静歩行だけ
+python3 src/roboone_walk_core/tools/compare_walk_engines.py   # 動歩行と静歩行の両方。--engine static で静歩行だけ、--engine dynamic で動歩行だけ
 
 # 静歩行の設定を変えて見る（static_gait.yaml の上に重ねるだけ。yaml は書き換えない）
 # --static-com-offset: 振り出し中の重心の横ずらし [m]（+ で外側） / --static-swing-height: 足上げ [m]
@@ -1056,13 +1056,28 @@ env -u AMENT_PREFIX_PATH -u ROS_DISTRO -u ROS_VERSION -u COLCON_PREFIX_PATH \
 
 重心を支持足の上へ移してから足を振り出す歩き方。設定は
 `src/roboone_walk_ref/config/static_gait.yaml`（動歩行の gait.yaml とは別ファイル）。
-仕様の原本は `roboone_walk_ref/static_walk/engine.py`、JS 版は `roboone_viz/staticwalk.js`。
-**2026-09-18 時点で motion ノードにはまだ入っていない**（C++ 版と `walk_mode:=static` は未実装）。
+仕様の原本は `roboone_walk_ref/static_walk/engine.py`、C++ 版は
+`roboone_walk_core/static_walk_engine.hpp`、JS 版は `roboone_viz/staticwalk.js`。
+**2026-09-18 時点で motion ノードにはまだ入っていない**（`walk_mode:=static` は未実装）。
 
 ```bash
-# 単体テストと Python / JS の照合（C++ 版が無い間は C++ をスキップする）
+# 単体テストと 3 実装の照合（軌道と既定値）
 python3 -m pytest src/roboone_walk_ref/test/test_static_walk.py -q
+colcon build --packages-select roboone_walk_core
+colcon test --packages-select roboone_walk_core && colcon test-result --test-result-base build/roboone_walk_core
 python3 src/roboone_walk_core/tools/compare_walk_engines.py --engine static   # 「照合: 全て一致」
+
+# 動歩行の照合。walk_engine.hpp にユーザの足踏み実験（lx = 0）が未コミットで入っている間は、
+# その 1 行を戻した一時コピーで walk_dump を作って照合する（ツリーのファイルは触らない）
+T=$(mktemp -d) && mkdir -p $T/roboone_walk_core && I=src/roboone_walk_core/include/roboone_walk_core
+cp $I/gait_params.hpp $T/roboone_walk_core/
+sed -e 's|^    // const double lx = v_\[0\] \* p_.t_step; // 歩行用実装$|    const double lx = v_[0] * p_.t_step;|' \
+    -e '/^    const double lx = 0.0; \/\/ 足踏み用$/d' $I/walk_engine.hpp > $T/roboone_walk_core/walk_engine.hpp
+g++ -std=c++17 -O2 -I$T src/roboone_walk_core/src/walk_dump.cpp -o $T/walk_dump
+python3 -c "import sys; from pathlib import Path; sys.path.insert(0, 'src/roboone_walk_core/tools'); \
+import compare_walk_engines as c; real = c._find_exe; \
+c._find_exe = lambda n: Path('$T/walk_dump') if n == 'walk_dump' else real(n); \
+sys.exit(c.main(['--engine', 'dynamic']))"
 
 # 足先が実機の脚で届くかを設定ごとに走査（static_gait.yaml の swing_height の表を作ったもの）
 # 先に colcon build --packages-select roboone_kinematics（leg_service を使う）。-v で最初に届かない点を出す

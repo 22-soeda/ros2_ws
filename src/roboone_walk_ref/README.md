@@ -89,8 +89,8 @@ out = eng.update(vx, vy, 0.005)   # 200 Hz で回す
 - 足上げは 25mm。重心を支持足の上に置くと遊脚が骨盤から横へ 140mm 以上開き、
   足首リンクが高く上げられない (表は static_gait.yaml)
 
-walk_core と同じく 3 実装を揃える (JS は `roboone_viz/staticwalk.js`、
-C++ は `roboone_walk_core` に入れる予定で未実装)。
+walk_core と同じく 3 実装を揃える (C++ は `roboone_walk_core/static_walk_engine.hpp`、
+JS は `roboone_viz/staticwalk.js`)。
 
 ```bash
 python3 -m pytest src/roboone_walk_ref/test/test_static_walk.py -q

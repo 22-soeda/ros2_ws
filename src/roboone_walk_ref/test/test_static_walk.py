@@ -46,7 +46,8 @@ PROFILES = {
     'right': stop_after(9.0, 0.0, -0.04),
     'diag': stop_after(9.0, 0.08, -0.025),
     'diag_back': stop_after(9.0, -0.08, 0.025),
-    'rev': lambda t: (0.10, 0.0) if 0.5 <= t < 7.0 else ((-0.10, 0.0) if t < 14.0 else (0.0, 0.0)),
+    'rev': lambda t: ((0.10, 0.0) if 0.5 <= t < 7.0 else
+                      (-0.10, 0.0) if 7.0 <= t < 14.0 else (0.0, 0.0)),
     'stick': stick,
 }
 

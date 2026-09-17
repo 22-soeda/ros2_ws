@@ -132,9 +132,49 @@ def check_dynamic():
     return ok
 
 
+def check_static_defaults():
+    """既定値 (params.py) が C++ (StaticGaitParams) と JS (staticDefaultParams) と同じか。
+
+    足裏の寸法のように軌道に出ない値は、軌道の照合では食い違いに気付けない。
+    """
+    ref = {k: (list(v) if isinstance(v, (list, tuple)) else [v])
+           for k, v in StaticGaitParams().to_dict().items()}
+    ok = True
+    exe = _find_exe('static_walk_dump')
+    got = {}
+    if exe is not None:
+        out = subprocess.run([str(exe), '--params'], capture_output=True, text=True, check=True)
+        got['C++'] = {k: [float(x) for x in v.split(',')]
+                      for k, v in (line.split('=', 1) for line in out.stdout.split())}
+    js = WS / 'src' / 'roboone_viz' / 'roboone_viz' / 'staticwalk.js'
+    try:
+        out = subprocess.run(
+            ['node', '-e', f'console.log(JSON.stringify(require({json.dumps(str(js))})'
+                           '.staticDefaultParams()))'],
+            capture_output=True, text=True, check=True)
+        got['JS '] = {k: (v if isinstance(v, list) else [v])
+                      for k, v in json.loads(out.stdout).items()}
+    except FileNotFoundError:
+        pass
+    for name in ('C++', 'JS '):
+        if name not in got:
+            print(f'  既定値 {name}: スキップ (未ビルド or node なし)')
+            continue
+        bad = sorted(k for k in set(ref) | set(got[name])
+                     if k not in ref or k not in got[name] or ref[k] != got[name][k])
+        if bad:
+            ok = False
+            print(f'  既定値 {name}: NG  ' +
+                  ', '.join(f'{k} (原本 {ref.get(k)} / {got[name].get(k)})' for k in bad))
+        else:
+            print(f'  既定値 {name}: OK  ({len(ref)} 項目)')
+    return ok
+
+
 def check_static():
     ok = True
     print('=== 静歩行 (static_walk) ===')
+    ok &= check_static_defaults()
     for vx, vy, over in STATIC_CASES:
         print(f'指令 ({vx:+.2f}, {vy:+.2f})' + (f' {over}' if over else '') + ':')
         eng = StaticWalkEngine(StaticGaitParams(**over))

@@ -27,7 +27,9 @@ namespace roboone_walk_core
 using Vec2 = std::array<double, 2>;
 using Vec3 = std::array<double, 3>;
 
-enum class State { IDLE, START, STEP, STOP, ESTOP };
+// 番号は /motion/stab の walk_state にそのまま出る (bag の解析と照合ツールが読む)。
+// SHIFT / SWING は静歩行 (static_walk_engine.hpp) だけが使う。STOP と ESTOP は共用。
+enum class State { IDLE, START, STEP, STOP, ESTOP, SHIFT, SWING };
 
 inline const char * to_string(State s)
 {
@@ -36,6 +38,8 @@ inline const char * to_string(State s)
     case State::START: return "START";
     case State::STEP: return "STEP";
     case State::STOP: return "STOP";
+    case State::SHIFT: return "SHIFT";
+    case State::SWING: return "SWING";
     default: return "ESTOP";
   }
 }

@@ -1,14 +1,23 @@
 # roboone_walk_core — 歩行計画エンジンの C++ 版
 
-`roboone_walk_ref` (Python) の walk_core を機械移植したもの。ヘッダオンリ・ROS 非依存。
-**Python 版が仕様の原本**で、設計判断と式の導出は
-`src/roboone_walk_ref/roboone_walk_ref/walk_core/engine.py` の docstring にある。
+`roboone_walk_ref` (Python) の walk_core (動歩行) と static_walk (静歩行) を機械移植したもの。
+ヘッダオンリ・ROS 非依存。**Python 版が仕様の原本**で、設計判断と式の導出は
+`src/roboone_walk_ref/roboone_walk_ref/walk_core/engine.py` と `static_walk/engine.py` の
+docstring にある。
 
 - `include/roboone_walk_core/walk_engine.hpp` — エンジン本体
 - `include/roboone_walk_core/gait_params.hpp` — 静的設定 (既定値は gait.yaml と同じ。
   YAML 読み込みは持たず、motion ノードが ROS パラメータから詰める)
 - `src/walk_selftest.cpp` — 自己検算 (colcon test で回る)
 - `src/walk_dump.cpp` — 軌道 CSV ダンプ (照合と後段への受け渡し用)
+- `include/roboone_walk_core/static_walk_engine.hpp` — 静歩行のエンジンと設定
+  (`StaticGaitParams`。既定値は static_gait.yaml と同じ。YAML 読み込みは motion ノード側で、
+  項目表 `staticGaitFields()` を使う)。出力は walk_core と同じ `WalkOutputs`
+  (状態 `State::SHIFT` / `SWING` はこちらだけが使う)
+- `src/static_walk_selftest.cpp` — 静歩行の自己検算 (colcon test で回る。全時刻で ZMP が
+  支持多角形の中・任意の時刻での停止・歩幅の固定など)
+- `src/static_walk_dump.cpp` — 静歩行の軌道 CSV (`key=value` で設定を上書き)。
+  `--params` で既定値を出す
 - `tools/compare_walk_engines.py` — **Python / C++ / JS の 3 実装の数値照合**
 - `src/gait_from_kinematics.cpp` — ホーム姿勢 (脚ピッチ曲げ角) から z_c を FK で出し、
   到達域を IK で走査して gait.yaml の目安を印字する (`--bend 30 --map`)。
@@ -25,15 +34,21 @@ walk_core は 3 か所に同じロジックがある。**変更は必ず 3 つ�
 | JS | roboone_viz/walkcore.js | ブラウザのライブ操縦シミュレータ |
 
 静歩行 (static_walk) も同じ扱い。原本は `roboone_walk_ref/static_walk/engine.py`、
-JS は `roboone_viz/staticwalk.js`。C++ 版 (`static_walk_engine.hpp` / `static_walk_dump`) は
-まだ無く、照合ツールは C++ をスキップする。
+C++ は `static_walk_engine.hpp`、JS は `roboone_viz/staticwalk.js`。静歩行は軌道に加えて
+**既定値の一致** (足裏の寸法など軌道に出ない値を含む 18 項目) も照合する。
 
 ```bash
 colcon build --packages-select roboone_walk_core
 python3 src/roboone_walk_core/tools/compare_walk_engines.py            # 動歩行と静歩行
 python3 src/roboone_walk_core/tools/compare_walk_engines.py --engine static
 # → 全指令ケースで最大誤差 ~1e-15 (機械精度) を確認済み。許容は 1e-6 m
+./build/roboone_walk_core/static_walk_selftest            # 「all OK」
+./build/roboone_walk_core/static_walk_dump 0.10 0 9.5 20 0.005 com_offset_y=0.01 | head
 ```
+
+★2026-09-18 時点の walk_engine.hpp には、ユーザの足踏み実験 (前後の歩幅 `lx = 0`) が
+未コミットで入っている。そのままだと動歩行の C++ は Python と合わない。動歩行の照合は、
+その 1 行を元に戻した一時コピーで walk_dump を作って行う (commands.md「静歩行」)。
 
 ## 性能 (Pi 5 実測)
 
