@@ -28,7 +28,8 @@ namespace roboone_walk_core
 {
 
 /// 静歩行の静的設定。roboone_walk_ref/static_walk/params.py の移植で、
-/// 既定値は config/static_gait.yaml と同じ (static_walk_dump --params で照合される)。
+/// 既定値は params.py と同じ (static_walk_dump --params で照合される)。実機が使う値は
+/// motion ノードが読む config/static_gait.yaml で、調整ではそちらだけを変える。
 /// 値の意味と根拠は params.py と static_gait.yaml の注記を見ること。
 struct StaticGaitParams
 {

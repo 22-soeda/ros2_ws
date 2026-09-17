@@ -112,7 +112,7 @@ def default_scenarios() -> List[Scenario]:
                  '足踏み → 前進 0.10 m/s → 指令を離して足踏み → 停止。'
                  '★可視化だけの試作で、実機の歩行エンジンには無い',
                  14.0, _march_mix_profile),
-        # --- 静歩行 (static_walk)。1 歩に約 2 s かかるので 50 Hz で記録する
+        # --- 静歩行 (static_walk)。1 歩に 2 s 以上かかる (static_gait.yaml 次第) ので 50 Hz で記録する
         Scenario('st_fwd', '静歩行 前進',
                  '重心を支持足の上へ移してから足を振り出す。vx=+0.10 m/s を 9 s → 停止',
                  18.0, lambda t: (0.10, 0.0) if 0.5 <= t < 9.5 else (0.0, 0.0),

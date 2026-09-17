@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """静歩行の静的設定 (config/static_gait.yaml)。
 
+ここの既定値は C++ (static_walk_engine.hpp) と JS (staticwalk.js) の既定値と同じにする
+(compare_walk_engines.py が照合する)。実機が使う値は static_gait.yaml で、調整では
+yaml だけを変えてよい (2026-09-18 から yaml は時間を 3 倍にした観察用の値)。
+
 動歩行の GaitParams (gait.yaml) とは**別のファイル・別の型**にしてある。
 キーの厳密チェック (未知キーで KeyError) を両方で保ったまま、片方にしかない
 項目を足せるようにするため。共通の意味を持つ項目 (z_c, v_max など) は

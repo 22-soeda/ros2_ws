@@ -1314,17 +1314,20 @@ int main(int argc, char ** argv)
         return n;
       };
 
-    rm::WalkSetup walk;
-    walk.mode = rm::WalkMode::Static;
-    walk.gait = gait;
+    // (a) は static_gait.yaml の値、(b)-(d) はコードの検算なのでコードの既定値で見る
+    // (yaml は調整で変わる。時間を延ばすと (c) の待ち時間に収まらなくなる)
+    rm::WalkSetup walk_yaml;
+    walk_yaml.mode = rm::WalkMode::Static;
+    walk_yaml.gait = gait;
+    rm::WalkSetup walk = walk_yaml;
 
     // (a) static_gait.yaml そのものの門。config の話なので --strict のときだけ落とす
     {
       rm::EventQueue ev;
-      rm::loadStaticGait(static_gait_path, walk.stat, ev);
-      rm::checkStaticGait(walk.stat, ev);
-      rm::checkStaticStance(walk.stat, home, ev);
-      rm::checkStaticWalkEnvelope(map, walk, home, body_pitch, ev);
+      rm::loadStaticGait(static_gait_path, walk_yaml.stat, ev);
+      rm::checkStaticGait(walk_yaml.stat, ev);
+      rm::checkStaticStance(walk_yaml.stat, home, ev);
+      rm::checkStaticWalkEnvelope(map, walk_yaml, home, body_pitch, ev);
       int nerr = 0;
       rm::Event e;
       while (ev.pop(e)) {

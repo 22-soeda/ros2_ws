@@ -198,7 +198,7 @@ IK で戻すと別のクランク角（+83 deg）になる = 足裏で補間す�
 | walk_mode | 計画器 | 設定 | 歩き方 |
 |---|---|---|---|
 | `dynamic`（既定） | `rwc::WalkEngine`（walk_core） | `gait.yaml` | DCM・純フィードフォワード。1 歩 0.6 s |
-| `static` | `rwc::StaticWalkEngine`（static_walk） | `static_gait.yaml` | 両足支持で重心を支持足の上へ移し（SHIFT）、止めたまま足を振り出す（SWING）。1 歩約 2 s |
+| `static` | `rwc::StaticWalkEngine`（static_walk） | `static_gait.yaml` | 両足支持で重心を支持足の上へ移し（SHIFT）、止めたまま足を振り出す（SWING）。1 歩の時間は `static_gait.yaml` 次第（2026-09-18 は観察用に約 6.4 s） |
 
 どちらも出力は `rwc::WalkOutputs` なので、足先の組み立て（`walkFeet()`。計画の立位を
 ホーム姿勢の足へ平行移動する）・IK・安定化・`/motion/stab` は共通。モードで違うのは

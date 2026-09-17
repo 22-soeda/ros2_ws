@@ -53,11 +53,15 @@ PROFILES = {
 
 
 # ------------------------------------------------------------------ 設定
-def test_yaml_matches_defaults():
-    """static_gait.yaml と params.py の既定値が同じ (C++ の既定はこれを写す)。"""
+def test_yaml_is_valid():
+    """static_gait.yaml が読めて、静歩行として成り立つ。
+
+    yaml は調整の場所なので、コードの既定値 (C++ / JS と照合するほう) とは違っていてよい。
+    既定値も成り立つことは test_check_catches_bad_settings が見る。
+    """
     p = StaticGaitParams.from_yaml(str(YAML))
-    assert p == StaticGaitParams()
     assert check_static_gait(p)['errors'] == []
+    assert p.foot_spacing == StaticGaitParams().foot_spacing   # 足間隔は home_pose と揃える値
 
 
 def test_yaml_rejects_unknown_key():

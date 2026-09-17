@@ -470,9 +470,11 @@ void checkStaticWalkEnvelope(
   const rwc::StaticGaitParams & p = walk.stat;
   const double vx = p.v_max[0], vy = p.v_max[1];
   const double dx = 0.8 * vx, dy = 0.625 * vy;     // 斜めは楕円制限の内側
-  // roboone_viz/static_reach.py の profiles() と同じ 11 通り。変えたら両方を揃える。
-  //   two = false: 0.5 <= t < 9.5 の間 a
-  //   two = true : 0.5 <= t < 8 の間 a、8 <= t < 16 の間 b
+  // roboone_viz/static_reach.py の profiles() / scan() と同じ 11 通り。変えたら両方を揃える。
+  // 時刻は k 倍する (k = 全速前進の 1 歩 / 2.13s)。歩きを遅くしても同じ歩の並びを見る。
+  //   two = false: 0.5k <= t < 9.5k の間 a
+  //   two = true : 0.5k <= t < 8k の間 a、8k <= t < 16k の間 b
+  //   26k まで回し、2k 周期に 1 回見る
   struct Prof
   {
     const char * name;
@@ -493,8 +495,9 @@ void checkStaticWalkEnvelope(
     {"左右の切り返し", {0.0, vy}, {0.0, -vy}, true},
     {"前進 -> 斜め右前", {vx, 0.0}, {0.7 * vx, -0.75 * vy}, true},
   };
-  const double dt = 0.005, t_end = 26.0;
-  const int every = 2;
+  const double k = rwc::checkStaticGait(p).t_cycle_fwd / 2.13;
+  const double dt = 0.005, t_end = 26.0 * k;
+  const int every = std::max(1, static_cast<int>(std::lround(2.0 * k)));
   rk::Vec3 off[kNumSide];
   walkStanceOffset(walk, home, off);
 
@@ -507,9 +510,9 @@ void checkStaticWalkEnvelope(
     for (int i = 0; i < n; ++i) {
       const double t = i * dt;
       const double * c = nullptr;
-      if (t >= 0.5 && t < (pr.two ? 8.0 : 9.5)) {
+      if (t >= 0.5 * k && t < (pr.two ? 8.0 : 9.5) * k) {
         c = pr.a;
-      } else if (pr.two && t >= 8.0 && t < 16.0) {
+      } else if (pr.two && t >= 8.0 * k && t < 16.0 * k) {
         c = pr.b;
       }
       const rwc::WalkOutputs o = e.update(c ? c[0] : 0.0, c ? c[1] : 0.0, dt);

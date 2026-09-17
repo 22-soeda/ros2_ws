@@ -25,39 +25,55 @@ if __package__ in (None, ''):
 else:
     from .reach import LegReach
 
-from roboone_walk_ref.static_walk import StaticGaitParams, StaticWalkEngine  # noqa: E402
+from roboone_walk_ref.static_walk import (check_static_gait, StaticGaitParams,  # noqa: E402
+                                          StaticWalkEngine)
 
 DT = 0.005
+# 指令の時間は「全速前進の 1 歩」に比例させる。この値 (zmp_tol 10mm・t_swing 0.6s の 1 歩)
+# のとき 0.5s / 8s / 9.5s / 16s / 26s になる。歩きを遅くしても同じ歩の並びを見るため
+T_CYCLE_REF = 2.13
 
 
-def _on(vx, vy, t1=9.5):
-    return lambda t: (vx, vy) if 0.5 <= t < t1 else (0.0, 0.0)
+def time_scale(sp):
+    """指令の時間に掛ける倍率 (= 全速前進の 1 歩 / 2.13s)。"""
+    return check_static_gait(sp)['t_cycle_fwd'] / T_CYCLE_REF
 
 
-def _two(a, b):
-    return lambda t: a if 0.5 <= t < 8.0 else (b if 8.0 <= t < 16.0 else (0.0, 0.0))
+def _on(vx, vy, k):
+    return lambda t: (vx, vy) if 0.5 * k <= t < 9.5 * k else (0.0, 0.0)
 
 
-def profiles(vx, vy):
+def _two(a, b, k):
+    return lambda t: (a if 0.5 * k <= t < 8.0 * k else
+                      b if 8.0 * k <= t < 16.0 * k else (0.0, 0.0))
+
+
+def profiles(vx, vy, k=1.0):
     """前後・左右・斜め 4 方向と、前後・左右の切り返し、前進 -> 斜め の 11 通り。
 
-    motion ノードの起動時の門 (motion_config.cpp の checkStaticWalkEnvelope) が
-    同じ組を回す。変えたら両方を揃える。
+    k は time_scale()。motion ノードの起動時の門 (motion_config.cpp の
+    checkStaticWalkEnvelope) が同じ組を回す。変えたら両方を揃える。
     """
     dx, dy = 0.8 * vx, 0.625 * vy     # 斜めは楕円制限の内側
     return {
-        'fwd': _on(vx, 0.0), 'back': _on(-vx, 0.0),
-        'left': _on(0.0, vy), 'right': _on(0.0, -vy),
-        'diag_fl': _on(dx, dy), 'diag_fr': _on(dx, -dy),
-        'diag_bl': _on(-dx, dy), 'diag_f2': _on(0.7 * vx, 0.75 * vy),
-        'rev_x': _two((vx, 0.0), (-vx, 0.0)),
-        'rev_y': _two((0.0, vy), (0.0, -vy)),
-        'fwd_diag': _two((vx, 0.0), (0.7 * vx, -0.75 * vy)),
+        'fwd': _on(vx, 0.0, k), 'back': _on(-vx, 0.0, k),
+        'left': _on(0.0, vy, k), 'right': _on(0.0, -vy, k),
+        'diag_fl': _on(dx, dy, k), 'diag_fr': _on(dx, -dy, k),
+        'diag_bl': _on(-dx, dy, k), 'diag_f2': _on(0.7 * vx, 0.75 * vy, k),
+        'rev_x': _two((vx, 0.0), (-vx, 0.0), k),
+        'rev_y': _two((0.0, vy), (0.0, -vy), k),
+        'fwd_diag': _two((vx, 0.0), (0.7 * vx, -0.75 * vy), k),
     }
 
 
-def scan(reach, sp, t_end=26.0, every=2):
-    """{シナリオ名: (届かない時刻の数, 最初の 1 点)}。全部届けば空。"""
+def scan(reach, sp):
+    """{シナリオ名: (届かない時刻の数, 最初の 1 点)}。全部届けば空。
+
+    26s x k 回し、2k 周期に 1 回見る (歩の速さによらず 1 歩あたりの点の数が同じ)。
+    """
+    k = time_scale(sp)
+    t_end = 26.0 * k
+    every = max(1, int(2.0 * k + 0.5))   # C++ の lround と同じ丸め
     cache = {}
 
     def ok(side, x, y, z):
@@ -67,7 +83,7 @@ def scan(reach, sp, t_end=26.0, every=2):
         return cache[k]
 
     bad = {}
-    for name, fn in profiles(*sp.v_max).items():
+    for name, fn in profiles(*sp.v_max, k).items():
         e = StaticWalkEngine(sp)
         n, first = 0, None
         for i in range(int(t_end / DT)):

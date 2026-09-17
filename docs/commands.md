@@ -1079,7 +1079,8 @@ ros2 run roboone_motion motion_selftest --static-gait /tmp/s.yaml --strict
 
 # 実機での確かめ方（操作は teleop の割り当てのまま。コントローラで歩行モードは変えない）
 #   Options 長押し  … home -> トルクオン（allow_torque:=false なら入ったことにして進む）
-#   R1 + 左スティック … 歩く（1 歩約 2 s。倒した量が歩幅 = v x 0.6 s）
+#   R1 + 左スティック … 歩く（倒した量が歩幅 = v x 0.6 s。1 歩の時間は static_gait.yaml 次第で、
+#                       2026-09-18 は観察用に時間 3 倍 = 1 歩約 6.4 s。元に戻す値は yaml の冒頭）
 #   L1             … 脱力（即時）
 # 走らせた bag は ~/roboone_logs/rosbag2_<日時>。静歩行の区間（walk_state 5 / 6）も読める
 python3 scripts/bag_walk_roll.py ~/roboone_logs/rosbag2_<日時>

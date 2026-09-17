@@ -16,7 +16,7 @@
 const SW_K_QUINTIC = 10.0 / Math.sqrt(3.0);
 const SW_SWING_RISE = 0.45;
 
-// static_walk/params.py の既定値 (= config/static_gait.yaml) と同じ
+// static_walk/params.py の既定値と同じ (照合される)。画面は static_gait.yaml の値で上書きして回す
 function staticDefaultParams() {
   return {
     z_c: 0.261, gravity: 9.81, foot_spacing: 0.140,

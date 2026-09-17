@@ -17,7 +17,8 @@
     allow_torque:=true|false  ★既定 true（機体が動く）。false で「読むだけ」の通し確認
     walk_mode:=dynamic|static 歩行の計画器。既定 dynamic（動歩行）。static で静歩行
                           （両足支持で重心を支持足の上へ移してから足を振り出す。
-                          1 歩約 2 s）。起動時に決まり、コントローラでは切り替えない
+                          速さは static_gait.yaml。2026-09-18 は観察用に 1 歩約 6.4 s）。
+                          起動時に決まり、コントローラでは切り替えない
     camera:=false|true    RealSense（深度 + 点群 + IMU）。既定 OFF（USB 帯域と CPU を
                           食うので、要るときだけ）
     imu:=true|false       RealSense を **IMU だけ** で上げる（深度・点群なし）。既定 ON。
