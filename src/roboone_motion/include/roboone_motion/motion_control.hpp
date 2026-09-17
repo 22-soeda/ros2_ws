@@ -45,9 +45,10 @@
 // ===========================================================================
 // 歩行と旋回
 // ===========================================================================
-// 歩行計画は roboone_walk_core (WalkEngine)。**平行移動のみ**で、機体は向きを
-// 変えない。/cmd_walk の angular.z は使わない (旋回はキーフレームモーション
-// turn_l / turn_r の担当)。angular.z が乗っていたら起動後 1 回だけ警告する。
+// 歩行計画は roboone_walk_core。動歩行 (WalkEngine) か静歩行 (StaticWalkEngine) を
+// 起動時に選ぶ (walk_planner.hpp。実行中には切り替えない)。どちらも**平行移動のみ**で、
+// 機体は向きを変えない。/cmd_walk の angular.z は使わない (旋回はキーフレーム
+// モーション turn_l / turn_r の担当)。angular.z が乗っていたら起動後 1 回だけ警告する。
 #ifndef ROBOONE_MOTION__MOTION_CONTROL_HPP_
 #define ROBOONE_MOTION__MOTION_CONTROL_HPP_
 
@@ -60,6 +61,7 @@
 #include "roboone_motion/motion_library.hpp"
 #include "roboone_motion/servo_map.hpp"
 #include "roboone_motion/side.hpp"
+#include "roboone_motion/walk_planner.hpp"
 #include "roboone_walk_core/walk_engine.hpp"
 
 namespace roboone_motion
@@ -91,6 +93,11 @@ public:
   };
 
   /// map / lib は寿命を通じて生きていること（ノードが持つ実体を指す）。
+  /// walk.mode で動歩行か静歩行かが決まる（以後変えない）。
+  void configure(
+    const ServoMap * map, const MotionLibrary * lib, const WalkSetup & walk,
+    const BodyPose & home, double body_pitch, const Options & opt);
+  /// 動歩行で組む（従来の呼び方）。
   void configure(
     const ServoMap * map, const MotionLibrary * lib, const rwc::GaitParams & gait,
     const BodyPose & home, double body_pitch, const Options & opt);
@@ -117,6 +124,7 @@ public:
 
   // --- 素性 -------------------------------------------------------------
   State state() const {return state_;}
+  WalkMode walkMode() const {return walk_.mode();}
 
   /// /motion/state の書式。**behavior が読み方をテストで固定しているので変えない。**
   ///
@@ -124,6 +132,9 @@ public:
   ///                         (STAY = その場保持。behavior の ready_states に無いので
   ///                          「歩けない」扱いになる。寝ている間はそれで正しい)
   ///     MOTION:<技名>       再生中だけ。技名はコロンの後ろ ("MOTION:punch_r")
+  ///     ... walk=static      静歩行で起動したときだけ末尾に付く ("HOLD walk=static")。
+  ///                         behavior は先頭の語だけを状態として読み、key=value は
+  ///                         motion= / playing= 以外を無視する
   ///
   /// 先頭語が状態で、コロン区切りの後置は MOTION のときの技名だけ。将来ここに
   /// 支持脚や位相を足すなら **空白区切りで後ろに足す** こと (behavior 側は
@@ -164,7 +175,7 @@ private:
   Options opt_;
   double body_pitch_ = 0.0;
 
-  rwc::WalkEngine walk_{rwc::GaitParams{}};
+  WalkPlanner walk_;
   //! 歩行計画の立位の足 (0, ±W/2, -z_c) からホーム姿勢の足までのずれ [mm]。
   //! 歩行の足 = 計画の足 + これ、なので計画の立位はホーム姿勢の足そのものになる
   //! (configure() の注記)

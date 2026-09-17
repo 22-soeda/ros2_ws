@@ -109,7 +109,8 @@ constexpr const char * kStabFields[] = {
   "ank_L_th5",    // 20 [rad]
   "ank_L_th6",    // 21 [rad]
   "torso",        // 22 [rad] 胴体の前傾に足した量
-  "walk_state",   // 23 0 IDLE / 1 START / 2 STEP / 3 STOP / 4 ESTOP / -1 歩行計画を回していない
+  "walk_state",   // 23 0 IDLE / 1 START / 2 STEP / 3 STOP / 4 ESTOP / 5 SHIFT / 6 SWING
+                  //    (5, 6 は静歩行) / -1 歩行計画を回していない
   "support",      // 24 +1 左足支持 / -1 右足支持 / 0 両足
   "phase",        // 25 歩の位相
   "corr_dropped", // 26 補正を外して出した脚の数（この周期）
@@ -226,6 +227,19 @@ public:
       "gait_yaml", (ref.empty() ? motion : ref) + "/config/gait.yaml");
     home_pose_yaml_ = declare_parameter<std::string>(
       "home_pose_yaml", (ref.empty() ? motion : ref) + "/config/home_pose.yaml");
+    static_gait_yaml_ = declare_parameter<std::string>(
+      "static_gait_yaml", (ref.empty() ? motion : ref) + "/config/static_gait.yaml");
+
+    // --- 歩行の計画器 -----------------------------------------------------
+    // dynamic = 動歩行 (walk_core。gait.yaml) / static = 静歩行 (static_walk。
+    // static_gait.yaml)。launch の walk_mode 引数から来る。**起動時にしか読まない**
+    // (read_only。実行中の ros2 param set は弾く)。
+    {
+      rcl_interfaces::msg::ParameterDescriptor d;
+      d.description = "歩行の計画器: dynamic (動歩行) / static (静歩行)。起動時だけ";
+      d.read_only = true;
+      walk_mode_ = declare_parameter<std::string>("walk_mode", "dynamic", d);
+    }
 
     // --- 周期 -------------------------------------------------------------
     loop_hz_ = declare_parameter<double>("loop_hz", 200.0);
@@ -289,6 +303,8 @@ public:
     rm::fallbackPath(limits_yaml_, feetech + "/config/servo_limits.yaml", "limits_yaml", boot_);
     rm::fallbackPath(home_pose_yaml_, ref + "/config/home_pose.yaml", "home_pose_yaml", boot_);
     rm::fallbackPath(gait_yaml_, ref + "/config/gait.yaml", "gait_yaml", boot_);
+    rm::fallbackPath(
+      static_gait_yaml_, ref + "/config/static_gait.yaml", "static_gait_yaml", boot_);
     drain();
 
     std::string err;
@@ -308,17 +324,40 @@ public:
     RCLCPP_INFO(get_logger(), "モーション: %s", lib_.summary().c_str());
 
     // --- 設定と門（全部 motion_config。ここは実機に触らない）---------------
+    if (!rm::parseWalkMode(walk_mode_, walk_.mode)) {
+      RCLCPP_ERROR(
+        get_logger(), "walk_mode は dynamic か static (\"%s\" は知らない)", walk_mode_.c_str());
+      return false;
+    }
+    RCLCPP_INFO(
+      get_logger(), "歩行モード: %s", walk_.isStatic() ?
+      "static (静歩行。static_gait.yaml の計画で歩く)" :
+      "dynamic (動歩行。gait.yaml の計画で歩く)");
     rm::checkMotionLegServo(map_, lib_, boot_);
-    rm::loadGait(gait_yaml_, gait_, boot_);
-    rm::checkGait(gait_, boot_);
-    if (!rm::loadHomePose(home_pose_yaml_, map_, gait_, home_pose_, body_pitch_, boot_, err)) {
+    // gait.yaml は静歩行でも読む (ホーム姿勢の高さの突き合わせに使う)。歩行の門は
+    // 選んだほうだけを通す。
+    rm::loadGait(gait_yaml_, walk_.gait, boot_);
+    if (walk_.isStatic()) {
+      rm::loadStaticGait(static_gait_yaml_, walk_.stat, boot_);
+      rm::checkStaticGait(walk_.stat, boot_);
+    } else {
+      rm::checkGait(walk_.gait, boot_);
+    }
+    if (!rm::loadHomePose(
+        home_pose_yaml_, map_, walk_.gait, home_pose_, body_pitch_, boot_, err))
+    {
       drain();
       RCLCPP_ERROR(get_logger(), "%s", err.c_str());
       return false;
     }
     rm::checkPoseReachable(map_, home_pose_, "ホーム姿勢", boot_);
-    rm::checkStance(gait_, home_pose_, boot_);
-    rm::checkWalkEnvelope(map_, gait_, home_pose_, body_pitch_, boot_);
+    if (walk_.isStatic()) {
+      rm::checkStaticStance(walk_.stat, home_pose_, boot_);
+      rm::checkStaticWalkEnvelope(map_, walk_, home_pose_, body_pitch_, boot_);
+    } else {
+      rm::checkStance(walk_.gait, home_pose_, boot_);
+      rm::checkWalkEnvelope(map_, walk_.gait, home_pose_, body_pitch_, boot_);
+    }
     drain();
 
     // --- 層を組む ---------------------------------------------------------
@@ -337,8 +376,8 @@ public:
       RCLCPP_ERROR(get_logger(), "片側のバスしか無いので歩行を無効にした (単脚では歩けない)");
     }
     codec_.configure(&map_, body_pitch_);
-    ctrl_.configure(&map_, &lib_, gait_, home_pose_, body_pitch_, ctrl_opt_);
-    stab_.configure(&map_, home_pose_, body_pitch_, gait_);
+    ctrl_.configure(&map_, &lib_, walk_, home_pose_, body_pitch_, ctrl_opt_);
+    stab_.configure(&map_, home_pose_, body_pitch_, walk_.swingTiming());
     drain();
 
     // --- 通信 -------------------------------------------------------------
@@ -389,8 +428,9 @@ public:
     publishState();
     RCLCPP_INFO(
       get_logger(),
-      "motion 起動。%.0fHz / 読み %.0fHz / 指令途絶 %.2fs / トルクオン補間 %.1fs%s",
-      loop_hz_, read_hz_, ctrl_opt_.cmd_timeout, ctrl_opt_.torque_on_time,
+      "motion 起動 (歩行 %s)。%.0fHz / 読み %.0fHz / 指令途絶 %.2fs / トルクオン補間 %.1fs%s",
+      rm::walkModeName(walk_.mode), loop_hz_, read_hz_, ctrl_opt_.cmd_timeout,
+      ctrl_opt_.torque_on_time,
       bank_opt_.dry_run ? " ★dry_run: サーボへ書かない" : "");
     if (bank_opt_.allow_torque) {
       RCLCPP_WARN(
@@ -467,7 +507,7 @@ private:
       const rm::rwc::WalkOutputs * wo = ctrl_.walkOutputs();
       double ff[2]{0.0, 0.0};
       if (accel_ff_.load() && wo && wo->state != rm::rwc::State::IDLE) {
-        const double w2 = gait_.omega() * gait_.omega();
+        const double w2 = walk_.omega() * walk_.omega();
         ff[0] = w2 * (wo->com[0] - wo->zmp[0]);
         ff[1] = w2 * (wo->com[1] - wo->zmp[1]);
       }
@@ -945,6 +985,7 @@ private:
   // --- 設定 -------------------------------------------------------------
   std::string port_[rm::kNumSide];
   std::string home_yaml_, limits_yaml_, motions_yaml_, gait_yaml_, home_pose_yaml_;
+  std::string static_gait_yaml_, walk_mode_;
   std::vector<std::string> arm_invert_;
   double loop_hz_ = 200.0, read_hz_ = 50.0, joint_state_hz_ = 10.0;
   double body_pitch_ = 0.0;
@@ -954,7 +995,7 @@ private:
   // --- 層 ---------------------------------------------------------------
   rm::ServoMap map_;
   rm::MotionLibrary lib_;
-  rm::rwc::GaitParams gait_;
+  rm::WalkSetup walk_;              //!< 歩行の計画器の選択と設定 (起動時に 1 回だけ詰める)
   rm::BodyPose home_pose_;
   rm::ServoBank bank_;
   rm::PoseCodec codec_;

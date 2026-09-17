@@ -63,6 +63,7 @@
 #include "roboone_motion/pose_codec.hpp"
 #include "roboone_motion/servo_map.hpp"
 #include "roboone_motion/side.hpp"
+#include "roboone_motion/walk_planner.hpp"
 #include "roboone_walk_core/walk_engine.hpp"
 
 namespace roboone_motion
@@ -99,8 +100,12 @@ struct StabGains
 class Stabilizer
 {
 public:
-  /// ホーム姿勢で足首のヤコビアンを取り、歩行計画から着地の位相を取る。
+  /// ホーム姿勢で足首のヤコビアンを取り、遊脚の時間と着地の位相を受け取る
+  /// (WalkSetup::swingTiming()。動歩行と静歩行で違う)。
   /// 解けない脚があれば false（その脚には補正を出さない）。
+  bool configure(
+    const ServoMap * map, const BodyPose & home, double body_pitch, const SwingTiming & swing);
+  /// 動歩行の設定から遊脚の時間と着地の位相を取る（従来の呼び方）。
   bool configure(
     const ServoMap * map, const BodyPose & home, double body_pitch,
     const rwc::GaitParams & gait);
@@ -150,7 +155,7 @@ private:
   //! [s][r][c]: (u_roll, u_pitch) -> (θ5, θ6) の行列
   double jinv_[kNumSide][2][2]{};
   double touch_phase_ = 1.0;
-  double t_step_ = 0.6;
+  double swing_dur_ = 0.6;     //!< [s] 遊脚の時間 (動歩行 t_step / 静歩行 t_swing)
   double fade_ = 0.0;
   PoseCorrection corr_;
   Debug dbg_;

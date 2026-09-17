@@ -38,14 +38,15 @@ python3 src/roboone_viz/roboone_viz/gen_walk_viz.py --serve 8100
   ライブ操縦はその JS 版 `staticwalk.js`。設定は `static_gait.yaml` を読む。
   重心を両足支持で次の支持足の上へ移してから足を振り出すので、1 歩に約 2 s かかる。
   パイプ欄に ZMP の静的余裕 (支持多角形の縁まで。足裏 118 × 74 mm) を出す。
-  **motion ノードにはまだ入っていない** (C++ 版はあるが、組み込みが未実装)。足踏みは可視化だけの包み
+  実機では motion ノードを `walk_mode:=static` で起動すると同じ計画 (C++ 版) で歩く。足踏みは可視化だけの包み
   (`record.py` の `MarchStaticWalkEngine` / `template.html` の `MarchStaticWalkEngineJS`)
 - 足裏は実寸 (static_gait.yaml の sole_length / sole_width) で描く
 - **実機の脚で届くか**: `leg_service` がビルドしてあれば、記録シナリオの各時刻の足先を
   IK と機構層 (膝・足首リンク) に通し、届かない足を注意色で囲む (`--no-reach` で省く)。
   足裏は水平で見ている (home_pose の rpy・body_pitch が 0 の前提)。
-  ★動歩行のシナリオは `stance_y_offset` (motion_node.yaml) を掛けずに計画の足間隔
-  (gait.yaml の 170 mm) のまま見ているので、実機 (140 mm) より届かない点が多く出る
+  ★動歩行のシナリオは、motion ノードが計画の立位をホーム姿勢の足 (home_pose.yaml の
+  foot.y) へ平行移動する分を掛けずに、計画の足間隔 (gait.yaml の 170 mm) のまま見ている。
+  実機の足 (140 mm) より届かない点が多く出る
 
 ```bash
 # 静歩行の設定を変えて見る (static_gait.yaml の上に重ねる。yaml は書き換えない)

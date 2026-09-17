@@ -19,9 +19,12 @@
 
 の最大を出す。正なら遊脚側（持ち上げた足の側）へ、負なら支持足の外側へ倒れている。
 
-    正で歩ごとに育つ -> 骨盤の横振りが足りない（gait.yaml の foot_spacing と
-                        motion_node.yaml の stance_y_offset。2026-09-17）
+    正で歩ごとに育つ -> 骨盤の横振りが足りない。動歩行は gait.yaml の foot_spacing を
+                        広げる（実機の足は home_pose.yaml の foot.y のまま）。
+                        静歩行は static_gait.yaml の com_offset_y を + へ
     負             -> 振りすぎ
+
+静歩行 (walk_mode:=static) の bag もそのまま読める（SWING の間だけ support が立つ）。
 
 `/motion/stab` の並びは layout のラベルから引くので、列を足しても壊れない。
 """
@@ -33,7 +36,7 @@ import math
 import sys
 
 R2D = 180.0 / math.pi
-WALKING = (1, 2, 3)     # walk_state: START / STEP / STOP
+WALKING = (1, 2, 3, 5, 6)     # walk_state: START / STEP / STOP / SHIFT / SWING (5, 6 は静歩行)
 
 
 def read_stab(path):

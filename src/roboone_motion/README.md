@@ -61,7 +61,7 @@ bank_.states()  ->  codec_.decode()  ->  ctrl_.step()  ->  stab_.update()
 ```
 /cmd_walk ─┐
 /cmd_motion├→ MotionController ─→ BodyPose [mm・Σ_U] ─→ PoseCodec.encode()
-/estop ────┘   状態機械 / WalkEngine / MotionPlayer         │ bodyPitchApply (Σ_U→Σ_B)
+/estop ────┘   状態機械 / WalkPlanner / MotionPlayer        │ bodyPitchApply (Σ_U→Σ_B)
                           │ 支持脚・位相                     │   └ + 胴体の補正
 /camera/imu → ImuAttitude → Stabilizer ─→ PoseCorrection ──→│ IK
                                                             │   └ + 足首の補正
@@ -190,6 +190,29 @@ IK で戻すと別のクランク角（+83 deg）になる = 足裏で補間す�
 補間の形は変わる。足裏の直線ではなく関節の直線なので、**接地したまま**起点と保持姿勢が
 大きく違うと足裏が擦れる。機体を支えて（浮かせて）トルクを入れる運用なら差は無い。
 
+## 動歩行と静歩行（`walk_planner.hpp`）
+
+歩行の計画器は**起動時に 1 回だけ**選ぶ（パラメータ `walk_mode`。launch の
+`walk_mode:=dynamic|static`。read_only なので実行中は変えられない）。
+
+| walk_mode | 計画器 | 設定 | 歩き方 |
+|---|---|---|---|
+| `dynamic`（既定） | `rwc::WalkEngine`（walk_core） | `gait.yaml` | DCM・純フィードフォワード。1 歩 0.6 s |
+| `static` | `rwc::StaticWalkEngine`（static_walk） | `static_gait.yaml` | 両足支持で重心を支持足の上へ移し（SHIFT）、止めたまま足を振り出す（SWING）。1 歩約 2 s |
+
+どちらも出力は `rwc::WalkOutputs` なので、足先の組み立て（`walkFeet()`。計画の立位を
+ホーム姿勢の足へ平行移動する）・IK・安定化・`/motion/stab` は共通。モードで違うのは
+
+- 計画上の足間隔と重心高さ（`WalkSetup::planFootSpacing()` / `planZc()`）
+- 遊脚の時間と接地の位相（`WalkSetup::swingTiming()`。安定化の着地ゲート）
+- 状態の番号（静歩行は `walk_state` 5 = SHIFT / 6 = SWING。片足支持は `singleSupport()`）
+- 起動時の門（下の表）
+- `/motion/state` の末尾（静歩行だけ ` walk=static` が付く。behavior は先頭の語だけ読む）
+
+★静歩行は `static_gait.yaml` の `foot_spacing` を **home_pose.yaml の foot.y の 2 倍**と
+揃える前提。ずれた分だけ振り出し中の重心が支持足の中心から横へずれる
+（`checkStaticStance` が言う）。
+
 ## 起動時の門（`motion_config.hpp`）
 
 解けない config を実機で踏むと「動かない」のか「解けていない」のかが現場で
@@ -202,6 +225,12 @@ IK で戻すと別のクランク角（+83 deg）になる = 足裏で補間す�
 | `checkGait` | 遊脚が本当に床へ届くか（降下は `td_speed_max` で飽和する） |
 | `checkStance` | 歩行の立位（= ホーム姿勢の足）と計画上の足間隔の関係。計画が実機の足より狭ければ警告 |
 | `checkWalkEnvelope` | 歩行が指令しうる足先の箱が IK の到達域に収まるか |
+| `checkStaticGait` | （静歩行）遊脚が床へ届くか・重心の横ずらしが足裏に収まるか。1 歩の時間と速さも言う |
+| `checkStaticStance` | （静歩行）計画の足間隔とホーム姿勢の足の食い違い = 振り出し中の重心のずれと静的余裕 |
+| `checkStaticWalkEnvelope` | （静歩行）11 通りの指令で計画を回し、**全時刻の足先**が機構の到達域に入るか（約 60 ms） |
+
+`checkGait` / `checkStance` / `checkWalkEnvelope` は動歩行のとき、`checkStatic*` は
+静歩行のときだけ通す。
 
 `checkWalkEnvelope` は `roboone_walk_core/src/gait_from_kinematics.cpp` の逆向き。
 あちらは到達域から `gait.yaml` を**決める**、こちらは入っている値で本当に届くかを
@@ -245,6 +274,7 @@ R_BL をそのまま `body_pitch` に読み替えると胴体の補正の向き�
 ros2 launch roboone_motion motion.launch.py
 ros2 launch roboone_motion motion.launch.py allow_torque:=false  # 読むだけ
 ros2 launch roboone_motion motion.launch.py dry_run:=true        # バスも開かない
+ros2 launch roboone_motion motion.launch.py walk_mode:=static    # 静歩行で起動
 
 # ティーチ（スペースで捕まえる。--keep-torque なら書き込みゼロ）
 ros2 run roboone_motion motion_teach > punch_r.yaml
@@ -253,7 +283,7 @@ ros2 run roboone_motion motion_teach --format angle   # 脚をサーボ角で出
 # 自己検算
 ros2 run roboone_motion motion_selftest
 ros2 run roboone_motion motion_selftest --strict      # 設定の門のエラーも失敗にする
-#   [7] IMU の姿勢推定、[8] 安定化の向きも見る
+#   [7] IMU の姿勢推定、[8] 安定化の向き、[9] 静歩行も見る
 ros2 run roboone_motion motion_selftest --gait /tmp/g.yaml --home-pose /tmp/h.yaml --strict
 ```
 

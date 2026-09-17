@@ -22,7 +22,7 @@ constexpr double kR2D = 180.0 / M_PI;
 /// printf 書式で 1 行こしらえる（EventQueue は文字列しか受けない）。
 std::string fmt(const char * f, ...)
 {
-  char buf[512];
+  char buf[1024];   // 日本語は 1 文字 3 バイト。長い門の文が切れないように
   va_list ap;
   va_start(ap, f);
   std::vsnprintf(buf, sizeof(buf), f, ap);
@@ -343,6 +343,213 @@ void checkWalkEnvelope(
       " `ros2 run roboone_walk_core gait_from_kinematics` で出し直すこと",
       reachLevelName(lvl), kSideTag[side_worst],
       worst_pose.p.x, worst_pose.p.y, worst_pose.p.z));
+}
+
+// ===========================================================================
+// 静歩行
+// ===========================================================================
+
+void loadStaticGait(const std::string & path, rwc::StaticGaitParams & out, EventQueue & ev)
+{
+  YAML::Node y;
+  try {
+    y = YAML::LoadFile(path);
+  } catch (const std::exception & e) {
+    ev.warn(
+      std::string("static_gait.yaml を読めない (") + e.what() +
+      ")。static_walk_engine.hpp の既定値で走る");
+    return;
+  }
+  if (!y.IsMap()) {
+    ev.warn("static_gait.yaml が空か書式違い (" + path + ")。static_walk_engine.hpp の既定値で走る");
+    return;
+  }
+  const std::vector<rwc::StaticGaitField> fields = rwc::staticGaitFields(out);
+  for (const auto & kv : y) {
+    const std::string k = kv.first.as<std::string>();
+    const auto it = std::find_if(
+      fields.begin(), fields.end(), [&k](const rwc::StaticGaitField & f) {return k == f.name;});
+    if (it == fields.end()) {
+      ev.warn("static_gait.yaml の知らないキー \"" + k + "\" は無視した");
+      continue;
+    }
+    const YAML::Node & n = kv.second;
+    if (it->n == 1) {
+      *it->ptr = n.as<double>();
+    } else if (n.IsSequence() && static_cast<int>(n.size()) == it->n) {
+      for (int i = 0; i < it->n; ++i) {it->ptr[i] = n[i].as<double>();}
+    } else {
+      ev.warn(fmt("static_gait.yaml の %s は %d 要素の列で書く (既定値のまま)", k.c_str(), it->n));
+    }
+  }
+  ev.info(
+    fmt(
+      "静歩行 (%s): W=%.3fm / zmp_tol %.1fmm / 振り出し %.2fs / 足上げ %.0fmm / "
+      "重心の横ずらし %+.1fmm / 歩幅 = v x %.2fs / v_max=(%.2f, %.2f)",
+      path.c_str(), out.foot_spacing, out.zmp_tol * 1000.0, out.t_swing,
+      out.swing_height * 1000.0, out.com_offset_y * 1000.0, out.stride_time,
+      out.v_max[0], out.v_max[1]));
+}
+
+void checkStaticGait(const rwc::StaticGaitParams & stat, EventQueue & ev)
+{
+  const rwc::StaticGaitCheck r = rwc::checkStaticGait(stat);
+  for (const auto & e : r.errors) {
+    ev.error("静歩行の設定: " + e);
+  }
+  ev.info(
+    fmt(
+      "静歩行: 重心移動 %.2fs (足間隔ぶん) + 振り出し %.2fs。全速前進で 1 歩 %.2fs・%.3f m/s"
+      " (歩幅 %.0fmm)。遊脚は振り出しの %.0f%% で接地%s",
+      r.t_shift_step, stat.t_swing, r.t_cycle_fwd, r.v_fwd_real, r.stride_max[0] * 1000.0,
+      r.touch_phase * 100.0, r.saturated ? " (降下が td_speed_max に張り付いている)" : ""));
+}
+
+void checkStaticStance(
+  const rwc::StaticGaitParams & stat, const BodyPose & home, EventQueue & ev)
+{
+  const double half = stat.foot_spacing * 500.0;
+  const double zc = stat.z_c * 1000.0;
+  const double off = stat.com_offset_y * 1000.0;
+  const double hl = stat.sole_length * 500.0, hw = stat.sole_width * 500.0;
+  // 振り出し中、計画の重心は「支持足の中心 + 外へ off」。実機の足はそこから
+  // walkStanceOffset() だけ動くので、骨盤 (= 重心) から見た支持足の位置もずれる。
+  double worst = 1e9, c_eff_show = 0.0, x_eff_show = 0.0;
+  for (int s = 0; s < kNumSide; ++s) {
+    const double lat = (s == kLeft) ? +1.0 : -1.0;
+    const rk::Vec3 & hp = home.foot[s].p;
+    const double c_eff = off + half - lat * hp.y;   // 支持足の中心から外へ (+)
+    const double x_eff = 0.0 - hp.x;                // 支持足の中心から前へ (+。-0 を出さない)
+    const double m = std::min(hl - std::abs(x_eff), hw - std::abs(c_eff));
+    if (m < worst) {
+      worst = m;
+      c_eff_show = c_eff;
+      x_eff_show = x_eff;
+    }
+  }
+  const rk::Vec3 & hl_p = home.foot[kLeft].p;
+  ev.info(
+    fmt(
+      "静歩行の立位: 計画の足間隔 ±%.1fmm / ホーム姿勢の足 ±%.1fmm (前後 %+.1fmm)。"
+      "振り出し中の重心は支持足の中心から外へ %+.1fmm・前へ %+.1fmm"
+      " (うち com_offset_y %+.1fmm)。片足支持の静的余裕 %.1fmm",
+      half, hl_p.y, hl_p.x, c_eff_show, x_eff_show, off, worst));
+  if (std::abs(half - hl_p.y) > 0.5) {
+    ev.warn(
+      fmt(
+        "static_gait.yaml の foot_spacing (±%.1fmm) がホーム姿勢の足 (home_pose.yaml の"
+        " foot.y ±%.1fmm) と違う。差の %+.1fmm だけ振り出し中の重心が支持足の中心から"
+        "横へずれる。foot_spacing を 2 x foot.y に揃えること"
+        " (重心をずらしたいなら com_offset_y で持つ)",
+        half, hl_p.y, half - hl_p.y));
+  }
+  if (std::abs(hl_p.x) > 0.5) {
+    ev.warn(
+      fmt(
+        "ホーム姿勢の足が前後に %+.1fmm ずれている。静歩行では重心が支持足の中心から"
+        "前後へ %+.1fmm ずれたまま足を上げる", hl_p.x, -hl_p.x));
+  }
+  if (std::abs(-hl_p.z - zc) > 5.0) {
+    ev.warn(
+      fmt(
+        "ホーム姿勢の骨盤高さ %.1fmm が static_gait.yaml の z_c %.1fmm と違う"
+        " (重心移動の時間の計算がずれる)", -hl_p.z, zc));
+  }
+  if (worst <= stat.zmp_tol * 1000.0) {
+    ev.error(
+      fmt(
+        "静歩行の片足支持の静的余裕 %.1fmm が zmp_tol %.1fmm 以下。重心移動の途中で"
+        " ZMP が足裏から出る", worst, stat.zmp_tol * 1000.0));
+  }
+}
+
+void checkStaticWalkEnvelope(
+  const ServoMap & map, const WalkSetup & walk, const BodyPose & home,
+  double body_pitch, EventQueue & ev)
+{
+  const rwc::StaticGaitParams & p = walk.stat;
+  const double vx = p.v_max[0], vy = p.v_max[1];
+  const double dx = 0.8 * vx, dy = 0.625 * vy;     // 斜めは楕円制限の内側
+  // roboone_viz/static_reach.py の profiles() と同じ 11 通り。変えたら両方を揃える。
+  //   two = false: 0.5 <= t < 9.5 の間 a
+  //   two = true : 0.5 <= t < 8 の間 a、8 <= t < 16 の間 b
+  struct Prof
+  {
+    const char * name;
+    double a[2];
+    double b[2];
+    bool two;
+  };
+  const Prof profs[] = {
+    {"前進", {vx, 0.0}, {0.0, 0.0}, false},
+    {"後進", {-vx, 0.0}, {0.0, 0.0}, false},
+    {"左", {0.0, vy}, {0.0, 0.0}, false},
+    {"右", {0.0, -vy}, {0.0, 0.0}, false},
+    {"斜め左前", {dx, dy}, {0.0, 0.0}, false},
+    {"斜め右前", {dx, -dy}, {0.0, 0.0}, false},
+    {"斜め左後ろ", {-dx, dy}, {0.0, 0.0}, false},
+    {"斜め左前 (横多め)", {0.7 * vx, 0.75 * vy}, {0.0, 0.0}, false},
+    {"前後の切り返し", {vx, 0.0}, {-vx, 0.0}, true},
+    {"左右の切り返し", {0.0, vy}, {0.0, -vy}, true},
+    {"前進 -> 斜め右前", {vx, 0.0}, {0.7 * vx, -0.75 * vy}, true},
+  };
+  const double dt = 0.005, t_end = 26.0;
+  const int every = 2;
+  rk::Vec3 off[kNumSide];
+  walkStanceOffset(walk, home, off);
+
+  int total = 0, bad = 0;
+  std::string bad_names, first;
+  for (const Prof & pr : profs) {
+    rwc::StaticWalkEngine e{p};
+    int bad_here = 0;
+    const int n = static_cast<int>(t_end / dt + 0.5);
+    for (int i = 0; i < n; ++i) {
+      const double t = i * dt;
+      const double * c = nullptr;
+      if (t >= 0.5 && t < (pr.two ? 8.0 : 9.5)) {
+        c = pr.a;
+      } else if (pr.two && t >= 8.0 && t < 16.0) {
+        c = pr.b;
+      }
+      const rwc::WalkOutputs o = e.update(c ? c[0] : 0.0, c ? c[1] : 0.0, dt);
+      if (i % every) {continue;}
+      FootPose f[kNumSide];
+      walkFeet(o, off, home, f);
+      for (int s = 0; s < kNumSide; ++s) {
+        FootPose fb = f[s];
+        bodyPitchApply(fb, body_pitch);
+        ++total;
+        const ReachLevel lv = reachLevel(map.leg_params(s), fb);
+        if (lv >= ReachLevel::Mech) {continue;}
+        ++bad;
+        ++bad_here;
+        if (first.empty()) {
+          first = fmt(
+            "%s t=%.2fs %s %s脚 p=[%.1f, %.1f, %.1f] (%s)", pr.name, o.t,
+            rwc::to_string(o.state), kSideTag[s], f[s].p.x, f[s].p.y, f[s].p.z,
+            reachLevelName(lv));
+        }
+      }
+    }
+    if (bad_here) {
+      bad_names += (bad_names.empty() ? "" : " / ");
+      bad_names += pr.name;
+    }
+  }
+  if (bad == 0) {
+    ev.info(
+      fmt(
+        "静歩行の足先は、前後・左右・斜め・切り返しの 11 通りの指令の全時刻 (%d 点) で"
+        " 機構の到達域の内側", total));
+    return;
+  }
+  ev.error(
+    fmt(
+      "静歩行の足先が機構の到達域の外に出る時刻がある (%d / %d 点。%s)。最初: %s。"
+      "その位相で IK が解けず脚が止まる。static_gait.yaml の swing_height を下げるか"
+      " com_offset_y を内側 (-) へ寄せること (表は roboone_viz/static_reach.py で作れる)",
+      bad, total, bad_names.c_str(), first.c_str()));
 }
 
 }  // namespace roboone_motion

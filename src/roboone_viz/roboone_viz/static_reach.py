@@ -35,11 +35,15 @@ def _on(vx, vy, t1=9.5):
 
 
 def _two(a, b):
-    return lambda t: a if 0.5 <= t < 8.0 else (b if t < 16.0 else (0.0, 0.0))
+    return lambda t: a if 0.5 <= t < 8.0 else (b if 8.0 <= t < 16.0 else (0.0, 0.0))
 
 
 def profiles(vx, vy):
-    """前後・左右・斜め 4 方向と、前後・左右の切り返し、前進 -> 斜め の 11 通り。"""
+    """前後・左右・斜め 4 方向と、前後・左右の切り返し、前進 -> 斜め の 11 通り。
+
+    motion ノードの起動時の門 (motion_config.cpp の checkStaticWalkEnvelope) が
+    同じ組を回す。変えたら両方を揃える。
+    """
     dx, dy = 0.8 * vx, 0.625 * vy     # 斜めは楕円制限の内側
     return {
         'fwd': _on(vx, 0.0), 'back': _on(-vx, 0.0),

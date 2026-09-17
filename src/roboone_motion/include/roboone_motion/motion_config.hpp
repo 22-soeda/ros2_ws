@@ -13,6 +13,12 @@
 //   checkStance           歩行の立位（= ホーム姿勢の足）と計画上の足間隔の関係を言う
 //   checkWalkEnvelope     歩行が指令しうる足先の箱が IK の到達域に収まるか
 //
+// 静歩行 (walk_mode:=static) では、上の歩行の 3 つの代わりに次の 3 つを通す。
+//
+//   checkStaticGait           static_gait.yaml が静歩行として成り立つか
+//   checkStaticStance         計画の足間隔とホーム姿勢の足が揃っているか (静的な余裕)
+//   checkStaticWalkEnvelope   計画した軌道の全時刻で、足先に脚が届くか
+//
 // checkWalkEnvelope は roboone_walk_core/src/gait_from_kinematics.cpp の逆向き。
 // あちらは IK の到達域から gait.yaml の値を**決める**、こちらは入っている値で
 // 本当に届くかを**確かめる**。片方だけ手で書き換えたときに気付くための門。
@@ -31,7 +37,9 @@
 #include "roboone_motion/event.hpp"
 #include "roboone_motion/motion_library.hpp"
 #include "roboone_motion/servo_map.hpp"
+#include "roboone_motion/walk_planner.hpp"
 #include "roboone_walk_core/gait_params.hpp"
+#include "roboone_walk_core/static_walk_engine.hpp"
 
 namespace roboone_motion
 {
@@ -101,6 +109,34 @@ void checkStance(const rwc::GaitParams & gait, const BodyPose & home, EventQueue
 ///   通っても歩行中に届くとは限らない（実際に出した足先は tickWalk が見張る）。
 void checkWalkEnvelope(
   const ServoMap & map, const rwc::GaitParams & gait, const BodyPose & home,
+  double body_pitch, EventQueue & ev);
+
+// --- 静歩行 ---------------------------------------------------------------
+
+/// static_gait.yaml を読む。loadGait と同じく、読めなくても既定値で走り、知らないキーは警告する。
+void loadStaticGait(const std::string & path, rwc::StaticGaitParams & out, EventQueue & ev);
+
+/// 静歩行の設定が成り立つか (遊脚が床に着くか・重心の横ずらしが足裏に収まるか)。
+/// 1 歩の時間と全速前進の速さも言う。
+void checkStaticGait(const rwc::StaticGaitParams & stat, EventQueue & ev);
+
+/// 計画の立位とホーム姿勢の足の関係から、振り出し中の重心が支持足の中心から
+/// どれだけずれるかを出す。
+///
+/// 歩行の足はホーム姿勢の足へ平行移動する (walkStanceOffset)。静歩行の計画は
+/// 「重心 = 支持足の中心 + com_offset_y」なので、W/2 と foot.y の差や foot.x は
+/// そのまま重心のずれになる。静的な余裕 (足裏の縁まで) が zmp_tol 以下ならエラー。
+void checkStaticStance(
+  const rwc::StaticGaitParams & stat, const BodyPose & home, EventQueue & ev);
+
+/// 静歩行の計画を前後・左右・斜め・切り返しの指令で回し、**全時刻の足先**を IK と
+/// 機構層に通す。機構として届かない時刻があればエラー。
+///
+/// 箱の隅を見る checkWalkEnvelope と違い、骨盤の横振り (重心を支持足の上へ運ぶ)
+/// を含めて見る。静歩行は遊脚が骨盤から横へ 140mm 以上開くので、箱では足りない。
+/// 指令の組は roboone_viz/static_reach.py と同じ (足上げの表はあちらで作る)。
+void checkStaticWalkEnvelope(
+  const ServoMap & map, const WalkSetup & walk, const BodyPose & home,
   double body_pitch, EventQueue & ev);
 
 }  // namespace roboone_motion

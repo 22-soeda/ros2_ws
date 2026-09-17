@@ -35,7 +35,7 @@ struct StaticGaitParams
   // --- 力学 -----------------------------------------------------------
   double z_c = 0.261;              // [m]
   double gravity = 9.81;           // [m/s^2]
-  double foot_spacing = 0.140;     // [m]   実機の足間隔そのもの (stance_y_offset を使わない)
+  double foot_spacing = 0.140;     // [m]   home_pose.yaml の foot.y の 2 倍と揃える
   // --- 足裏 (IK の目標点が中心の長方形) --------------------------------
   double sole_length = 0.118;      // [m]
   double sole_width = 0.074;       // [m]

@@ -26,6 +26,10 @@
 //       載せ替え・傾きと角速度の符号・歩行中の揺れへの強さ・零点合わせを見る
 //   [8] 安定化 (stabilizer.hpp)。**補正の向き**を順運動学で確かめる。符号を
 //       落とすと安定化が倒れる向きに効くので、実機に出す前にここで止める
+//   [9] 静歩行 (walk_mode:=static)。静歩行の門が食い違いを拾うこと、状態機械が
+//       静歩行の計画で歩いて止まること、振り出し中の重心が門の言うとおりの位置に
+//       あること、安定化が SWING を片足支持として扱うこと。static_gait.yaml そのものの
+//       門の結果は [6] と同じく --strict のときだけ落とす
 //
 // 落ちたら戻り値 1。config を書き換えたあとに 1 回通しておくところ。
 #include <algorithm>
@@ -193,7 +197,7 @@ rm::BodyPose stancePose(std::size_t num_arm)
 
 int main(int argc, char ** argv)
 {
-  std::string home_path, limits_path, motions_path, gait_path, home_pose_path;
+  std::string home_path, limits_path, motions_path, gait_path, home_pose_path, static_gait_path;
   bool strict = false;   //!< [6] の門のエラーも失敗として扱う
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
@@ -214,6 +218,8 @@ int main(int argc, char ** argv)
       gait_path = next("--gait");
     } else if (a == "--home-pose") {
       home_pose_path = next("--home-pose");
+    } else if (a == "--static-gait") {
+      static_gait_path = next("--static-gait");
     } else if (a == "--strict") {
       strict = true;
     } else {
@@ -221,7 +227,7 @@ int main(int argc, char ** argv)
         stderr,
         "使い方: motion_selftest [--home servo_home.yaml] [--limits servo_limits.yaml]"
         " [--motions motions.yaml] [--gait gait.yaml] [--home-pose home_pose.yaml]"
-        " [--strict]\n"
+        " [--static-gait static_gait.yaml] [--strict]\n"
         "  --strict  [6] 設定の門のエラーも失敗にする (config を詰めるときはこちら)\n");
       return 2;
     }
@@ -236,7 +242,7 @@ int main(int argc, char ** argv)
         "/config/motions.yaml";
     }
     // gait.yaml / home_pose.yaml の原本は roboone_walk_ref。
-    if (gait_path.empty() || home_pose_path.empty()) {
+    if (gait_path.empty() || home_pose_path.empty() || static_gait_path.empty()) {
       std::string ref;
       try {
         ref = ament_index_cpp::get_package_share_directory("roboone_walk_ref");
@@ -245,6 +251,7 @@ int main(int argc, char ** argv)
       }
       if (gait_path.empty()) {gait_path = ref + "/config/gait.yaml";}
       if (home_pose_path.empty()) {home_pose_path = ref + "/config/home_pose.yaml";}
+      if (static_gait_path.empty()) {static_gait_path = ref + "/config/static_gait.yaml";}
     }
   } catch (const std::exception & e) {
     std::fprintf(stderr, "share が見つからない: %s\n", e.what());
@@ -1283,6 +1290,262 @@ int main(int argc, char ** argv)
       check(
         in_hold && t.state == rm::State::STAY && c->walkOutputs() == nullptr,
         "歩行計画の出力は HOLD で出て、STAY では出ない");
+    }
+  }
+
+  // =======================================================================
+  // [9] 静歩行 (walk_mode:=static)
+  // =======================================================================
+  if (home_ok) {
+    std::printf("\n[9] 静歩行 (walk_planner.hpp / static_gait.yaml)\n");
+    const double dt = 1.0 / 200.0;
+    // 出来事を数える。print なら中身も出す
+    auto count = [](rm::EventQueue & ev, rm::EventLevel lv, bool print) {
+        int n = 0;
+        rm::Event e;
+        while (ev.pop(e)) {
+          if (print) {
+            const char * mark = e.level == rm::EventLevel::Error ? "  ★ " :
+              (e.level == rm::EventLevel::Warn ? "  ! " : "    ");
+            std::printf("%s%s\n", mark, e.text.c_str());
+          }
+          n += (e.level == lv) ? 1 : 0;
+        }
+        return n;
+      };
+
+    rm::WalkSetup walk;
+    walk.mode = rm::WalkMode::Static;
+    walk.gait = gait;
+
+    // (a) static_gait.yaml そのものの門。config の話なので --strict のときだけ落とす
+    {
+      rm::EventQueue ev;
+      rm::loadStaticGait(static_gait_path, walk.stat, ev);
+      rm::checkStaticGait(walk.stat, ev);
+      rm::checkStaticStance(walk.stat, home, ev);
+      rm::checkStaticWalkEnvelope(map, walk, home, body_pitch, ev);
+      int nerr = 0;
+      rm::Event e;
+      while (ev.pop(e)) {
+        const char * mark = e.level == rm::EventLevel::Error ? "  ★ " :
+          (e.level == rm::EventLevel::Warn ? "  ! " : "    ");
+        std::printf("%s%s\n", mark, e.text.c_str());
+        nerr += (e.level == rm::EventLevel::Error) ? 1 : 0;
+      }
+      if (strict) {
+        check(nerr == 0, fmt("静歩行の門が出したエラー %d 件", nerr));
+      } else if (nerr > 0) {
+        std::printf("  -- 静歩行の門のエラー %d 件。**この実行では失敗にしない** (--strict で落とす)\n", nerr);
+      } else {
+        check(true, "静歩行の門はエラーなし");
+      }
+    }
+
+    // (b) 門が食い違いを拾うこと (コードの検算。config に依らず落とす)
+    {
+      const rm::rwc::StaticGaitParams base;       // 既定値 = static_gait.yaml
+      rm::BodyPose home70 = home;
+      for (int s = 0; s < rm::kNumSide; ++s) {
+        const double lat = (s == rm::kLeft) ? +1.0 : -1.0;
+        home70.foot[s].p = rk::Vec3{0.0, lat * base.foot_spacing * 500.0, -base.z_c * 1000.0};
+      }
+      rm::EventQueue ev;
+      rm::checkStaticStance(base, home70, ev);
+      check(
+        count(ev, rm::EventLevel::Warn, false) == 0,
+        "計画の足間隔とホーム姿勢の足が揃っていれば、立位の門は黙っている");
+      rm::rwc::StaticGaitParams wide = base;
+      wide.foot_spacing = 0.170;
+      rm::checkStaticStance(wide, home70, ev);
+      check(
+        count(ev, rm::EventLevel::Warn, false) == 1,
+        "static_gait.yaml の foot_spacing が 2 x foot.y と違えば警告する");
+      rm::rwc::StaticGaitParams edge = base;
+      edge.com_offset_y = 0.030;                  // 静的余裕 37 - 30 = 7mm <= zmp_tol 10mm
+      rm::checkStaticStance(edge, home70, ev);
+      check(
+        count(ev, rm::EventLevel::Error, false) == 1,
+        "重心の横ずらしで静的余裕が zmp_tol 以下になればエラー");
+
+      rm::WalkSetup hi = walk;
+      hi.stat = base;
+      hi.stat.swing_height = 0.050;              // 外へ開いた遊脚が足首で届かない
+      rm::checkStaticWalkEnvelope(map, hi, home70, 0.0, ev);
+      check(
+        count(ev, rm::EventLevel::Error, false) == 1,
+        "足上げ 50mm は届かない時刻があるのでエラー (static_gait.yaml の表)");
+
+      // yaml の読み込み: 列も読め、知らないキーは警告
+      const std::string tmp = "/tmp/motion_selftest_static_gait.yaml";
+      if (FILE * fp = std::fopen(tmp.c_str(), "w")) {
+        std::fputs("zmp_tol: 0.012\nv_max: [0.08, 0.03]\nt_step: 0.6\n", fp);
+        std::fclose(fp);
+      }
+      rm::rwc::StaticGaitParams got;
+      rm::loadStaticGait(tmp, got, ev);
+      const int nw = count(ev, rm::EventLevel::Warn, false);
+      check(
+        got.zmp_tol == 0.012 && got.v_max[0] == 0.08 && got.v_max[1] == 0.03 && nw == 1,
+        fmt(
+          "static_gait.yaml の読み込み: 列も読み、知らないキー (t_step) は警告 %d 件", nw));
+      std::remove(tmp.c_str());
+    }
+
+    // (c) 状態機械が静歩行で歩いて止まる。振り出し中の重心は門の言うとおりの位置
+    //     (ホーム姿勢の足を計画の足間隔から 5mm 外へずらし、重心が内へ 5mm ずれる形で見る)
+    {
+      rm::BodyPose home5 = home;
+      const double half = walk.stat.foot_spacing * 500.0;
+      for (int s = 0; s < rm::kNumSide; ++s) {
+        const double lat = (s == rm::kLeft) ? +1.0 : -1.0;
+        home5.foot[s].p.x = 0.0;
+        home5.foot[s].p.y = lat * (half + 5.0);
+      }
+      const rm::BodyPose meas5 = asMeasured(map, home5);
+      rm::MotionController::Options copt;
+      rm::MotionController c;
+      c.configure(&map, &lib5, walk, home5, body_pitch, copt);
+      const std::string why = "(テスト)";
+      c.setEstop(false);
+      c.requestMotion("home");
+      double now = 0.0;
+      auto t = c.step(now, dt, &meas5, why, true);
+      for (int i = 0; i < 800 && t.state != rm::State::HOLD; ++i) {
+        now += dt;
+        t = c.step(now, dt, &meas5, why, true);
+      }
+      check(
+        t.state == rm::State::HOLD && c.walkMode() == rm::WalkMode::Static &&
+        c.stateText() == "HOLD walk=static",
+        "静歩行で HOLD に入り、/motion/state は \"HOLD walk=static\" (" + c.stateText() + ")");
+
+      bool saw_shift = false, saw_swing = false, saw_start = false;
+      int changes = 0;
+      double lat_dev = 0.0, x_dev = 0.0, z_max = -1e9;
+      for (int i = 0; i < static_cast<int>(12.0 / dt); ++i) {
+        now += dt;
+        c.setWalkCmd(0.10, 0.0, 0.0, now);
+        t = c.step(now, dt, &meas5, why, true);
+        changes += t.state_changed ? 1 : 0;
+        const rm::rwc::WalkOutputs * w = c.walkOutputs();
+        if (!w) {continue;}
+        saw_shift = saw_shift || w->state == rm::rwc::State::SHIFT;
+        saw_start = saw_start || w->state == rm::rwc::State::START ||
+          w->state == rm::rwc::State::STEP;
+        if (w->state != rm::rwc::State::SWING) {continue;}
+        saw_swing = true;
+        // 支持足は骨盤から見て外へ 5mm (= 重心が支持足の中心から内へ 5mm)。前後は 0
+        const int sup = (w->support == rm::rwc::LEFT) ? rm::kLeft : rm::kRight;
+        const int sw = (sup == rm::kLeft) ? rm::kRight : rm::kLeft;
+        const double lat = (sup == rm::kLeft) ? +1.0 : -1.0;
+        const rk::Vec3 & f = c.currentPose().foot[sup].p;
+        lat_dev = std::max(lat_dev, std::abs(f.y - lat * 5.0));
+        x_dev = std::max(x_dev, std::abs(f.x));
+        z_max = std::max(z_max, c.currentPose().foot[sw].p.z);
+      }
+      check(saw_shift && saw_swing && !saw_start, "静歩行の計画 (SHIFT / SWING) で歩く");
+      check(
+        lat_dev < 1e-6 && x_dev < 1e-6,
+        fmt(
+          "振り出し中の支持足は骨盤から見て外へ 5.0mm・前後 0 (ずれ %.2g / %.2g mm)。"
+          "門 (checkStaticStance) の「重心が内へ 5mm」と同じ", lat_dev, x_dev));
+      check(
+        std::abs(z_max - (home5.foot[rm::kLeft].p.z + walk.stat.swing_height * 1000.0)) < 0.5,
+        fmt("遊脚はホーム姿勢の高さから足上げ %.0fmm まで上がる (最高 %.1fmm)",
+        walk.stat.swing_height * 1000.0, z_max));
+
+      // 止まるまで: 指令の減速 (a_max で約 1.7s) の間の歩 + 揃える歩 + 中点へ戻す移動
+      for (int i = 0; i < static_cast<int>(12.0 / dt); ++i) {
+        now += dt;
+        c.setWalkCmd(0.0, 0.0, 0.0, now);
+        t = c.step(now, dt, &meas5, why, true);
+        changes += t.state_changed ? 1 : 0;
+      }
+      double dev = 0.0;
+      for (int s = 0; s < rm::kNumSide; ++s) {
+        dev = std::max(
+          {dev, std::abs(c.currentPose().foot[s].p.x - home5.foot[s].p.x),
+            std::abs(c.currentPose().foot[s].p.y - home5.foot[s].p.y),
+            std::abs(c.currentPose().foot[s].p.z - home5.foot[s].p.z)});
+      }
+      check(
+        t.state == rm::State::HOLD && changes == 2,
+        fmt("指令を止めたら HOLD に戻る。状態の変化は HOLD->WALK->HOLD の 2 回 (%d 回)", changes));
+      check(dev < 1e-6, fmt("止まった足はホーム姿勢の足 (ずれ %.2g mm)", dev));
+
+      // 振り出しの途中で脱力が来たら、すぐ RELAX
+      for (int i = 0; i < static_cast<int>(10.0 / dt); ++i) {
+        now += dt;
+        c.setWalkCmd(0.10, 0.0, 0.0, now);
+        t = c.step(now, dt, &meas5, why, true);
+        if (c.walkOutputs() && c.walkOutputs()->state == rm::rwc::State::SWING) {break;}
+      }
+      const bool swinging = c.walkOutputs() && c.walkOutputs()->state == rm::rwc::State::SWING;
+      c.setEstop(true);
+      now += dt;
+      t = c.step(now, dt, &meas5, why, true);
+      check(
+        swinging && t.state == rm::State::RELAX && !t.want_torque && t.target == nullptr,
+        "振り出しの途中で /estop true が来たら、その周期に脱力する");
+      rm::Event e;
+      while (c.popEvent(e)) {}
+
+      // 動歩行で組んだら、状態の文字列は今までと同じ
+      rm::MotionController d;
+      d.configure(&map, &lib5, gait, home, body_pitch, copt);
+      check(
+        d.walkMode() == rm::WalkMode::Dynamic && d.stateText() == "RELAX",
+        "動歩行では /motion/state に何も足さない (" + d.stateText() + ")");
+    }
+
+    // (d) 安定化: SWING を片足支持として扱い、着地の時刻は t_swing で見る
+    {
+      rm::Stabilizer st;
+      const rm::SwingTiming sw = walk.swingTiming();
+      st.configure(&map, home, body_pitch, sw);
+      {
+        rm::Event e;
+        while (st.popEvent(e)) {}
+      }
+      rm::StabGains g;
+      g.kp_pitch = 0.5;
+      st.setGains(g);
+      rm::Attitude att;
+      att.valid = true;
+      att.pitch = 0.1;
+      rm::rwc::WalkOutputs w;
+      rm::Stabilizer::Input in;
+      in.layer_active = true;
+      in.att = &att;
+      in.att_age = 0.005;
+      in.walk = &w;
+      w.state = rm::rwc::State::SWING;
+      w.support = rm::rwc::LEFT;
+      w.phase = 0.5;
+      for (int i = 0; i < 200; ++i) {st.update(dt, in);}
+      check(
+        st.correction().ankleZero(rm::kRight) && !st.correction().ankleZero(rm::kLeft),
+        "静歩行の振り出しの中ほどでは、右 (遊脚) の足首に補正を出さない");
+      w.phase = sw.touch_phase;
+      st.update(dt, in);
+      const bool gate_td = st.debug().gate;
+      w.phase = 0.01;
+      st.update(dt, in);
+      check(
+        gate_td && !st.debug().gate && std::abs(sw.duration - walk.stat.t_swing) < 1e-12 &&
+        sw.touch_phase < 1.0,
+        fmt(
+          "着地 (振り出しの %.0f%%、t_swing %.2fs) の前後だけゲインを弱め、振り出しの頭は弱めない",
+          sw.touch_phase * 100.0, sw.duration));
+      w.state = rm::rwc::State::SHIFT;
+      w.support = 0;
+      w.phase = 0.5;
+      st.update(dt, in);
+      check(
+        st.debug().weight[rm::kRight] == 1.0 && st.debug().weight[rm::kLeft] == 1.0 &&
+        !st.debug().gate,
+        "重心移動 (SHIFT) の両足支持では両脚に効かせる");
     }
   }
 

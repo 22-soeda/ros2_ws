@@ -15,6 +15,9 @@
     teleop:=true|false    joy + teleop ノード
     motion:=true|false    motion ノード（歩行 / 技 / IK / サーボ送信）
     allow_torque:=true|false  ★既定 true（機体が動く）。false で「読むだけ」の通し確認
+    walk_mode:=dynamic|static 歩行の計画器。既定 dynamic（動歩行）。static で静歩行
+                          （両足支持で重心を支持足の上へ移してから足を振り出す。
+                          1 歩約 2 s）。起動時に決まり、コントローラでは切り替えない
     camera:=false|true    RealSense（深度 + 点群 + IMU）。既定 OFF（USB 帯域と CPU を
                           食うので、要るときだけ）
     imu:=true|false       RealSense を **IMU だけ** で上げる（深度・点群なし）。既定 ON。
@@ -103,6 +106,9 @@ def generate_launch_description():
                               description='motion ノード（歩行 / 技 / IK / サーボ送信）'),
         DeclareLaunchArgument('allow_torque', default_value='true',
                               description='★サーボにトルクを入れる。false で「読むだけ」の通し確認になる'),
+        DeclareLaunchArgument('walk_mode', default_value='dynamic',
+                              choices=['dynamic', 'static'],
+                              description='歩行の計画器。dynamic = 動歩行 / static = 静歩行'),
         DeclareLaunchArgument('camera', default_value='false',
                               description='RealSense。USB 帯域と CPU を食うので既定 OFF'),
         DeclareLaunchArgument('imu', default_value='true',
@@ -165,6 +171,7 @@ def generate_launch_description():
             condition=IfCondition(LaunchConfiguration('motion')),
             launch_arguments={
                 'allow_torque': LaunchConfiguration('allow_torque'),
+                'walk_mode': LaunchConfiguration('walk_mode'),
                 # ★必ず明示的に渡す。渡さないと、上の teleop の include が置いていった
                 #   launch 設定を拾ってしまう（launch の設定値は兄弟へ漏れる）。
                 'motion_config': LaunchConfiguration('motion_config'),

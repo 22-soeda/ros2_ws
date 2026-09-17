@@ -3,6 +3,7 @@
 
     ros2 launch roboone_motion motion.launch.py
     ros2 launch roboone_motion motion.launch.py dry_run:=true   # バスを開かない
+    ros2 launch roboone_motion motion.launch.py walk_mode:=static   # 静歩行で起動する
 
 機体一式は roboone_bringup/launch/roboone.launch.py から呼ぶ。こちらは
 motion だけを個別に触りたいとき用。
@@ -48,6 +49,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'allow_torque', default_value='true',
             description='★サーボにトルクを入れる。false で「読むだけ」の通し確認になる'),
+        # 起動時にしか読まない（実行中に切り替えない）。static は
+        # roboone_walk_ref/config/static_gait.yaml の計画で歩く。
+        DeclareLaunchArgument(
+            'walk_mode', default_value='dynamic', choices=['dynamic', 'static'],
+            description='歩行の計画器。dynamic = 動歩行 (gait.yaml) / static = 静歩行 '
+                        '(static_gait.yaml)'),
 
         Node(
             package='roboone_motion', executable='motion_node', name='motion',
@@ -56,5 +63,6 @@ def generate_launch_description():
                 LaunchConfiguration('motion_config'),
                 {'dry_run': LaunchConfiguration('dry_run')},
                 {'allow_torque': LaunchConfiguration('allow_torque')},
+                {'walk_mode': LaunchConfiguration('walk_mode')},
             ]),
     ])

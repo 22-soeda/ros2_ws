@@ -1058,9 +1058,34 @@ env -u AMENT_PREFIX_PATH -u ROS_DISTRO -u ROS_VERSION -u COLCON_PREFIX_PATH \
 `src/roboone_walk_ref/config/static_gait.yaml`（動歩行の gait.yaml とは別ファイル）。
 仕様の原本は `roboone_walk_ref/static_walk/engine.py`、C++ 版は
 `roboone_walk_core/static_walk_engine.hpp`、JS 版は `roboone_viz/staticwalk.js`。
-**2026-09-18 時点で motion ノードにはまだ入っていない**（`walk_mode:=static` は未実装）。
+motion ノードでは launch の `walk_mode:=static` で使う（既定は `dynamic` = 動歩行。
+起動時にしか選べず、コントローラでは切り替えない）。
 
 ```bash
+# 静歩行で起動する（★トルクが入る。機体を支えてから）
+ros2 launch roboone_bringup roboone.launch.py walk_mode:=static
+ros2 launch roboone_motion motion.launch.py walk_mode:=static
+
+# 実装の確認はトルクを入れずに（CLAUDE.md）。起動ログの「歩行モード: static」と
+# 静歩行の門 3 行（静歩行の立位 / 足先は全時刻で到達域の内側）を見る
+ros2 launch roboone_motion motion.launch.py walk_mode:=static allow_torque:=false
+ros2 topic echo /motion/state          # "HOLD walk=static"。歩くと "WALK walk=static"
+
+# motion 側の静歩行の検算（[9]。static_gait.yaml の門のエラーは --strict で落とす）
+# ★2026-09-18 時点では [6] の動歩行の門が 1 件エラーを出す（立位 ±70mm で内側クランプの
+#   隅に届かない）ので、--strict なしで回して [9] の行と最後の「全部通った」を見る
+ros2 run roboone_motion motion_selftest
+ros2 run roboone_motion motion_selftest --static-gait /tmp/s.yaml --strict
+
+# 実機での確かめ方（操作は teleop の割り当てのまま。コントローラで歩行モードは変えない）
+#   Options 長押し  … home -> トルクオン（allow_torque:=false なら入ったことにして進む）
+#   R1 + 左スティック … 歩く（1 歩約 2 s。倒した量が歩幅 = v x 0.6 s）
+#   L1             … 脱力（即時）
+# 走らせた bag は ~/roboone_logs/rosbag2_<日時>。静歩行の区間（walk_state 5 / 6）も読める
+python3 scripts/bag_walk_roll.py ~/roboone_logs/rosbag2_<日時>
+# 設定を変えたら walk_ref を入れ直してから launch し直す（walk_mode と static_gait.yaml は起動時だけ読む）
+colcon build --packages-select roboone_walk_ref
+
 # 単体テストと 3 実装の照合（軌道と既定値）
 python3 -m pytest src/roboone_walk_ref/test/test_static_walk.py -q
 colcon build --packages-select roboone_walk_core

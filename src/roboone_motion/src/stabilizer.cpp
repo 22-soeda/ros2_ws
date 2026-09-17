@@ -31,9 +31,16 @@ bool Stabilizer::configure(
   const ServoMap * map, const BodyPose & home, double body_pitch,
   const rwc::GaitParams & gait)
 {
-  const rwc::SwingLanding sl = rwc::checkSwingLanding(gait);
-  touch_phase_ = sl.lands ? sl.touch_phase : 1.0;
-  t_step_ = gait.t_step;
+  WalkSetup walk;
+  walk.gait = gait;
+  return configure(map, home, body_pitch, walk.swingTiming());
+}
+
+bool Stabilizer::configure(
+  const ServoMap * map, const BodyPose & home, double body_pitch, const SwingTiming & swing)
+{
+  touch_phase_ = swing.touch_phase;
+  swing_dur_ = swing.duration;
 
   bool all = true;
   for (int s = 0; s < kNumSide; ++s) {
@@ -120,12 +127,14 @@ void Stabilizer::weightsAndGate(
 {
   weight[kRight] = weight[kLeft] = 1.0;
   gate = false;
-  if (!w || w->state != rwc::State::STEP || w->support == 0) {return;}
+  // 片足支持 = 動歩行の STEP / 静歩行の SWING。位相はどちらも遊脚の経過 [0,1]。
+  // 静歩行の両足支持 (SHIFT / STOP) は立位と同じく両脚に効かせる。
+  if (!w || !singleSupport(*w)) {return;}
 
   const int sup = (w->support == rwc::LEFT) ? kLeft : kRight;
   const int sw = (sup == kLeft) ? kRight : kLeft;
   const double ph = w->phase;
-  const double T = std::max(1e-3, t_step_);
+  const double T = std::max(1e-3, swing_dur_);
 
   // 遊脚: 離地で抜き、着地の少し前から歩の終わりまでに戻す
   const double lift = std::max(1e-3, g_.lift_phase);
@@ -135,11 +144,12 @@ void Stabilizer::weightsAndGate(
   weight[sup] = 1.0;
   weight[sw] = std::max(out, in);
 
-  // 着地の前後はゲインを弱める。前の歩の着地の尾が次の歩の頭にかかる分も見る
+  // 着地の前後はゲインを弱める。動歩行は歩が切れ目なく続くので、前の歩の着地の尾が
+  // 次の歩の頭にかかる分も見る (静歩行は着地と次の振り出しの間に重心移動が挟まる)
   const double t = ph * T;
   const double td = touch_phase_ * T;
   gate = (t >= td - g_.gate_pre_td && t <= td + g_.gate_post_td) ||
-    (t <= td + g_.gate_post_td - T);
+    (w->state == rwc::State::STEP && t <= td + g_.gate_post_td - T);
 }
 
 const PoseCorrection & Stabilizer::update(double dt, const Input & in)

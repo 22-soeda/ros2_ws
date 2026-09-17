@@ -87,6 +87,10 @@
     arm_invert: ["R8", "L9", "R10"]
 
     # --- 歩行 -------------------------------------------------------------
+    # 歩行の計画器 (walk_mode: dynamic = 動歩行 / static = 静歩行) はここに書かない。
+    # launch の walk_mode 引数で選ぶ (motion.launch.py が必ず渡すので、ここに書いても
+    # 上書きされる)。static のときは roboone_walk_ref/config/static_gait.yaml を読む
+    # (static_gait_yaml パラメータで差し替えられる)。
     walk_enable: true
 
     # 歩行と HOLD の足の位置はホーム姿勢の足（roboone_walk_ref/config/home_pose.yaml の
