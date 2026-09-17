@@ -83,7 +83,6 @@ public:
     double torque_on_time = 2.0;      //!< 実測姿勢 -> 保持姿勢の補間時間
     double home_move_time = 1.5;      //!< /cmd_motion "home" でホームへ移る時間
     double hold_arm_time = 0.5;       //!< その場保持で武装するときの補間時間
-    double stance_y_offset = 0.0;     //!< 歩行の足位置に足す左右オフセット [mm]
     double walk_idle_hold = 0.25;     //!< IDLE がこれだけ続いたら HOLD（ばたつき止め）
     double loop_hz = 200.0;           //!< 到達域の見張りの間引きに使う
     bool walk_enable = true;
@@ -166,6 +165,10 @@ private:
   double body_pitch_ = 0.0;
 
   rwc::WalkEngine walk_{rwc::GaitParams{}};
+  //! 歩行計画の立位の足 (0, ±W/2, -z_c) からホーム姿勢の足までのずれ [mm]。
+  //! 歩行の足 = 計画の足 + これ、なので計画の立位はホーム姿勢の足そのものになる
+  //! (configure() の注記)
+  rk::Vec3 stance_off_[kNumSide]{};
   rwc::WalkOutputs walk_out_;
   bool walk_ticked_ = false;       //!< この周期に tickWalk を回したか
   MotionPlayer player_;

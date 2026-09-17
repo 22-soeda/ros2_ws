@@ -200,7 +200,7 @@ IK で戻すと別のクランク角（+83 deg）になる = 足裏で補間す�
 | `checkPoseReachable` | ホーム姿勢が IK で解けるか |
 | `checkMotionLegServo` | 角度書きのキーフレームが `servo_limits.yaml` の窓に入るか |
 | `checkGait` | 遊脚が本当に床へ届くか（降下は `td_speed_max` で飽和する） |
-| `checkStance` | 歩行の足間隔が実機の股間隔と揃っているか |
+| `checkStance` | 歩行の立位（= ホーム姿勢の足）と計画上の足間隔の関係。計画が実機の足より狭ければ警告 |
 | `checkWalkEnvelope` | 歩行が指令しうる足先の箱が IK の到達域に収まるか |
 
 `checkWalkEnvelope` は `roboone_walk_core/src/gait_from_kinematics.cpp` の逆向き。

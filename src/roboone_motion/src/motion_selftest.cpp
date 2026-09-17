@@ -441,8 +441,8 @@ int main(int argc, char ** argv)
       check(false, "ホーム姿勢を読めない: " + e6);
     } else {
       rm::checkPoseReachable(map, home, "ホーム姿勢", ev);
-      rm::checkStance(gait, 0.0, ev);
-      rm::checkWalkEnvelope(map, gait, home, body_pitch, 0.0, ev);
+      rm::checkStance(gait, home, ev);
+      rm::checkWalkEnvelope(map, gait, home, body_pitch, ev);
     }
     // Error が 1 つでも出たら落とす。**実機を起こす前にここで止める**のが目的。
     int nerr = 0;
@@ -654,6 +654,68 @@ int main(int argc, char ** argv)
       check(t.state == rm::State::HOLD, "指令を止めたら HOLD に戻る");
       check(changes == 2, fmt("状態が変わったのは HOLD->WALK->HOLD の 2 回だけ (%d 回)", changes));
       drop(*c);
+    }
+
+    // [5-8] 歩行と HOLD の足はホーム姿勢の足に揃う。
+    //   2026-09-18 までは歩行の立位を stance_y_offset で別に持っていて、ホーム姿勢
+    //   (±89.3) と食い違い、home の補間が終わって HOLD に入った次の周期に足が
+    //   19.3mm 跳んでいた（[5-7] は HOLD に入ったその周期しか見ていない）。
+    //   計画上の足間隔からも前後の原点からもずらしたホーム姿勢で確かめる。
+    {
+      rm::BodyPose home8 = home;
+      for (int s = 0; s < rm::kNumSide; ++s) {
+        const double lat = (s == rm::kLeft) ? +1.0 : -1.0;
+        home8.foot[s].p.x = -10.0;
+        home8.foot[s].p.y = lat * (gait.foot_spacing * 500.0 - 12.0);
+      }
+      const rm::BodyPose meas8 = asMeasured(map, home8);
+      rm::MotionController c;
+      c.configure(&map, &lib5, gait, home8, body_pitch, copt);
+      auto dev = [&home8](const rm::BodyPose & p) {
+          double d = 0.0;
+          for (int s = 0; s < rm::kNumSide; ++s) {
+            d = std::max(
+              {d, std::abs(p.foot[s].p.x - home8.foot[s].p.x),
+                std::abs(p.foot[s].p.y - home8.foot[s].p.y),
+                std::abs(p.foot[s].p.z - home8.foot[s].p.z)});
+          }
+          return d;
+        };
+      c.setEstop(false);
+      c.requestMotion("home");
+      double now = 0.0;
+      auto t = c.step(now, dt, &meas8, why, true);
+      for (int i = 0; i < 800 && t.state != rm::State::HOLD; ++i) {
+        now += dt;
+        t = c.step(now, dt, &meas8, why, true);
+      }
+      double hold_dev = 0.0;
+      for (int i = 0; i < 100; ++i) {
+        now += dt;
+        t = c.step(now, dt, &meas8, why, true);
+        hold_dev = std::max(hold_dev, dev(c.currentPose()));
+      }
+      check(
+        t.state == rm::State::HOLD && hold_dev < 1e-6,
+        fmt("★HOLD の足はホーム姿勢の足のまま (0.5s の最大ずれ %.2g mm)", hold_dev));
+
+      // 歩いて止まると、ホーム姿勢の足へ戻る。残るのは計画の停止位置のずれ
+      // （重心の静止判定 settle_eps と、最後の歩の着地補正）だけ
+      for (int i = 0; i < 400; ++i) {
+        now += dt;
+        c.setWalkCmd(0.05, 0.0, 0.0, now);
+        t = c.step(now, dt, &meas8, why, true);
+      }
+      for (int i = 0; i < 800; ++i) {
+        now += dt;
+        c.setWalkCmd(0.0, 0.0, 0.0, now);
+        t = c.step(now, dt, &meas8, why, true);
+      }
+      const double walk_dev = dev(c.currentPose());
+      check(
+        t.state == rm::State::HOLD && walk_dev < 3.0,
+        fmt("歩いて止まった後の足もホーム姿勢の足 (ずれ %.2f mm)", walk_dev));
+      drop(c);
     }
 
     // [5-7] 武装の起点はサーボ角。脱力して垂れた足首から跳ばずに立つ。

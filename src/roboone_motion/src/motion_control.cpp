@@ -44,6 +44,18 @@ void MotionController::configure(
   opt_ = opt;
   body_pitch_ = body_pitch;
   walk_ = rwc::WalkEngine(gait);
+  // **歩行の足はホーム姿勢の足に揃える。** 実機の足の位置は home_pose.yaml の foot だけが
+  // 決め、gait.yaml の foot_spacing は計画上の間隔 (横の重心経路) としてだけ効く。
+  // 計画を実機の足より広く取ると、足の位置はそのままで骨盤の横振りだけが増える。
+  // 以前は motion_node.yaml の stance_y_offset で別に持っていて、ホーム姿勢 (±89.3) と
+  // 歩行の立位 (±70) が食い違い、武装や home の直後に HOLD へ入った周期で足が
+  // 19.3mm 跳んでいた (2026-09-18 の bag で股ロールの目標が 43 カウント跳ぶ)。
+  const double half = gait.foot_spacing * 500.0;
+  for (int s = 0; s < kNumSide; ++s) {
+    const double lat = (s == kLeft) ? +1.0 : -1.0;
+    const rk::Vec3 & hp = home.foot[s].p;
+    stance_off_[s] = rk::Vec3{hp.x, hp.y - lat * half, hp.z + gait.z_c * 1000.0};
+  }
   home_pose_ = home;
   hold_pose_ = home;
   cur_pose_ = home;
@@ -232,14 +244,14 @@ void MotionController::tickWalk(double now, double dt)
   walk_out_ = o;
   walk_ticked_ = true;
 
-  // 世界座標 [m] -> 骨盤水平系 [m] -> Σ_B [mm]
+  // 世界座標 [m] -> 骨盤水平系 [m] -> Σ_U [mm]。計画の立位がホーム姿勢の足に
+  // 重なるよう stance_off_ を足す (configure())
   const rwc::Vec3 fp[kNumSide] = {o.right_foot_in_pelvis(), o.left_foot_in_pelvis()};
   for (int s = 0; s < kNumSide; ++s) {
-    const double lat = (s == kLeft) ? +1.0 : -1.0;
     cur_pose_.foot[s].p = rk::Vec3{
-      fp[s][0] * 1000.0,
-      fp[s][1] * 1000.0 + lat * opt_.stance_y_offset,
-      fp[s][2] * 1000.0};
+      fp[s][0] * 1000.0 + stance_off_[s].x,
+      fp[s][1] * 1000.0 + stance_off_[s].y,
+      fp[s][2] * 1000.0 + stance_off_[s].z};
     // 足裏の向きは**ホーム姿勢と同じ**にする。walk_core は平行移動のみで機体は
     // 向きを変えないので、足裏の姿勢は歩行中も変わらない。ここを水平に固定すると、
     // home_pose.yaml の rpy（膝のしなりを補正するつま先上げ）が立位でしか効かず、

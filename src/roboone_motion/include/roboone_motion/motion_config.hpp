@@ -10,7 +10,7 @@
 //   checkPoseReachable    ホーム姿勢が IK で解けるか
 //   checkMotionLegServo   角度書きのキーフレームが servo_limits.yaml の窓に入るか
 //   checkGait             遊脚が本当に床へ届くか（降下は td_speed_max で飽和する）
-//   checkStance           歩行の足間隔が実機の股間隔と揃っているか
+//   checkStance           歩行の立位（= ホーム姿勢の足）と計画上の足間隔の関係を言う
 //   checkWalkEnvelope     歩行が指令しうる足先の箱が IK の到達域に収まるか
 //
 // checkWalkEnvelope は roboone_walk_core/src/gait_from_kinematics.cpp の逆向き。
@@ -83,19 +83,25 @@ void checkMotionLegServo(const ServoMap & map, const MotionLibrary & lib, EventQ
 /// なるわけではない。黙って「浮いたまま支持脚が交代する」が起きるのがいちばん困る。
 void checkGait(const rwc::GaitParams & gait, EventQueue & ev);
 
-/// 歩行の左右間隔と実機の股間隔の食い違いを見る（黙って埋めない）。
-void checkStance(const rwc::GaitParams & gait, double stance_y_offset, EventQueue & ev);
+/// 歩行の立位と計画上の足間隔の関係を言う。
+///
+/// 歩行の足はホーム姿勢の足に揃えてある（MotionController::configure()）。実機の足の
+/// 位置を決めるのは home_pose.yaml の foot で、gait.yaml の foot_spacing は横の重心経路
+/// にだけ効く。計画が実機の足より狭いと、骨盤が支持足の上まで来ないので警告する。
+void checkStance(const rwc::GaitParams & gait, const BodyPose & home, EventQueue & ev);
 
 /// 歩行が実際に指令しうる足先の範囲が、脚 IK の到達域に収まっているかを見る。
 ///
-/// 見る箱は、名目立位 (股の真下・z = -z_c) からの
+/// 見る箱は、ホーム姿勢の足 (= 歩行の立位) からの
 ///   x  ±step_clamp_x                       前後の着地点クランプ
 ///   y  +step_clamp_out / -step_clamp_in     外側 / 内側 (右脚基準)
 ///   z  0 .. +swing_height                   遊脚の高さ
-/// の 8 隅 + 中心。足裏は水平のまま (walk_core は平行移動のみ)。
+/// の 8 隅 + 中心。足裏はホーム姿勢の向きのまま (walk_core は平行移動のみ)。
+/// ★骨盤の横振りは含まない。足踏みでも遊脚は骨盤から 130mm 以上開くので、ここが
+///   通っても歩行中に届くとは限らない（実際に出した足先は tickWalk が見張る）。
 void checkWalkEnvelope(
   const ServoMap & map, const rwc::GaitParams & gait, const BodyPose & home,
-  double body_pitch, double stance_y_offset, EventQueue & ev);
+  double body_pitch, EventQueue & ev);
 
 }  // namespace roboone_motion
 

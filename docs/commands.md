@@ -1136,17 +1136,20 @@ done
 - ERROR … 遊脚が床に届かないまま歩が終わる（空中で支持脚が入れ替わる）。
   必要な `td_speed_max` を数値で出すので、その値以上へ上げるか `swing_height` を下げる
 
-## 歩行の横振り（foot_spacing と stance_y_offset）
+## 歩行の横振り（foot_spacing と home_pose.yaml の foot.y）
 
 横の重心経路（骨盤をどこまで支持足へ寄せるか）は `gait.yaml` の **`foot_spacing`**（計画上の
-足間隔）で決まり、実機の足の位置は `foot_spacing / 2 + stance_y_offset`（`motion_node.yaml`、
-mm、+ で外側）になる。計画だけ広げてオフセットで足を戻すと、**足の位置はそのままで骨盤の
-横振りだけが増える**。2026-09-17 に `170mm / -15`（実機の足は ±70mm のまま）にした。
+足間隔）で決まる。**実機の足の位置は `home_pose.yaml` の `foot.y` だけで決まり**、歩行と HOLD の
+立位もそこに揃う（motion ノードが計画の立位をホーム姿勢の足へ平行移動する）。計画だけ広げると、
+**足の位置はそのままで骨盤の横振りだけが増える**。今は計画 170mm・実機 ±70mm（2026-09-17）。
 理由と候補の表は `gait.yaml` の `foot_spacing` のコメント。
+（2026-09-18 に `motion_node.yaml` の `stance_y_offset` を廃止した。params に残っていると
+起動時に警告が出る。）
 
 - 単脚支持で**遊脚側へ**倒れる（`bag_walk_roll.py` の「遊脚側への傾き」が + で歩ごとに育つ）
-  → 横振りが足りない。`foot_spacing` を上げ、`stance_y_offset` を同じ量の半分だけ下げる
-- 支持足の**外側へ**倒れる（同じ値が −）→ 振りすぎ。逆に動かす
+  → 横振りが足りない。`foot_spacing` を上げる（`foot.y` は触らない）
+- 支持足の**外側へ**倒れる（同じ値が −）→ 振りすぎ。`foot_spacing` を下げる
+- `foot.y` を 89.3（股の真下）へ広げると、足上げ 50mm の遊脚が届かなくなる（`home_pose.yaml` の注記）
 - どちらのファイルも起動時にしか読まない。両方ビルドして motion を上げ直す
 
 ```bash
@@ -1157,7 +1160,7 @@ colcon build --packages-select roboone_walk_ref roboone_motion
 ROS_DOMAIN_ID=87 timeout -s INT 8 ros2 run roboone_motion motion_node --ros-args \
     -r __node:=motion_check \
     --params-file install/roboone_motion/share/roboone_motion/config/motion_node.yaml \
-    -p dry_run:=true -p allow_torque:=false 2>&1 | grep -E "歩行|足先|足間隔"
+    -p dry_run:=true -p allow_torque:=false 2>&1 | grep -E "歩行|足先|足間隔|ホーム姿勢"
 #   歩行 z_c=0.261m T=0.60s W=0.170m ... が出る
 #   「足先の箱の隅に **届かない** (ik止まり: R脚 p=[-40.0, -50.0, -211.0])」の ERROR は
 #   足間隔 140mm にした時点から出ている（オフセット 0・W=140 でも同じ点）。箱の隅

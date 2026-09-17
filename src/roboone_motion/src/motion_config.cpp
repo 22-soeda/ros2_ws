@@ -121,17 +121,22 @@ void checkGait(const rwc::GaitParams & gait, EventQueue & ev)
   }
 }
 
-void checkStance(const rwc::GaitParams & gait, double stance_y_offset, EventQueue & ev)
+void checkStance(const rwc::GaitParams & gait, const BodyPose & home, EventQueue & ev)
 {
-  const double walk_half_mm = gait.foot_spacing * 500.0;
-  const double hip_half_mm = -rk::config::HIP_Y;
-  if (std::abs(walk_half_mm + stance_y_offset - hip_half_mm) > 1.0) {
+  const double plan_half = gait.foot_spacing * 500.0;
+  const double real_half = home.foot[kLeft].p.y;
+  const double hip_half = -rk::config::HIP_Y;
+  ev.info(
+    fmt(
+      "歩行の足 = ホーム姿勢の足 (±%.1fmm。股の真下から %+.1fmm)。計画上の足間隔は ±%.1fmm"
+      " (gait.yaml の foot_spacing) で、実機の足より %+.1fmm 外側に取っている",
+      real_half, real_half - hip_half, plan_half, plan_half - real_half));
+  if (plan_half < real_half) {
     ev.warn(
       fmt(
-        "歩行の足間隔 ±%.1fmm (+ stance_y_offset %.1f) が股間隔 ±%.1fmm と違う。"
-        "横方向の力学は walk_core の値で計画されるので、実機で横揺れが合わない場合は"
-        "gait.yaml の foot_spacing か stance_y_offset を詰めること",
-        walk_half_mm, stance_y_offset, hip_half_mm));
+        "計画上の足間隔 ±%.1fmm が実機の足 ±%.1fmm より狭い。骨盤が支持足の上まで"
+        "来ないので、単脚支持で遊脚側へ倒れやすい (gait.yaml の foot_spacing の注記)",
+        plan_half, real_half));
   }
 }
 
@@ -213,12 +218,8 @@ bool loadHomePose(
       fmt(
         "ホーム姿勢の骨盤高さ %.3fm が gait.yaml の z_c %.3fm と違う", h / 1000.0, gait.z_c));
   }
-  if (std::abs(2.0 * half / 1000.0 - gait.foot_spacing) > 0.005) {
-    ev.warn(
-      fmt(
-        "ホーム姿勢の足間隔 %.4fm が gait.yaml の foot_spacing %.4fm と違う",
-        2.0 * half / 1000.0, gait.foot_spacing));
-  }
+  // 足間隔は gait.yaml の foot_spacing と違っていてよい (歩行の足はこちらに揃える。
+  // checkStance が関係を言う)
   return true;
 }
 
@@ -272,14 +273,13 @@ void checkMotionLegServo(const ServoMap & map, const MotionLibrary & lib, EventQ
 
 void checkWalkEnvelope(
   const ServoMap & map, const rwc::GaitParams & gait, const BodyPose & home,
-  double body_pitch, double stance_y_offset, EventQueue & ev)
+  double body_pitch, EventQueue & ev)
 {
   const double zc = gait.z_c * 1000.0;
   const double cx = gait.step_clamp_x * 1000.0;
   const double cout = gait.step_clamp_out * 1000.0;
   const double cin = gait.step_clamp_in * 1000.0;
   const double hsw = gait.swing_height * 1000.0;
-  const double half = gait.foot_spacing * 500.0;
 
   int worst = static_cast<int>(ReachLevel::Design);
   FootPose worst_pose;
@@ -291,8 +291,10 @@ void checkWalkEnvelope(
       for (double dy : {-cin, 0.0, cout}) {
         for (double dz : {0.0, hsw}) {
           FootPose f;
+          // 立位はホーム姿勢の足 (歩行の足はそこに揃えてある)。
           // 外側 / 内側は脚ごとに向きが逆。dy > 0 を「外側」として左右に配る。
-          f.p = rk::Vec3{dx, lat * (half + dy) + stance_y_offset * lat, -zc + dz};
+          const rk::Vec3 & base = home.foot[s].p;
+          f.p = rk::Vec3{base.x + dx, base.y + lat * dy, base.z + dz};
           // 姿勢はホームと同じ（歩行中もその向きで出すので、同じ条件で見る）。
           for (int k = 0; k < 3; ++k) {
             f.rpy[k] = home.foot[s].rpy[k];

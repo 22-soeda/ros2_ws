@@ -240,7 +240,15 @@ public:
     ctrl_opt_.torque_on_time = declare_parameter<double>("torque_on_time", 2.0);
     ctrl_opt_.home_move_time = declare_parameter<double>("home_move_time", 1.5);
     ctrl_opt_.hold_arm_time = declare_parameter<double>("hold_arm_time", 0.5);
-    ctrl_opt_.stance_y_offset = declare_parameter<double>("stance_y_offset", 0.0);
+    // stance_y_offset は 2026-09-18 に廃止した。歩行の足はホーム姿勢の足
+    // (home_pose.yaml の foot) に揃える。古い params ファイルに残っていたら言う
+    // (宣言しないパラメータは rclcpp が黙って捨てるので)。
+    if (get_node_parameters_interface()->get_parameter_overrides().count("stance_y_offset")) {
+      RCLCPP_WARN(
+        get_logger(),
+        "stance_y_offset は廃止した (値は使わない)。歩行の足の位置は home_pose.yaml の "
+        "foot.y で決まる。params ファイルから消すこと");
+    }
     ctrl_opt_.walk_enable = declare_parameter<bool>("walk_enable", true);
     ctrl_opt_.walk_idle_hold = declare_parameter<double>("walk_idle_hold", 0.25);
     ctrl_opt_.motion_interrupts_walk = declare_parameter<bool>("motion_interrupts_walk", true);
@@ -309,9 +317,8 @@ public:
       return false;
     }
     rm::checkPoseReachable(map_, home_pose_, "ホーム姿勢", boot_);
-    rm::checkStance(gait_, ctrl_opt_.stance_y_offset, boot_);
-    rm::checkWalkEnvelope(
-      map_, gait_, home_pose_, body_pitch_, ctrl_opt_.stance_y_offset, boot_);
+    rm::checkStance(gait_, home_pose_, boot_);
+    rm::checkWalkEnvelope(map_, gait_, home_pose_, body_pitch_, boot_);
     drain();
 
     // --- 層を組む ---------------------------------------------------------
