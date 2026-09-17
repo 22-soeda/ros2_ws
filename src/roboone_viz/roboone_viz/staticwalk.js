@@ -21,8 +21,8 @@ function staticDefaultParams() {
   return {
     z_c: 0.261, gravity: 9.81, foot_spacing: 0.140,
     sole_length: 0.118, sole_width: 0.074,
-    zmp_tol: 0.005, t_shift_min: 0.3, com_offset_y: 0.0,
-    t_swing: 0.8, swing_height: 0.025, td_overdrive: 0.004, td_speed_max: 0.20,
+    zmp_tol: 0.010, t_shift_min: 0.3, com_offset_y: 0.0,
+    t_swing: 0.6, swing_height: 0.025, td_overdrive: 0.004, td_speed_max: 0.20,
     stride_time: 0.60, v_max: [0.10, 0.04], a_max: [0.06, 0.03],
     v_start_eps: 0.005, v_stop_eps: 0.010, loop_hz: 200.0,
   };

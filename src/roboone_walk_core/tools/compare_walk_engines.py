@@ -39,7 +39,7 @@ COLS = ['t', 'st', 'ph', 'sup', 'vx', 'vy', 'xix', 'xiy', 'comx', 'comy',
 STATE_CODE = {'IDLE': 0, 'START': 1, 'STEP': 2, 'STOP': 3, 'ESTOP': 4,
               'SHIFT': 5, 'SWING': 6}
 
-# 静歩行: (vx, vy, 既定値から変える設定)。1 歩に約 3 s かかるので長めに流す
+# 静歩行: (vx, vy, 既定値から変える設定)。1 歩に約 2 s かかるので長めに流す
 STATIC_T_WALK = 9.5
 STATIC_T_END = 20.0
 STATIC_CASES = [

@@ -74,7 +74,7 @@ def test_check_catches_bad_settings():
     # 既定では片足支持の余裕が足裏の半幅そのまま
     r = check_static_gait(StaticGaitParams())
     assert r['margin_single'] == pytest.approx((0.059, 0.037))
-    assert r['t_shift_step'] == pytest.approx(2.074, abs=1e-3)
+    assert r['t_shift_step'] == pytest.approx(1.466, abs=1e-3)
 
 
 # ------------------------------------------------------------ 静的な安定

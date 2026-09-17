@@ -36,7 +36,7 @@ python3 src/roboone_viz/roboone_viz/gen_walk_viz.py --serve 8100
 - **静歩行**: タブ「静歩行 前進 / 左移動 / 斜め後ろ / 足踏み (試作)」と、操縦タブの
   「計画」ボタン (P キー)。計画は `roboone_walk_ref` の static_walk (仕様原本) で、
   ライブ操縦はその JS 版 `staticwalk.js`。設定は `static_gait.yaml` を読む。
-  重心を両足支持で次の支持足の上へ移してから足を振り出すので、1 歩に約 3 s かかる。
+  重心を両足支持で次の支持足の上へ移してから足を振り出すので、1 歩に約 2 s かかる。
   パイプ欄に ZMP の静的余裕 (支持多角形の縁まで。足裏 118 × 74 mm) を出す。
   **motion ノードにはまだ入っていない** (C++ 版が未実装)。足踏みは可視化だけの包み
   (`record.py` の `MarchStaticWalkEngine` / `template.html` の `MarchStaticWalkEngineJS`)
