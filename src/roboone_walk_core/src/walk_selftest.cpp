@@ -104,6 +104,53 @@ static void test_clamp()
   CHECK(walked > 5, "walked=%d", walked);
 }
 
+// 両足支持 (ds_time > 0): 完走して ξ が中点に来る。両足支持の間は support=0・両足接地で、
+// ZMP は両足を結ぶ線分の上。両足支持は毎回 Td ちょうど
+static void test_double_support()
+{
+  GaitParams p;
+  p.ds_time = 0.4;
+  const double cases[][2] = {
+    {0.10, 0.0}, {-0.10, 0.0}, {0.0, 0.04}, {0.0, -0.04}, {0.08, 0.025}, {0.0, 0.0},
+  };
+  const int n_ds = static_cast<int>(std::lround(p.ds_time / DT));
+  for (const auto & c : cases) {
+    WalkEngine e{p};
+    const auto outs = run(e, c[0], c[1], 4.5, 12.0);
+    const WalkOutputs & o = outs.back();
+    CHECK(o.state == State::IDLE, "ds cmd=(%g,%g) state=%s", c[0], c[1], to_string(o.state));
+    const double mx = (o.left_foot[0] + o.right_foot[0]) / 2;
+    const double my = (o.left_foot[1] + o.right_foot[1]) / 2;
+    CHECK(std::abs(o.xi[0] - mx) < 2e-3 && std::abs(o.xi[1] - my) < 2e-3,
+          "ds xi=(%g,%g) mid=(%g,%g)", o.xi[0], o.xi[1], mx, my);
+    CHECK(std::abs(o.left_foot[1] - o.right_foot[1] - p.foot_spacing) < 1e-3, "ds gap");
+    for (const auto & r : e.steps()) {
+      CHECK(!r.clamped, "ds cmd=(%g,%g) step %d clamped", c[0], c[1], r.step_idx);
+    }
+    int run_len = 0, runs = 0;
+    for (const auto & oo : outs) {
+      CHECK(std::isfinite(oo.xi[0]) && std::isfinite(oo.xi[1]), "ds NaN at t=%g", oo.t);
+      if (oo.double_support) {
+        CHECK(oo.support == 0 && oo.phase == 0.0, "ds support/phase at t=%g", oo.t);
+        CHECK(oo.left_foot[2] == 0.0 && oo.right_foot[2] == 0.0, "ds feet up at t=%g", oo.t);
+        const double ax = oo.left_foot[0], ay = oo.left_foot[1];
+        const double bx = oo.right_foot[0] - ax, by = oo.right_foot[1] - ay;
+        const double u = ((oo.zmp[0] - ax) * bx + (oo.zmp[1] - ay) * by) / (bx * bx + by * by);
+        const double d = std::hypot(oo.zmp[0] - (ax + u * bx), oo.zmp[1] - (ay + u * by));
+        CHECK(d < 1e-9 && u > -1e-9 && u < 1.0 + 1e-9, "ds zmp off segment at t=%g", oo.t);
+        ++run_len;
+      } else if (run_len > 0) {
+        CHECK(run_len == n_ds, "ds run %d ticks (want %d)", run_len, n_ds);
+        run_len = 0;
+        ++runs;
+      }
+    }
+    if (c[0] != 0.0 || c[1] != 0.0) {
+      CHECK(runs >= 4, "ds cmd=(%g,%g) runs=%d", c[0], c[1], runs);
+    }
+  }
+}
+
 // ESTOP: 凍結し、解除は reset のみ
 static void test_estop()
 {
@@ -121,6 +168,7 @@ int main()
   test_deterministic();
   test_clamp();
   test_estop();
+  test_double_support();
   if (g_failures == 0) {
     std::printf("walk_selftest: all OK\n");
     return 0;

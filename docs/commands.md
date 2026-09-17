@@ -258,7 +258,20 @@ ros2 topic pub -r 20 /cmd_walk geometry_msgs/msg/Twist "{linear: {x: 0.05}}"
 
 motion ノードが `/camera/imu` から胴体のロール・ピッチを推定し、支持脚の足首と股に補正を
 足す。中身は `src/roboone_motion/include/roboone_motion/stabilizer.hpp` と `imu_attitude.hpp`。
-**ゲインの既定は全部 0**（入れても今までと同じ動き）で、実行中に `ros2 param set` で上げる。
+**コードのゲインの既定は全部 0**（入れても今までと同じ動き）で、実機の値は
+`src/roboone_motion/config/motion_node.yaml` の `stab:`。実行中に `ros2 param set` で変えられる。
+
+足裏へ配る方式が 2 つある（`stab.board`。実行中に切り替えられる。既定は板）。
+
+| | 足裏の動き | 遊脚 | 上限 |
+|---|---|---|---|
+| `stab.board: false`（足首だけ） | 足首 2 軸だけ回す。位置は動かない | 支持足首が傾いた分だけ床へ押し込まれる | `ankle_clamp` 0.12 rad |
+| `stab.board: true`（板） | 両足裏を 1 枚の板と見て 2 足の中点まわりに回す。脚が (W/2)·sin u 伸び縮みする | 支持足の足裏と同じ平面に乗ったまま（押し込まない） | `board_clamp` 0.07 rad（約 4 deg） |
+
+板の上限は足首パラレルリンクで決まる。ロール単独なら 6 deg まで届くが、ロールとピッチが
+同時に入る隅は 4 deg が上限（2026-09-18 の走査。**歩幅には依らない**）。上限を超える周期は
+`PoseCodec` が板を**両脚まとめて**縮めて出すので、指令そのものは止まらない
+（縮めた割合は `/motion/stab` の `board_scale`）。
 
 前提: RealSense が上がっていること（`roboone.launch.py` の既定 `imu:=true`、または
 `camera:=true`）。来ていなければ起動 10 秒後に警告が出て、補正 0 のまま動く。
@@ -282,6 +295,9 @@ ros2 param set /motion stab.kp_pitch 0.3       # ② 傾きの比例。傾いた
 ros2 param set /motion stab.kp_roll 0.3
 ros2 param set /motion stab.k_torso 0.3        # ③ 胴体を起こす（前後のみ）
 ros2 param set /motion stab.enable false       # まとめて切る（ゲインは残る）
+ros2 param set /motion stab.board false        # 足首だけ回す方式へ戻す（既定は板 = true）
+ros2 param set /motion stab.board_clamp 0.05   # 板の上限 [rad]（届かない時刻を減らしたいとき）
+#    ★方式を切り替えても跳ばない（使わないほうの補正は rate_limit で 0 へ戻る）
 #    ★double は小数点付きで打つ（0 ではなく 0.0）。整数だと型違いで弾かれる
 #    範囲外（kd > 0.5 など）も弾かれる。範囲と説明は describe で見る
 ros2 param describe /motion stab.kd_pitch
@@ -309,12 +325,25 @@ for n,v in zip(d['layout']['dim'][0]['label'].split(','), d['data']):
 | `ank_R_th5` ほか | 足首 θ5（ピッチ）/ θ6（ロール）に実際に足した量 [rad] |
 | `torso` | 胴体の前傾に足した量 [rad]（前へ倒れたら負 = 起こす） |
 | `ff_ax` / `ff_ay` | IMU に教えた歩行計画の重心加速度（横揺れで傾きの推定がずれないように引く） |
-| `corr_dropped` | 補正を入れると IK が解けないので外した脚の数 |
+| `corr_dropped` | 補正を入れると IK が解けないので外した脚の数（足首方式） |
+| `board_roll` / `board_pitch` | 両足の平面ごと回した量 [rad]（`stab.board: true` のときだけ） |
+| `board_scale` | 板を出せた割合。1 = そのまま / 0.75, 0.5, 0.25 = 届かないので縮めた / 0 = 外した |
 
 符号の確かめ方（トルクなしでよい。`allow_torque:=false` で立ち上げ、HOLD まで進めてから
 ゲインを入れ、機体を手で傾ける）: 前へ倒す → `pitch` と `u_pitch` が + で、`ank_*_th5` も +
 （胴体から見てつま先を下げる向き = 前へ倒れるのを押し戻す）。右へ倒す → `roll` と `u_roll` が +、
 `ank_*_th6` が +（足裏の左縁を上げる向き）。向きの根拠は `motion_selftest` の [8]。
+
+板が計画の全時刻で届くかは**起動時**に出る（方式が板のときだけ。バスを開かずに見られる）。
+
+```bash
+# 静歩行 / 動歩行それぞれで、板を上限の 8 通り（ロール・ピッチ 1 軸ずつと隅 4 つ）に
+# 回して IK と機構層に通す。届かない時刻の数と、どこまでなら通るかが出る
+ros2 run roboone_motion motion_node --ros-args -p dry_run:=true -p allow_torque:=false \
+  -p walk_mode:=static -p stab.board:=true 2>&1 | grep "板の補正"
+#   2026-09-18 の値: 静歩行 ±4 deg で 2 / 62656 点（0.003%）
+#                    動歩行 ±4 deg で 1435 / 57200 点（2.5%。計画そのものが到達域の縁）
+```
 
 `imu_rx_lag`（受信時刻 − header.stamp）は RealSense が機器の時計を換算した stamp なので
 **約 −20ms の定数が乗る**（2026-09-16 実測）。絶対の遅れではない。受信間隔は p50 5.0ms /
@@ -483,6 +512,11 @@ python3 scripts/bag_walk_roll.py ~/roboone_logs/rosbag2_*
 python3 scripts/bag_walk_roll.py ~/roboone_logs/rosbag2_* --series 19 27   # その区間の時系列
 ```
 
+★静歩行では「遊脚側への傾き」を鵜呑みにしない。この値は SWING の間しか見ないので、
+SHIFT 中に荷重側（外側）へ倒れて、その傾きが次の SWING まで残ると「遊脚側」に数えられる
+（2026-09-18 01_47_57 の +22° がこれ。倒れ始めは SHIFT の最初、反対の足の着地）。
+`--series` で倒れ始めの walk / φ を確かめること。
+
 `/joint_states`（実測）だけでは沈み込みは分からないので、`/motion/joint_commands`
 （指令）と `/motion/servo_states`（サーボ空間の生カウントと負荷）も記録している。
 両方を見ることで切り分けられる:
@@ -649,6 +683,8 @@ T=0.60 で 27.7 mm）が、同時に計画と実機のずれが 1 歩で `e^{ωT
 colcon build --packages-select roboone_walk_core roboone_walk_ref roboone_motion
 python3 -m pytest src/roboone_walk_ref/test/test_walk_core.py
 python3 src/roboone_walk_core/tools/compare_walk_engines.py   # 「照合: 全て一致」
+#   両足支持 (ds_time > 0) のケースは C++ とだけ比べる (JS 版は ds_time を持たない)
+./build/roboone_walk_core/walk_dump 0.10 0 4.5 10 0.005 ds_time=0.4 | head   # key=value で上書き
 
 # 膝 4 節リンク 3D（デモ / 実機追従）
 python3 src/roboone_viz/roboone_viz/serve_knee3d.py --demo
@@ -1161,6 +1197,25 @@ done
 - WARN … 接地が `swing_lock_phase` より早い
 - ERROR … 遊脚が床に届かないまま歩が終わる（空中で支持脚が入れ替わる）。
   必要な `td_speed_max` を数値で出すので、その値以上へ上げるか `swing_height` を下げる
+
+## 両足支持（gait.yaml の ds_time）
+
+`ds_time` を正にすると、動歩行の各歩の頭に両足支持を置き、その間に ZMP を前の支持足から
+新しい支持足へ移す（既定 0 = 従来）。骨盤の横の速さが落ち、骨盤が支持足へ寄る。
+**足上げと足間隔を一緒に動かさないと遊脚が届かない。** 値の候補と理由は `gait.yaml` の
+`ds_time` の注記（例: `ds_time 0.3 / foot_spacing 0.140 / swing_height 0.04`）。
+
+- 起動ログに「両足支持 0.30s + 単脚支持 0.60s = 1 歩 0.90s。歩く速さは指令の 67%」が出る
+- 0.4 s を超えると警告が出る（今の `a_max` では計画が発散しうる）
+- `/motion/stab` では、両足支持の間は `walk_state` = 2（STEP）で `support` = 0
+
+```bash
+# 設定ごとに横振り・発散・足先の到達を走査する（実機不要。leg_service を使う。数分かかる）
+# 実機の足の位置は home_pose.yaml の foot.y を読む
+colcon build --packages-select roboone_kinematics
+python3 src/roboone_viz/roboone_viz/walk_reach.py \
+    --ds-time 0,0.2,0.3,0.4 --foot-spacing 0.14,0.15 --swing-height 0.05,0.04,0.03
+```
 
 ## 歩行の横振り（foot_spacing と home_pose.yaml の foot.y）
 

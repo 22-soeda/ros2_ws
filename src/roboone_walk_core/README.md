@@ -9,7 +9,8 @@ docstring にある。
 - `include/roboone_walk_core/gait_params.hpp` — 静的設定 (既定値は gait.yaml と同じ。
   YAML 読み込みは持たず、motion ノードが ROS パラメータから詰める)
 - `src/walk_selftest.cpp` — 自己検算 (colcon test で回る)
-- `src/walk_dump.cpp` — 軌道 CSV ダンプ (照合と後段への受け渡し用)
+- `src/walk_dump.cpp` — 軌道 CSV ダンプ (照合と後段への受け渡し用。`ds_time=0.4` などの
+  `key=value` で一部の設定を上書きできる)
 - `include/roboone_walk_core/static_walk_engine.hpp` — 静歩行のエンジンと設定
   (`StaticGaitParams`。既定値は static_gait.yaml と同じ。YAML 読み込みは motion ノード側で、
   項目表 `staticGaitFields()` を使う)。出力は walk_core と同じ `WalkOutputs`
@@ -32,6 +33,10 @@ walk_core は 3 か所に同じロジックがある。**変更は必ず 3 つ�
 | Python (原本) | roboone_walk_ref/walk_core/engine.py | 仕様・単体テスト・可視化データ生成 |
 | C++ | この walk_engine.hpp | motion ノード (実機 200 Hz) |
 | JS | roboone_viz/walkcore.js | ブラウザのライブ操縦シミュレータ |
+
+★両足支持 (`ds_time` > 0、2026-09-18) は Python と C++ だけにある。JS 版 (walkcore.js) は
+`ds_time` を持たないので、照合ツールは `ds_time` > 0 のケースを C++ とだけ比べる
+(`ds_time` = 0 は 3 実装で同じ)。
 
 静歩行 (static_walk) も同じ扱い。原本は `roboone_walk_ref/static_walk/engine.py`、
 C++ は `static_walk_engine.hpp`、JS は `roboone_viz/staticwalk.js`。静歩行は軌道に加えて

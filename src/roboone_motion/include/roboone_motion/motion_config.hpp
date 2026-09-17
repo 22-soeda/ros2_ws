@@ -139,6 +139,19 @@ void checkStaticWalkEnvelope(
   const ServoMap & map, const WalkSetup & walk, const BodyPose & home,
   double body_pitch, EventQueue & ev);
 
+// --- 安定化 ---------------------------------------------------------------
+
+/// 板の補正（両足裏を平面ごと回す。stab.board = true）を入れても脚が届くかを見る。
+///
+/// 計画を 11 通りの指令で回し、各時刻で板を上限の 8 通り（ロール / ピッチ 1 軸ずつと
+/// 隅の 4 つ）に回して IK と機構層に通す。板は脚を (W/2)·sin u ずつ伸び縮みさせるので、
+/// 足首パラレルリンクが先に尽きる。届かない時刻があれば、どこまでなら通るかを言う
+/// （その周期は PoseCodec が板を縮めて出すので、指令そのものは止まらない）。
+/// **動歩行・静歩行のどちらでも呼べる**（WalkSetup の mode で計画器が決まる）。
+void checkBoardEnvelope(
+  const ServoMap & map, const WalkSetup & walk, const BodyPose & home,
+  double body_pitch, double clamp, EventQueue & ev);
+
 }  // namespace roboone_motion
 
 #endif  // ROBOONE_MOTION__MOTION_CONFIG_HPP_

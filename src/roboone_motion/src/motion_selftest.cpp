@@ -1095,6 +1095,75 @@ int main(int argc, char ** argv)
           e2.send[rm::kRight], e2.corr_dropped[rm::kRight], e2.corr_dropped[rm::kLeft]));
     }
 
+    // (b2) 板の補正 (stab.board): 両足裏は同じ平面に乗ったまま回り、脚が伸び縮みする
+    {
+      rm::PoseCodec codec;
+      codec.configure(&map, body_pitch);
+      auto feet = [&](const rm::PoseCodec::Encoded & e, rk::Vec3 p[2], rk::Mat3 r[2]) {
+          for (int s = 0; s < rm::kNumSide; ++s) {
+            rk::fk(map.leg_params(s).leg, e.theta[s], p[s], r[s]);
+          }
+        };
+      rk::Vec3 p0[2], p1[2];
+      rk::Mat3 r0[2], r1[2];
+      const rm::PoseCodec::Encoded e0 = codec.encode(home);
+      feet(e0, p0, r0);
+      const double ur = 0.05, up = 0.03;
+      rm::PoseCorrection c;
+      c.board[0] = ur;
+      c.board[1] = up;
+      const rm::PoseCodec::Encoded e1 = codec.encode(home, &c);
+      feet(e1, p1, r1);
+
+      // 右足裏から見た左足裏の位置と向きが、回す前と変わらない（= 同じ平面に乗っている）
+      const rk::Vec3 rel0 = r0[rm::kRight].mulT(p0[rm::kLeft] - p0[rm::kRight]);
+      const rk::Vec3 rel1 = r1[rm::kRight].mulT(p1[rm::kLeft] - p1[rm::kRight]);
+      double drr, drp;
+      footRotation(r1[rm::kRight], r1[rm::kLeft], drr, drp);
+      double drr0, drp0;
+      footRotation(r0[rm::kRight], r0[rm::kLeft], drr0, drp0);
+      const double dpos = (rel1 - rel0).norm();
+      check(
+        e1.send[rm::kRight] && e1.send[rm::kLeft] && e1.board_scale == 1.0 && dpos < 0.02 &&
+        std::abs(drr - drr0) < 1e-4 && std::abs(drp - drp0) < 1e-4,
+        fmt(
+          "板: 2 足の相対位置 (ずれ %.4f mm) と相対姿勢 (roll %+.5f / pitch %+.5f rad) が"
+          "変わらない", dpos, drr - drr0, drp - drp0));
+
+      // 足裏の向きは足首方式と同じだけ回り、脚は中点から離れた分だけ伸び縮みする。
+      // ロール + は左縁を上げる = 左脚が縮んで右脚が伸びる。量は (W/2)·sin(u)
+      double gr, gp;
+      footRotation(r1[rm::kRight], r0[rm::kRight], gr, gp);
+      const double half = home.foot[rm::kLeft].p.y;      // 足の半間隔 [mm]
+      const double want = half * std::sin(ur);
+      const double got_l = p1[rm::kLeft].z - p0[rm::kLeft].z;
+      const double got_r = p1[rm::kRight].z - p0[rm::kRight].z;
+      check(
+        std::abs(gr - ur) < 0.05 * ur && std::abs(gp - up) < 0.05 * up &&
+        std::abs(got_l - want) < 0.05 * want && std::abs(got_r + want) < 0.05 * want,
+        fmt(
+          "板: 足裏は u だけ回り (roll %+.4f / pitch %+.4f)、脚は (W/2)·sin u = %.2fmm ずつ"
+          " 伸び縮みする (L %+.2f / R %+.2f mm)", gr, gp, want, got_l, got_r));
+
+      // 大きすぎる板は両脚まとめて縮める（片脚だけ外さない = 平面は保たれる）
+      rm::PoseCorrection big;
+      big.board[0] = 0.6;                                // 足首リンクが届かない量
+      const rm::PoseCodec::Encoded e2 = codec.encode(home, &big);
+      rm::Event ev;
+      while (codec.popEvent(ev)) {}
+      rk::Vec3 p2[2];
+      rk::Mat3 r2[2];
+      feet(e2, p2, r2);
+      const rk::Vec3 rel2 = r2[rm::kRight].mulT(p2[rm::kLeft] - p2[rm::kRight]);
+      check(
+        e2.send[rm::kRight] && e2.send[rm::kLeft] && e2.board_scale < 1.0 &&
+        !e2.corr_dropped[rm::kRight] && !e2.corr_dropped[rm::kLeft] &&
+        (rel2 - rel0).norm() < 0.02,
+        fmt(
+          "板: 届かない量 (0.6 rad) は両脚まとめて %.0f%% に縮める (平面のずれ %.4f mm)",
+          e2.board_scale * 100.0, (rel2 - rel0).norm()));
+    }
+
     rm::Attitude att;
     att.valid = true;
     rm::Stabilizer::Input in;
@@ -1169,6 +1238,47 @@ int main(int argc, char ** argv)
       check(
         std::abs(j1 - j0) <= g.rate_limit * dt + 1e-12,
         fmt("1 周期に動くのは rate_limit まで: %.4f rad", std::abs(j1 - j0)));
+    }
+
+    // (e2) 方式の切り替え (stab.board): 出す先が入れ替わり、切り替えても跳ばない
+    {
+      st.reset();
+      rm::StabGains g;
+      g.kp_pitch = 0.5;
+      g.kp_roll = 0.5;
+      g.board = true;
+      st.setGains(g);
+      att = rm::Attitude{};
+      att.valid = true;
+      att.pitch = 0.1;
+      att.roll = -0.08;
+      const rm::PoseCorrection cb = run(1.0);
+      check(
+        std::abs(cb.board[0] + 0.04) < 1e-9 && std::abs(cb.board[1] - 0.05) < 1e-9 &&
+        cb.ankleZero(rm::kRight) && cb.ankleZero(rm::kLeft),
+        fmt(
+          "板の方式では板にだけ出す (roll %+.4f / pitch %+.4f、足首は 0)",
+          cb.board[0], cb.board[1]));
+      att.pitch = 1.0;
+      att.roll = 1.0;
+      const rm::PoseCorrection cc = run(1.0);
+      check(
+        std::abs(cc.board[0] - g.board_clamp) < 1e-9 &&
+        std::abs(cc.board[1] - g.board_clamp) < 1e-9,
+        fmt("板も上限で止まる: %.4f (上限 %.3f)", cc.board[0], g.board_clamp));
+      // 走っている最中に足首方式へ戻す: 板は rate_limit で 0 へ帰り、足首が立ち上がる
+      g.board = false;
+      st.setGains(g);
+      const double b0 = st.correction().board[0];
+      st.update(dt, in);
+      const double b1 = st.correction().board[0];
+      const rm::PoseCorrection cd = run(1.0);
+      check(
+        std::abs(b1 - b0) <= g.rate_limit * dt + 1e-12 && cd.boardZero() &&
+        !cd.ankleZero(rm::kRight),
+        fmt(
+          "方式を切り替えても跳ばない (1 周期の板の動き %.4f rad -> 最後は板 0・足首 %+.4f)",
+          std::abs(b1 - b0), cd.ankle[rm::kRight][0]));
     }
 
     // (f) ジャイロの減衰の向き: 前へ回っている (gyro_y > 0) なら傾き (pitch > 0) と同じ向き
@@ -1263,6 +1373,88 @@ int main(int argc, char ** argv)
         st.debug().weight[rm::kRight] == 1.0 && st.debug().weight[rm::kLeft] == 1.0,
         "立っているときは両脚に効かせる");
       in.walk = nullptr;
+    }
+
+    // (h2) 両足支持 (ds_time > 0): 歩の頭の両足支持では両脚に効かせ、直前の着地から
+    //      gate_post_td 以内だけゲインを弱める。単脚支持の頭には着地の尾を掛けない
+    {
+      // 両足支持を入れると骨盤が支持足に長く寄り、遊脚が骨盤から横へ大きく開く。
+      // gait.yaml の ds_time の注記の走査で全時刻届いた組 (計画 140mm・足上げ 30mm) で見る
+      rm::rwc::GaitParams gd = gait;
+      gd.ds_time = 0.4;
+      gd.foot_spacing = 0.140;
+      gd.swing_height = 0.03;
+      rm::Stabilizer sd;
+      sd.configure(&map, home, body_pitch, gd);
+      drain(sd, false);
+      // 着地は歩の境界の (1 - 接地位相)·T 前。そこから 30ms 後までゲートを掛ける
+      const double since_td = (1.0 - sd.touchPhase()) * gd.t_step;
+      rm::StabGains g;
+      g.kp_pitch = 0.5;
+      g.gate_post_td = since_td + 0.03;
+      sd.setGains(g);
+      att = rm::Attitude{};
+      att.valid = true;
+      att.pitch = 0.1;
+      rm::rwc::WalkOutputs w;
+      w.state = rm::rwc::State::STEP;
+      w.support = 0;
+      w.double_support = true;
+      w.ds_elapsed = 0.01;
+      rm::Stabilizer::Input din = in;
+      din.walk = &w;
+      sd.update(dt, din);
+      const bool gate_early = sd.debug().gate;
+      const bool both = sd.debug().weight[rm::kRight] == 1.0 && sd.debug().weight[rm::kLeft] == 1.0;
+      w.ds_elapsed = 0.2;
+      sd.update(dt, din);
+      const bool gate_late = sd.debug().gate;
+      w.double_support = false;
+      w.ds_elapsed = 0.0;
+      w.support = rm::rwc::LEFT;
+      w.phase = 0.01;
+      sd.update(dt, din);
+      const bool gate_ss_head = sd.debug().gate;
+      check(
+        both && gate_early && !gate_late && !gate_ss_head,
+        fmt(
+          "両足支持は両脚に効かせ、着地の尾だけ弱める (早い %d / 遅い %d / 単脚の頭 %d)",
+          gate_early, gate_late, gate_ss_head));
+      drain(sd, false);
+
+      // 状態機械ごと: 両足支持ありで歩いて止まり、HOLD に戻る
+      rm::MotionController::Options copt;
+      auto c = std::make_unique<rm::MotionController>();
+      c->configure(&map, &lib5, gd, home, body_pitch, copt);
+      const std::string why = "(テスト)";
+      const rm::BodyPose meas = asMeasured(map, home);
+      c->setEstop(false);
+      c->requestMotion("home");
+      double now = 0.0;
+      auto t = c->step(now, dt, &meas, why, true);
+      for (int i = 0; i < 1000 && t.state != rm::State::HOLD; ++i) {
+        now += dt;
+        t = c->step(now, dt, &meas, why, true);
+      }
+      bool saw_ds = false, all_sent = true;
+      rm::PoseCodec codec;
+      codec.configure(&map, body_pitch);
+      for (int i = 0; i < 2400; ++i) {
+        now += dt;
+        c->setWalkCmd(i < 800 ? 0.05 : 0.0, 0.0, 0.0, now);
+        t = c->step(now, dt, &meas, why, true);
+        const rm::rwc::WalkOutputs * wo = c->walkOutputs();
+        saw_ds = saw_ds || (wo && wo->double_support);
+        const rm::PoseCodec::Encoded e = codec.encode(*t.target);
+        all_sent = all_sent && e.send[rm::kRight] && e.send[rm::kLeft];
+      }
+      check(
+        saw_ds && all_sent && t.state == rm::State::HOLD,
+        fmt(
+          "両足支持ありで歩いて HOLD に戻る (両足支持 %d / IK が毎周期解ける %d / 状態 %s)",
+          saw_ds, all_sent, rm::stateName(t.state)));
+      rm::Event e;
+      while (c->popEvent(e)) {}
     }
 
     // (i) 状態機械は HOLD / WALK の周期にだけ歩行計画の出力を出す

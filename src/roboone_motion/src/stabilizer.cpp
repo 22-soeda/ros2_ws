@@ -41,6 +41,7 @@ bool Stabilizer::configure(
 {
   touch_phase_ = swing.touch_phase;
   swing_dur_ = swing.duration;
+  ds_time_ = swing.ds_time;
 
   bool all = true;
   for (int s = 0; s < kNumSide; ++s) {
@@ -127,6 +128,13 @@ void Stabilizer::weightsAndGate(
 {
   weight[kRight] = weight[kLeft] = 1.0;
   gate = false;
+  // 動歩行の歩の頭の両足支持 (ds_time > 0): 両脚とも接地しているので重みは両脚 1。
+  // 直前の着地からの経過が gate_post_td 以内ならゲインを弱める
+  if (w && w->state == rwc::State::STEP && w->double_support) {
+    const double T = std::max(1e-3, swing_dur_);
+    gate = (1.0 - touch_phase_) * T + w->ds_elapsed <= g_.gate_post_td;
+    return;
+  }
   // 片足支持 = 動歩行の STEP / 静歩行の SWING。位相はどちらも遊脚の経過 [0,1]。
   // 静歩行の両足支持 (SHIFT / STOP) は立位と同じく両脚に効かせる。
   if (!w || !singleSupport(*w)) {return;}
@@ -148,8 +156,9 @@ void Stabilizer::weightsAndGate(
   // 次の歩の頭にかかる分も見る (静歩行は着地と次の振り出しの間に重心移動が挟まる)
   const double t = ph * T;
   const double td = touch_phase_ * T;
+  // 両足支持を挟む (ds_time > 0) なら、着地の尾は上の両足支持の側で見る
   gate = (t >= td - g_.gate_pre_td && t <= td + g_.gate_post_td) ||
-    (w->state == rwc::State::STEP && t <= td + g_.gate_post_td - T);
+    (w->state == rwc::State::STEP && t <= td + g_.gate_post_td - T - ds_time_);
 }
 
 const PoseCorrection & Stabilizer::update(double dt, const Input & in)
@@ -188,13 +197,24 @@ const PoseCorrection & Stabilizer::update(double dt, const Input & in)
   }
 
   const double max_step = std::max(0.0, g_.rate_limit) * dt;
+  // 使っていないほうの方式は 0 へ戻す（実行中に stab.board を切り替えても跳ばない）。
   for (int s = 0; s < kNumSide; ++s) {
-    double tgt[2];
-    ankleFromFootRotation(s, u_roll, u_pitch, tgt);
+    double tgt[2]{0.0, 0.0};
+    if (!g_.board) {
+      ankleFromFootRotation(s, u_roll, u_pitch, tgt);
+    }
     for (int c = 0; c < 2; ++c) {
-      const double v = clamp(fade_ * weight[s] * tgt[c], -g_.ankle_clamp, g_.ankle_clamp);
+      const double v = g_.board ? 0.0 :
+        clamp(fade_ * weight[s] * tgt[c], -g_.ankle_clamp, g_.ankle_clamp);
       corr_.ankle[s][c] = rateLimit(corr_.ankle[s][c], v, max_step);
     }
+  }
+  // 板は脚ごとの重みを持たない（両足裏を 1 枚として回すので分けられない）。
+  const double board_tgt[2] = {
+    g_.board ? clamp(fade_ * u_roll, -g_.board_clamp, g_.board_clamp) : 0.0,
+    g_.board ? clamp(fade_ * u_pitch, -g_.board_clamp, g_.board_clamp) : 0.0};
+  for (int c = 0; c < 2; ++c) {
+    corr_.board[c] = rateLimit(corr_.board[c], board_tgt[c], max_step);
   }
   corr_.body_pitch = rateLimit(corr_.body_pitch, fade_ * torso, max_step);
 

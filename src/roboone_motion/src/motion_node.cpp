@@ -116,6 +116,9 @@ constexpr const char * kStabFields[] = {
   "corr_dropped", // 26 補正を外して出した脚の数（この周期）
   "ff_ax",        // 27 [m/s^2] IMU に教えた計画上の重心加速度（前）
   "ff_ay",        // 28 [m/s^2] 同（左）
+  "board_roll",   // 29 [rad] 両足の平面ごと回した量（stab.board = true のときだけ）
+  "board_pitch",  // 30 [rad]
+  "board_scale",  // 31 板を出せた割合 [0,1]。1 = そのまま / 0 = 解けないので外した
 };
 constexpr std::size_t kStabN = sizeof(kStabFields) / sizeof(kStabFields[0]);
 
@@ -141,7 +144,9 @@ const DoubleParam kDoubleParams[] = {
   {"stab.k_torso", 0.0, 1.5, &rm::StabGains::k_torso, nullptr,
     "胴体を起こす股の補正 [rad/rad]。1 で測った前後の傾きの分だけ逆に回す"},
   {"stab.ankle_clamp", 0.0, 0.3, &rm::StabGains::ankle_clamp, nullptr,
-    "足首の補正の上限 [rad]（1 軸あたり）"},
+    "足首の補正の上限 [rad]（1 軸あたり）。stab.board = false のときに効く"},
+  {"stab.board_clamp", 0.0, 0.15, &rm::StabGains::board_clamp, nullptr,
+    "板の補正の上限 [rad]（1 軸あたり）。0.07 = 約 4 deg。stab.board = true のときに効く"},
   {"stab.torso_clamp", 0.0, 0.35, &rm::StabGains::torso_clamp, nullptr,
     "胴体の補正の上限 [rad]"},
   {"stab.rate_limit", 0.01, 50.0, &rm::StabGains::rate_limit, nullptr,
@@ -358,6 +363,11 @@ public:
       rm::checkStance(walk_.gait, home_pose_, boot_);
       rm::checkWalkEnvelope(map_, walk_.gait, home_pose_, body_pitch_, boot_);
     }
+    // 板の補正は足先を動かすので、到達域は歩行の門とは別に見る（方式が板のときだけ）。
+    if (gains_.board) {
+      rm::checkBoardEnvelope(
+        map_, walk_, home_pose_, body_pitch_, gains_.board_clamp, boot_);
+    }
     drain();
 
     // --- 層を組む ---------------------------------------------------------
@@ -535,8 +545,10 @@ private:
 
       // 4) 目標姿勢 -> 生カウント -> バス
       int dropped = 0;
+      double board_scale = 1.0;
       if (t.target) {
         const rm::PoseCodec::Encoded enc = codec_.encode(*t.target, &corr);
+        board_scale = enc.board_scale;
         for (int s = 0; s < rm::kNumSide; ++s) {
           dropped += enc.corr_dropped[s] ? 1 : 0;
           if (!enc.send[s]) {continue;}
@@ -549,7 +561,7 @@ private:
       drain();
       if (++tick % js_div == 0) {publishTelemetry();}
       if (tick % stab_div == 0) {
-        publishStab(now, att, imu_age, imu_rx_lag, sin.walk, dropped, ff);
+        publishStab(now, att, imu_age, imu_rx_lag, sin.walk, dropped, ff, board_scale);
       }
 
       std::this_thread::sleep_until(next);
@@ -576,6 +588,10 @@ private:
     rcl_interfaces::msg::ParameterDescriptor en;
     en.description = "安定化を使うか。false でゲインに関わらず補正を抜く";
     gains_.enable = declare_parameter<bool>("stab.enable", gains_.enable, en);
+    en.description =
+      "足裏の補正の方式。false = 足首だけ回す (従来) / true = 両足裏を平面ごと回す (板)。"
+      "板は遊脚を床へ押し込まないが、脚が伸び縮みするぶん足首リンクが先に尽きる";
+    gains_.board = declare_parameter<bool>("stab.board", gains_.board, en);
     en.description =
       "歩行計画の重心加速度 ω²(x_C − p) を IMU の比力から引いてから傾きを出すか";
     accel_ff_ = declare_parameter<bool>("imu.accel_ff", accel_ff_, en);
@@ -645,6 +661,11 @@ private:
       const std::string & n = p.get_name();
       if (n == "stab.enable") {
         g.enable = p.as_bool();
+        touched = true;
+        continue;
+      }
+      if (n == "stab.board") {
+        g.board = p.as_bool();
         touched = true;
         continue;
       }
@@ -779,7 +800,7 @@ private:
   /// /motion/stab。並びは kStabFields。
   void publishStab(
     double now, const rm::Attitude & att, double age, double rx_lag,
-    const rm::rwc::WalkOutputs * w, int dropped, const double ff[2])
+    const rm::rwc::WalkOutputs * w, int dropped, const double ff[2], double board_scale)
   {
     const rm::Stabilizer::Debug & d = stab_.debug();
     const rm::PoseCorrection & c = stab_.correction();
@@ -797,7 +818,8 @@ private:
       w ? static_cast<double>(static_cast<int>(w->state)) : -1.0,
       w ? static_cast<double>(w->support) : 0.0,
       w ? w->phase : 0.0,
-      static_cast<double>(dropped), ff[0], ff[1]};
+      static_cast<double>(dropped), ff[0], ff[1],
+      c.board[0], c.board[1], board_scale};
     pub_stab_->publish(m);
   }
 

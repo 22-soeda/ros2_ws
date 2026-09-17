@@ -54,6 +54,9 @@ struct SwingTiming
 {
   double duration = 0.6;       //!< [s] 遊脚の時間 (動歩行 t_step / 静歩行 t_swing)
   double touch_phase = 1.0;    //!< 床に着く位相 [0,1]。着かない設定なら 1
+  //! [s] 着地のあと次の振り出しまでに挟まる両足支持 (動歩行の ds_time)。静歩行は 0
+  //! (重心移動を挟むが、長いので着地の尾は掛からない)
+  double ds_time = 0.0;
 };
 
 /// 歩行の設定一式。motion ノードが起動時に詰める。使わないほうの設定も持っていてよい。
@@ -81,6 +84,7 @@ struct WalkSetup
       const rwc::SwingLanding l = rwc::checkSwingLanding(gait);
       t.duration = gait.t_step;
       t.touch_phase = l.lands ? l.touch_phase : 1.0;
+      t.ds_time = gait.ds_time;
     }
     return t;
   }

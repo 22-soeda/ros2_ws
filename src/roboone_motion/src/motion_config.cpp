@@ -65,6 +65,7 @@ void loadGait(const std::string & path, rwc::GaitParams & out, EventQueue & ev)
   pick("td_overdrive", out.td_overdrive);
   pick("td_speed_max", out.td_speed_max);
   pick("swing_ratio", out.swing_ratio);
+  pick("ds_time", out.ds_time);
   pick("step_clamp_x", out.step_clamp_x);
   pick("step_clamp_out", out.step_clamp_out);
   pick("step_clamp_in", out.step_clamp_in);
@@ -87,8 +88,8 @@ void loadGait(const std::string & path, rwc::GaitParams & out, EventQueue & ev)
   }
   ev.info(
     fmt(
-      "歩行 z_c=%.3fm T=%.2fs W=%.3fm v_max=(%.2f, %.2f)",
-      out.z_c, out.t_step, out.foot_spacing, out.v_max[0], out.v_max[1]));
+      "歩行 z_c=%.3fm T=%.2fs 両足支持 %.2fs W=%.3fm v_max=(%.2f, %.2f)",
+      out.z_c, out.t_step, out.ds_time, out.foot_spacing, out.v_max[0], out.v_max[1]));
 }
 
 void checkGait(const rwc::GaitParams & gait, EventQueue & ev)
@@ -111,6 +112,26 @@ void checkGait(const rwc::GaitParams & gait, EventQueue & ev)
         gait.swing_ratio, (1.0 - gait.swing_ratio) * 100.0, sl.touch_phase,
         sl.double_support * 100.0, sl.double_support * gait.t_step * 1000.0,
         sl.saturated ? " ※降下が td_speed_max に張り付いている (狙いより必ず小さく出る)" : ""));
+  }
+  if (gait.ds_time < 0.0) {
+    ev.warn(fmt("ds_time %.3f は負。0 (両足支持なし) として扱われる", gait.ds_time));
+  } else if (gait.ds_time > 0.0) {
+    const rwc::DsConsts c = gait.ds_consts();
+    const double step = gait.ds_time + gait.t_step;
+    ev.info(
+      fmt(
+        "両足支持 %.2fs + 単脚支持 %.2fs = 1 歩 %.2fs。歩く速さは指令の %.0f%% (歩幅は v·t_step)。"
+        " 1 歩の増幅 e^{ωT} = %.0f、ずれの吸収に要る着地点のずらし %.1f 倍",
+        gait.ds_time, gait.t_step, step, 100.0 * gait.t_step / step, c.e, c.ed / c.kappa));
+    if (gait.ds_time > 0.4 + 1e-9) {
+      // 2026-09-18 の走査 (gait.yaml の ds_time の注記): a_max (0.06, 0.03) では
+      // 0.4s は通り、0.5s は全速前進からの停止でも計画が発散した
+      ev.warn(
+        fmt(
+          "ds_time %.2fs は長い。a_max (%.2f, %.2f) のままだと指令の変化を着地点で吸収しきれず"
+          "計画が発散しうる (0.5s で全速前進からの停止が発散した)。a_max を下げること",
+          gait.ds_time, gait.a_max[0], gait.a_max[1]));
+    }
   }
   if (sl.lands && sl.touch_phase < gait.swing_lock_phase) {
     ev.warn(
@@ -463,26 +484,35 @@ void checkStaticStance(
   }
 }
 
-void checkStaticWalkEnvelope(
-  const ServoMap & map, const WalkSetup & walk, const BodyPose & home,
-  double body_pitch, EventQueue & ev)
+namespace
 {
-  const rwc::StaticGaitParams & p = walk.stat;
-  const double vx = p.v_max[0], vy = p.v_max[1];
+
+/// 計画に与える指令の組。roboone_viz/static_reach.py の profiles() と同じ 11 通り。
+/// 変えたら両方を揃えること。
+struct WalkProfile
+{
+  const char * name;
+  double a[2];
+  double b[2];
+  bool two;
+};
+
+/// 11 通りの指令で歩行計画を回し、一定間隔で両足の足先 (Σ_U) を fn(名前, 出力, 足先) へ渡す。
+///
+/// 時刻は k 倍する (静歩行は k = 全速前進の 1 歩 / 2.13s)。歩きを遅くしても同じ歩の
+/// 並びを見るため。
+///   two = false: 0.5k <= t < 9.5k の間 a
+///   two = true : 0.5k <= t < 8k の間 a、8k <= t < 16k の間 b
+///   26k まで回し、2k·thin 周期に 1 回見る
+/// 戻り値は渡した点の数 (脚の数は数えない)。
+template<typename F>
+int runWalkProfiles(const WalkSetup & walk, const BodyPose & home, int thin, F fn)
+{
+  const bool st = walk.isStatic();
+  const double vx = st ? walk.stat.v_max[0] : walk.gait.v_max[0];
+  const double vy = st ? walk.stat.v_max[1] : walk.gait.v_max[1];
   const double dx = 0.8 * vx, dy = 0.625 * vy;     // 斜めは楕円制限の内側
-  // roboone_viz/static_reach.py の profiles() / scan() と同じ 11 通り。変えたら両方を揃える。
-  // 時刻は k 倍する (k = 全速前進の 1 歩 / 2.13s)。歩きを遅くしても同じ歩の並びを見る。
-  //   two = false: 0.5k <= t < 9.5k の間 a
-  //   two = true : 0.5k <= t < 8k の間 a、8k <= t < 16k の間 b
-  //   26k まで回し、2k 周期に 1 回見る
-  struct Prof
-  {
-    const char * name;
-    double a[2];
-    double b[2];
-    bool two;
-  };
-  const Prof profs[] = {
+  const WalkProfile profs[] = {
     {"前進", {vx, 0.0}, {0.0, 0.0}, false},
     {"後進", {-vx, 0.0}, {0.0, 0.0}, false},
     {"左", {0.0, vy}, {0.0, 0.0}, false},
@@ -495,17 +525,16 @@ void checkStaticWalkEnvelope(
     {"左右の切り返し", {0.0, vy}, {0.0, -vy}, true},
     {"前進 -> 斜め右前", {vx, 0.0}, {0.7 * vx, -0.75 * vy}, true},
   };
-  const double k = rwc::checkStaticGait(p).t_cycle_fwd / 2.13;
+  const double k = st ? rwc::checkStaticGait(walk.stat).t_cycle_fwd / 2.13 : 1.0;
   const double dt = 0.005, t_end = 26.0 * k;
-  const int every = std::max(1, static_cast<int>(std::lround(2.0 * k)));
+  const int every = std::max(1, thin * static_cast<int>(std::lround(2.0 * k)));
   rk::Vec3 off[kNumSide];
   walkStanceOffset(walk, home, off);
 
-  int total = 0, bad = 0;
-  std::string bad_names, first;
-  for (const Prof & pr : profs) {
-    rwc::StaticWalkEngine e{p};
-    int bad_here = 0;
+  int points = 0;
+  for (const WalkProfile & pr : profs) {
+    WalkPlanner pl;
+    pl.configure(walk);
     const int n = static_cast<int>(t_end / dt + 0.5);
     for (int i = 0; i < n; ++i) {
       const double t = i * dt;
@@ -515,10 +544,28 @@ void checkStaticWalkEnvelope(
       } else if (pr.two && t >= 8.0 * k && t < 16.0 * k) {
         c = pr.b;
       }
-      const rwc::WalkOutputs o = e.update(c ? c[0] : 0.0, c ? c[1] : 0.0, dt);
+      const rwc::WalkOutputs o = pl.update(c ? c[0] : 0.0, c ? c[1] : 0.0, dt);
       if (i % every) {continue;}
       FootPose f[kNumSide];
       walkFeet(o, off, home, f);
+      ++points;
+      fn(pr.name, o, f);
+    }
+  }
+  return points;
+}
+
+}  // namespace
+
+void checkStaticWalkEnvelope(
+  const ServoMap & map, const WalkSetup & walk, const BodyPose & home,
+  double body_pitch, EventQueue & ev)
+{
+  int total = 0, bad = 0;
+  std::string bad_names, first, last_bad_name;
+  runWalkProfiles(
+    walk, home, 1,
+    [&](const char * name, const rwc::WalkOutputs & o, const FootPose f[kNumSide]) {
       for (int s = 0; s < kNumSide; ++s) {
         FootPose fb = f[s];
         bodyPitchApply(fb, body_pitch);
@@ -526,20 +573,19 @@ void checkStaticWalkEnvelope(
         const ReachLevel lv = reachLevel(map.leg_params(s), fb);
         if (lv >= ReachLevel::Mech) {continue;}
         ++bad;
-        ++bad_here;
+        if (last_bad_name != name) {
+          last_bad_name = name;
+          bad_names += (bad_names.empty() ? "" : " / ");
+          bad_names += name;
+        }
         if (first.empty()) {
           first = fmt(
-            "%s t=%.2fs %s %s脚 p=[%.1f, %.1f, %.1f] (%s)", pr.name, o.t,
+            "%s t=%.2fs %s %s脚 p=[%.1f, %.1f, %.1f] (%s)", name, o.t,
             rwc::to_string(o.state), kSideTag[s], f[s].p.x, f[s].p.y, f[s].p.z,
             reachLevelName(lv));
         }
       }
-    }
-    if (bad_here) {
-      bad_names += (bad_names.empty() ? "" : " / ");
-      bad_names += pr.name;
-    }
-  }
+    });
   if (bad == 0) {
     ev.info(
       fmt(
@@ -553,6 +599,86 @@ void checkStaticWalkEnvelope(
       "その位相で IK が解けず脚が止まる。static_gait.yaml の swing_height を下げるか"
       " com_offset_y を内側 (-) へ寄せること (表は roboone_viz/static_reach.py で作れる)",
       bad, total, bad_names.c_str(), first.c_str()));
+}
+
+void checkBoardEnvelope(
+  const ServoMap & map, const WalkSetup & walk, const BodyPose & home,
+  double body_pitch, double clamp, EventQueue & ev)
+{
+  if (clamp <= 0.0) {
+    ev.info("板の補正は上限 0 (効かない)");
+    return;
+  }
+  // 板を掛けると脚が伸び縮みするので、足首リンクが先に尽きる。1 軸ずつと、
+  // ロールとピッチが同時に入る隅の 8 通りを見る (隅がいちばん厳しい)。
+  const double kCorner[8][2] = {
+    {+1, 0}, {-1, 0}, {0, +1}, {0, -1}, {+1, +1}, {+1, -1}, {-1, +1}, {-1, -1}};
+  // 上限をそのまま試して駄目なら、どこまでなら通るかを言う (board_clamp を下げる目安)。
+  const double kTry[] = {1.0, 0.75, 0.5, 0.25};
+  double ok_at = 0.0;
+  int bad_at_clamp = 0, total = 0;   // total は「板を掛けなければ届く」点だけ数える
+  std::string first;
+  for (const double frac : kTry) {
+    const double c = clamp * frac;
+    int bad = 0, counted = 0;
+    std::string first_here;
+    runWalkProfiles(
+      walk, home, 8,
+      [&](const char * name, const rwc::WalkOutputs & o, const FootPose f[kNumSide]) {
+        // 板を掛けない状態で既に届かない脚は数えない。それは計画そのものの話で、
+        // checkWalkEnvelope / checkStaticWalkEnvelope がもう言っている。
+        bool plain_ok[kNumSide];
+        for (int s = 0; s < kNumSide; ++s) {
+          FootPose f0 = f[s];
+          bodyPitchApply(f0, body_pitch);
+          plain_ok[s] = reachLevel(map.leg_params(s), f0) >= ReachLevel::Mech;
+        }
+        for (const auto & cn : kCorner) {
+          FootPose fb[kNumSide] = {f[kRight], f[kLeft]};
+          boardApply(fb, cn[0] * c, cn[1] * c);
+          for (int s = 0; s < kNumSide; ++s) {
+            if (!plain_ok[s]) {continue;}
+            ++counted;
+            bodyPitchApply(fb[s], body_pitch);
+            if (reachLevel(map.leg_params(s), fb[s]) >= ReachLevel::Mech) {continue;}
+            ++bad;
+            if (first_here.empty()) {
+              first_here = fmt(
+                "%s t=%.2fs %s %s脚 (ロール %+.1f / ピッチ %+.1f deg)", name, o.t,
+                rwc::to_string(o.state), kSideTag[s], cn[0] * c * kR2D, cn[1] * c * kR2D);
+            }
+          }
+        }
+      });
+    if (frac == 1.0) {
+      bad_at_clamp = bad;
+      total = counted;
+      first = first_here;
+    }
+    if (bad == 0) {
+      ok_at = c;
+      break;
+    }
+  }
+  if (bad_at_clamp == 0) {
+    ev.info(
+      fmt(
+        "板の補正 ±%.1f deg は、11 通りの指令の全時刻 (%d 点) で脚が届く",
+        clamp * kR2D, total));
+    return;
+  }
+  const std::string how = (ok_at > 0.0) ?
+    fmt("全時刻で出し切りたいなら stab.board_clamp を %.3f (±%.1f deg) まで下げること",
+      ok_at, ok_at * kR2D) :
+    fmt(
+      "±%.1f deg まで下げても届かない時刻が残る (計画そのものが到達域の縁にある)。"
+      "swing_height / foot_spacing / z_c のほうを見直すこと", 0.25 * clamp * kR2D);
+  ev.warn(
+    fmt(
+      "板の補正 ±%.1f deg は届かない時刻がある (%d / %d 点 = %.3f%%)。最初: %s。"
+      "その周期は PoseCodec が板を縮めて出す (指令は止まらない)。%s",
+      clamp * kR2D, bad_at_clamp, total, 100.0 * bad_at_clamp / std::max(1, total),
+      first.c_str(), how.c_str()));
 }
 
 }  // namespace roboone_motion

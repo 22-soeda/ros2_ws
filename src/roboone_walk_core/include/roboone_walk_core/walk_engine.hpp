@@ -117,8 +117,10 @@ struct WalkOutputs
   double t = 0.0;
   State state = State::IDLE;
   int step_idx = 0;
-  double phase = 0.0;             // 歩の位相 φ (START では押し出し経過)
+  double phase = 0.0;             // 歩の位相 φ (START では押し出し経過。両足支持の間は 0)
   int support = 0;                // +1 左足支持 / -1 右足支持 / 0 両足
+  bool double_support = false;    // 歩の頭 (または停止) の両足支持で ZMP を移している最中か
+  double ds_elapsed = 0.0;        // その両足支持の経過時間 [s] (両足支持でなければ 0)
   Vec2 v{0.0, 0.0};               // 整形後の指令
   Vec2 xi{0.0, 0.0};              // DCM ξ
   Vec2 com{0.0, 0.0};             // 重心 x_C (水平成分)
@@ -128,7 +130,8 @@ struct WalkOutputs
   Vec3 pelvis{0.0, 0.0, 0.0};     // (x_C, z_c)
   std::optional<Vec2> p_nom;      // 名目着地点 (式 5)
   std::optional<Vec2> p_land;     // 補正・クランプ後の着地点 (式 10, 11)
-  std::optional<Vec2> b_next;     // DCM オフセット (式 8 の一般形)
+  // DCM オフセット (式 8 の一般形)。ds_time > 0 では支持足から見た歩の終わりの名目のずれ
+  std::optional<Vec2> b_next;
   std::optional<Vec2> xi_eos;     // 歩の終端の ξ 予測 (式 9)
   std::optional<ClampBox> clamp_box;
   bool locked = false;
@@ -195,6 +198,11 @@ public:
     locked_ = false;
     stopping_ = false;
     stop_prep_ = false;
+    in_ds_ = false;
+    ds_t_ = 0.0;
+    ds_from_ = {0.0, 0.0};
+    ds_rate_ = {0.0, 0.0};
+    start_mid_ = {0.0, 0.0};
     steps_.clear();
   }
 
@@ -263,6 +271,25 @@ private:
     }
   }
 
+  // ds_time > 0 版 (engine.py _step_params_ds 参照)。戻り値: (p_nom, c_next, c_after)
+  void step_params_ds(Vec2 & p_nom, Vec2 & c_next, Vec2 & c_after) const
+  {
+    const double lx = v_[0] * p_.t_step;
+    const double ly = v_[1] * p_.t_step;
+    const double w = p_.foot_spacing;
+    const int s_next = -sup_;
+    const Vec2 & ps = foot(sup_);
+    p_nom = {ps[0] + lx, ps[1] + s_next * w + ly};
+    const DsConsts c = p_.ds_consts();
+    const double denom = c.e * c.e - 1.0;
+    const double l_first[2] = {lx, s_next * w + ly};
+    const double l_second[2] = {lx, sup_ * w + ly};
+    for (int k = 0; k < 2; ++k) {
+      c_next[k] = c.k * (c.e * l_first[k] + l_second[k]) / denom;
+      c_after[k] = c.k * (c.e * l_second[k] + l_first[k]) / denom;
+    }
+  }
+
   Vec2 clamp_landing(const Vec2 & raw, const Vec2 & p_nom)
   {
     const int s_next = -sup_;
@@ -282,13 +309,43 @@ private:
 
   Vec2 predict_xi_eos() const
   {
-    const double e = std::exp(p_.omega() * (p_.t_step - t_local_));
     const Vec2 & ps = foot(sup_);
+    if (in_ds_) {
+      // 両足支持の残りを閉形式で進めてから、単脚支持 Ts を丸ごと進める
+      const double w = p_.omega();
+      const double e_rem = std::exp(w * (p_.ds_time - ds_t_));
+      Vec2 out;
+      for (int k = 0; k < 2; ++k) {
+        const double v = ds_rate_[k] / w;
+        const double rel_d = v + (xi_[k] - zmp_[k] - v) * e_rem;
+        out[k] = ps[k] + rel_d * p_.e_wt();
+      }
+      return out;
+    }
+    const double e = std::exp(p_.omega() * (p_.t_step - t_local_));
     return {ps[0] + (xi_[0] - ps[0]) * e, ps[1] + (xi_[1] - ps[1]) * e};
   }
 
   void update_landing()
   {
+    if (p_.ds_time > 0.0) {
+      // 次の歩の終わりで定常解に戻る着地点 (engine.py _update_landing 参照)
+      Vec2 p_nom, c_next, c_after;
+      step_params_ds(p_nom, c_next, c_after);
+      const Vec2 xi_eos = predict_xi_eos();
+      const DsConsts c = p_.ds_consts();
+      const Vec2 & s = foot(sup_);
+      const double g = p_.k_dcm * c.ed / c.kappa;
+      Vec2 raw;
+      for (int k = 0; k < 2; ++k) {
+        raw[k] = p_nom[k] + g * (xi_eos[k] - s[k] - c_next[k]);
+      }
+      p_nom_ = p_nom;
+      b_next_ = c_next;
+      xi_eos_ = xi_eos;
+      p_land_ = clamp_landing(raw, p_nom);
+      return;
+    }
     Vec2 p_nom, b_here, b;
     step_params(p_nom, b_here, b);
     const Vec2 xi_eos = predict_xi_eos();
@@ -309,6 +366,20 @@ private:
     const Vec2 & ps = foot(sup_);
     const Vec2 p_nom = {ps[0], ps[1] + s_next * p_.foot_spacing};
     const Vec2 xi_eos = predict_xi_eos();
+    if (p_.ds_time > 0.0) {
+      // 最後の歩の終わりの狙い d へ着くよう p_{N-1} を選ぶ (engine.py 参照)
+      const DsConsts c = p_.ds_consts();
+      const Vec2 d = {0.0, c.kappa / (2.0 * c.ed) * sup_ * p_.foot_spacing};
+      Vec2 raw;
+      for (int k = 0; k < 2; ++k) {
+        raw[k] = ps[k] + (c.e * (xi_eos[k] - ps[k]) - d[k]) / c.k;
+      }
+      p_nom_ = p_nom;
+      b_next_ = d;
+      xi_eos_ = xi_eos;
+      p_land_ = clamp_landing(raw, p_nom);
+      return;
+    }
     const Vec2 b_stop = {0.0, sup_ * (p_.foot_spacing / 2.0) / p_.e_wt()};
     const Vec2 raw = {xi_eos[0] - b_stop[0], xi_eos[1] - b_stop[1]};
     p_nom_ = p_nom;
@@ -324,7 +395,13 @@ private:
     const Vec2 & ps = foot(sup_);
     const Vec2 p_nom = {ps[0], ps[1] + s_next * p_.foot_spacing};
     const Vec2 xi_eos = predict_xi_eos();
-    const Vec2 raw = {2.0 * xi_eos[0] - ps[0], 2.0 * xi_eos[1] - ps[1]};
+    Vec2 raw = {2.0 * xi_eos[0] - ps[0], 2.0 * xi_eos[1] - ps[1]};
+    if (p_.ds_time > 0.0) {
+      // 最後の両足支持で ξ が中点に止まる条件を p_N について解く (engine.py 参照)
+      const DsConsts c = p_.ds_consts();
+      const double g = 2.0 * c.ed / c.kappa;
+      for (int k = 0; k < 2; ++k) {raw[k] = ps[k] + g * (xi_eos[k] - ps[k]);}
+    }
     p_nom_ = p_nom;
     b_next_.reset();
     xi_eos_ = xi_eos;
@@ -332,14 +409,21 @@ private:
   }
 
   // ---------------------------------------------------------- 歩の境界処理
-  void enter_step()
+  // ds_time > 0 なら、ZMP を ds_from (省略時はいまの ZMP) から支持足へ移す両足支持から始める
+  void enter_step(const std::optional<Vec2> & ds_from = std::nullopt)
   {
     state_ = State::STEP;
     step_idx_ += 1;
     phase_ = 0.0;
     t_local_ = 0.0;
     locked_ = false;
-    zmp_ = foot(sup_);
+    in_ds_ = p_.ds_time > 0.0;
+    if (in_ds_) {
+      const Vec2 from = ds_from ? *ds_from : zmp_;
+      start_ds(from, foot(sup_));
+    } else {
+      zmp_ = foot(sup_);
+    }
     xi_ini_ = xi_;
     const int swing = -sup_;
     swing_r0_ = foot(swing);
@@ -414,6 +498,33 @@ private:
     return {x, y, z};
   }
 
+  // ------------------------------------------------------ 両足支持 (engine.py 参照)
+  void start_ds(const Vec2 & from, const Vec2 & to)
+  {
+    in_ds_ = true;
+    ds_t_ = 0.0;
+    phase_ = 0.0;
+    ds_from_ = from;
+    for (int k = 0; k < 2; ++k) {ds_rate_[k] = (to[k] - from[k]) / p_.ds_time;}
+    zmp_ = from;
+    xi_ini_ = xi_;
+  }
+
+  // 戻り値: 両足支持が終わったか (終わりは閉形式で Td ちょうどに取る)
+  bool advance_ds(double dt)
+  {
+    const double w = p_.omega();
+    ds_t_ = std::min(ds_t_ + dt, p_.ds_time);
+    const double e = std::exp(w * ds_t_);
+    for (int k = 0; k < 2; ++k) {
+      const double v = ds_rate_[k] / w;
+      zmp_[k] = ds_from_[k] + ds_rate_[k] * ds_t_;
+      xi_[k] = zmp_[k] + v + (xi_ini_[k] - ds_from_[k] - v) * e;
+      com_[k] += w * (xi_[k] - com_[k]) * dt;
+    }
+    return ds_t_ >= p_.ds_time;
+  }
+
   // ------------------------------------------------------------- DCM 積分
   void advance_dcm(double dt)
   {
@@ -456,6 +567,7 @@ private:
     t_local_ = 0.0;
     phase_ = 0.0;
     xi_ini_ = xi_;
+    start_mid_ = midpoint();
     zmp_ = foot(-sup_);            // ZMP は押し出し足 (式 19)
     stopping_ = false;
     stop_prep_ = false;
@@ -467,14 +579,27 @@ private:
     t_local_ += dt;
     phase_ = t_local_ / p_.start_pushoff_max;
     advance_dcm(dt);
-    Vec2 p_nom, b_here, b_next;
-    step_params(p_nom, b_here, b_next);
-    p_nom_ = p_nom;
-    b_next_ = b_next;
+    double target_y;
+    if (p_.ds_time > 0.0) {
+      // 最初の歩は中点から支持足への両足支持で始まる (engine.py _tick_start 参照)
+      Vec2 p_nom, c_next, c_after;
+      step_params_ds(p_nom, c_next, c_after);
+      const DsConsts c = p_.ds_consts();
+      const Vec2 & ps = foot(sup_);
+      const double c1_y = (c_next[1] + c.k * (ps[1] - start_mid_[1])) / c.e;
+      p_nom_ = p_nom;
+      b_next_ = c_next;
+      target_y = start_mid_[1] + c1_y;
+    } else {
+      Vec2 p_nom, b_here, b_next;
+      step_params(p_nom, b_here, b_next);
+      p_nom_ = p_nom;
+      b_next_ = b_next;
+      target_y = foot(sup_)[1] + b_here[1];
+    }
     p_land_.reset();
     xi_eos_.reset();
     clamp_box_.reset();
-    const double target_y = foot(sup_)[1] + b_here[1];
     if (sup_ * (xi_[1] - target_y) >= 0.0) {
       // ξ が支持足の上に乗った。5 ms 離散の行き過ぎは e^{ωT} 倍に増幅されるので
       // 交差時刻を閉形式で解き、ξ を交差点ちょうどに置いてから歩に入る
@@ -485,7 +610,11 @@ private:
         xi_[0] = zmp_[0] + (xi_ini_[0] - zmp_[0]) * e_star;
         xi_[1] = target_y;
       }
-      enter_step();
+      if (p_.ds_time > 0.0) {
+        enter_step(start_mid_);
+      } else {
+        enter_step();
+      }
     } else if (t_local_ > p_.start_pushoff_max) {
       state_ = State::STOP;        // 押し出し切れず。静かに立位へ戻す
     } else if (std::hypot(v_[0], v_[1]) < p_.v_stop_eps) {
@@ -496,6 +625,19 @@ private:
   // ----------------------------------------------------------------- STEP
   void tick_step(double dt)
   {
+    if (in_ds_) {
+      // 両足支持: 足は動かさず ZMP だけ移す。着地点は先に更新しておく
+      phase_ = 0.0;
+      const bool done = advance_ds(dt);
+      if (!locked_) {update_landing();}
+      if (done) {
+        in_ds_ = false;
+        zmp_ = foot(sup_);
+        xi_ini_ = xi_;
+        t_local_ = 0.0;
+      }
+      return;
+    }
     // 歩の境界も閉形式で T ちょうどに取る (START の交差と同じ増幅対策)
     t_local_ = std::min(t_local_ + dt, p_.t_step);
     phase_ = t_local_ / p_.t_step;
@@ -528,6 +670,10 @@ private:
       b_next_.reset();
       xi_eos_.reset();
       clamp_box_.reset();
+      if (p_.ds_time > 0.0) {
+        // 最後の両足支持: ZMP を支持足から両足の中点へ移す
+        start_ds(foot(sup_), midpoint());
+      }
     } else {
       sup_ = swing;                // 支持脚の交代
       enter_step();
@@ -537,6 +683,11 @@ private:
   // ----------------------------------------------------------------- STOP
   void tick_stop(double dt)
   {
+    if (in_ds_) {
+      phase_ = 0.0;
+      if (advance_ds(dt)) {in_ds_ = false;}
+      return;
+    }
     Vec2 proj;
     double dist;
     project_between_feet(xi_, proj, dist);
@@ -589,12 +740,15 @@ private:
   {
     WalkOutputs o;
     const bool in_step = state_ == State::STEP;
+    const bool in_ds = in_ds_ && (state_ == State::STEP || state_ == State::STOP);
     const int swing = -sup_;
     o.t = t_;
     o.state = state_;
     o.step_idx = step_idx_;
     o.phase = phase_;
-    o.support = in_step ? sup_ : 0;
+    o.support = (in_step && !in_ds) ? sup_ : 0;
+    o.double_support = in_ds;
+    o.ds_elapsed = in_ds ? ds_t_ : 0.0;
     o.v = v_;
     o.xi = xi_;
     o.com = com_;
@@ -638,6 +792,12 @@ private:
   bool locked_ = false;
   bool stopping_ = false;
   bool stop_prep_ = false;
+  // 両足支持 (ds_time > 0)
+  bool in_ds_ = false;
+  double ds_t_ = 0.0;
+  Vec2 ds_from_{0.0, 0.0};
+  Vec2 ds_rate_{0.0, 0.0};
+  Vec2 start_mid_{0.0, 0.0};
   std::vector<StepRecord> steps_;
 };
 

@@ -55,6 +55,14 @@ class GaitParams:
     # ★狙った値がそのまま出るわけではない。降下が td_speed_max で飽和するぶん
     #   着地は計画より遅れる。実際の値は check_swing_landing() が出す。
     swing_ratio: float = 1.0        # [-]   遊脚が使う歩周期の割合
+    # 両足支持の時間 Td。**0 = 従来** (両足支持なし。支持足は歩の境界で一瞬で入れ替わる)。
+    # 正にすると、各歩の頭に Td の両足支持を置き、その間に ZMP を前の支持足から新しい
+    # 支持足へ直線で移す。t_step はその後の単脚支持の長さ Ts のままなので、1 歩は
+    # Td + Ts に伸びる (歩幅は v·t_step のままなので、実際の速さは Ts/(Td+Ts) 倍に落ちる)。
+    # 横の重心の速さが落ち、骨盤も支持足へ寄る (docs/サーボ追従と両足支持_実装計画.md §1.8)。
+    # 引き換えに 1 歩の増幅 e^{ω(Td+Ts)} と、ずれの吸収に要る着地点のずらし
+    # e^{ωTd}/κ 倍 (κ = (e^{ωTd}-1)/(ωTd)) が増える。値の根拠は gait.yaml の注記。
+    ds_time: float = 0.0            # [s]   両足支持の時間 Td
 
     # --- 指令の整形 -------------------------------------------------------
     # 歩幅 = v * T なので、**T を伸ばしたらここを下げないと足先が到達域を出る。**
@@ -103,6 +111,19 @@ class GaitParams:
     def e_wt(self) -> float:
         """e^{ωT}。既定値 (z_c=0.261, T=0.60) で 39.6。文書 §3.4 の 22.9 は z_c=0.16 のとき。"""
         return math.exp(self.omega * self.t_step)
+
+    def ds_consts(self):
+        """両足支持の定数 (E_d, κ, E, K)。
+
+        E_d = e^{ωTd}、κ = (E_d - 1)/(ωTd) (Td → 0 で 1)、E = E_d·e^{ωTs}、K = κ·e^{ωTs}。
+        1 歩 (両足支持 Td で ZMP が変位 l だけ動き、単脚支持 Ts で止まる) の間に、
+        歩の頭の ZMP から見た ξ のずれ c は c' = E·c - K·l に進む (engine.py の docstring)。
+        """
+        es = self.e_wt
+        wt = self.omega * self.ds_time
+        ed = math.exp(wt)
+        kappa = (ed - 1.0) / wt if wt > 0.0 else 1.0
+        return ed, kappa, ed * es, kappa * es
 
     @classmethod
     def from_dict(cls, d: dict) -> 'GaitParams':

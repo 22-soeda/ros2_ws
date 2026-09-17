@@ -21,6 +21,39 @@ PoseCodec::Encoded PoseCodec::encode(const BodyPose & pose, const PoseCorrection
   if (corr && corr->zero()) {corr = nullptr;}
   const double psi = body_pitch_ + (corr ? corr->body_pitch : 0.0);
 
+  // --- 板の補正（両足裏を平面ごと回す）------------------------------------
+  // 両脚とも足裏書きのときだけ。両脚が同時に解ける最大の倍率で掛ける（片脚だけ
+  // 外すと同じ平面に乗らなくなるので、縮めるのは両脚まとめて）。
+  FootPose foot[kNumSide] = {pose.foot[kRight], pose.foot[kLeft]};
+  const bool board_wanted = corr && !corr->boardZero() &&
+    pose.leg_mode[kRight] == LegMode::Foot && pose.leg_mode[kLeft] == LegMode::Foot;
+  if (board_wanted) {
+    static const double kScales[] = {1.0, 0.75, 0.5, 0.25, 0.0};
+    for (const double sc : kScales) {
+      out.board_scale = sc;
+      if (sc == 0.0) {break;}                 // 掛けない = 必ず元の姿勢に戻る
+      FootPose f[kNumSide] = {pose.foot[kRight], pose.foot[kLeft]};
+      boardApply(f, corr->board[0] * sc, corr->board[1] * sc);
+      bool ok = true;
+      for (int s = 0; s < kNumSide && ok; ++s) {
+        FootPose fb = f[s];
+        bodyPitchApply(fb, psi);
+        double servo[rk::kNumJoints], theta[rk::kNumJoints];
+        ok = servoFromFootPose(map_->leg_params(s), fb, servo, theta).ok();
+      }
+      if (ok) {
+        foot[kRight] = f[kRight];
+        foot[kLeft] = f[kLeft];
+        break;
+      }
+    }
+    if (out.board_scale < 1.0) {
+      ev_.warn(
+        "板の補正を " + std::to_string(static_cast<int>(out.board_scale * 100.0 + 0.5)) +
+        "% に縮めた (そのままだと脚が届かない)", 1000, "board_scaled");
+    }
+  }
+
   for (int s = 0; s < kNumSide; ++s) {
     std::vector<int16_t> pos(map_->bus(s).ids.size(), 0);
 
@@ -58,15 +91,16 @@ PoseCodec::Encoded PoseCodec::encode(const BodyPose & pose, const PoseCorrection
           2000, "servo_no_joints" + tag(s));
       }
     } else {
-      FootPose foot = pose.foot[s];
-      bodyPitchApply(foot, psi);
+      // 板を掛けた足裏（掛けていなければ pose.foot[s] のまま）
+      FootPose fb = foot[s];
+      bodyPitchApply(fb, psi);
       const double * off = (corr && !corr->ankleZero(s)) ? corr->ankle[s] : nullptr;
-      LegSolve r = servoFromFootPose(map_->leg_params(s), foot, servo, theta, off);
+      LegSolve r = servoFromFootPose(map_->leg_params(s), fb, servo, theta, off);
       if (!r.ok() && corr) {
         // 補正のせいで解けないなら、補正を外して解き直す（ヘッダ「安定化の補正」）
-        foot = pose.foot[s];
-        bodyPitchApply(foot, body_pitch_);
-        r = servoFromFootPose(map_->leg_params(s), foot, servo, theta);
+        fb = pose.foot[s];
+        bodyPitchApply(fb, body_pitch_);
+        r = servoFromFootPose(map_->leg_params(s), fb, servo, theta);
         if (r.ok()) {
           out.corr_dropped[s] = true;
           ev_.warn(

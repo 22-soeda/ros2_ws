@@ -50,9 +50,13 @@
 //
 //   body_pitch   胴体の前傾に足す。body_pitch_ と同じ経路（Σ_U -> Σ_B）
 //   ankle        足裏書きの脚だけ、IK の後・足首リンク変換の前に関節角へ足す
+//   board        両脚とも足裏書きのとき、IK の前に両足裏を平面ごと回す
+//                （body_pose.hpp の boardApply）。ankle とは排他
 //
 // **補正を入れると解けない周期は、補正を外して解き直す。** 補正のせいで脚の
 // 指令が止まる（= 前周期で固まる）のは、補正が無いより悪いので。
+// ★板は**両脚まとめて**縮める（1.0 -> 0.75 -> 0.5 -> 0.25 -> 0 で最初に解けた倍率）。
+//   片脚だけ外すと両足裏が同じ平面に乗らなくなり、板にした意味が消えるため。
 //
 // ★decode() は補正を外さない（静的な body_pitch_ だけ外す）。実測姿勢を使うのは
 //   脱力中と武装の起点だけで、そこでは補正が 0 なので食い違わない。
@@ -78,11 +82,19 @@ struct PoseCorrection
   //! 足首の関節角に足す量 [rad]。[s][0] = θ5（ピッチ）, [s][1] = θ6（ロール）。
   //! 足裏書きの脚にだけ効く（角度書きの脚は IK を通らないので触らない）
   double ankle[kNumSide][2]{{0.0, 0.0}, {0.0, 0.0}};
+  //! 両足裏を平面ごと回す量 [rad]。[0] ロール（+ で左の縁が上がる）/ [1] ピッチ
+  //! （+ でつま先が下がる）。**ankle とは排他**（安定化がどちらか片方だけ出す）。
+  //! 掛けるのは両脚とも足裏書きのときだけ（body_pose.hpp の boardApply）
+  double board[2]{0.0, 0.0};
   //! 胴体の前傾に足す量 [rad]。body_pitch と同じ向き（+ で前へ倒す）
   double body_pitch = 0.0;
 
   bool ankleZero(int s) const {return ankle[s][0] == 0.0 && ankle[s][1] == 0.0;}
-  bool zero() const {return body_pitch == 0.0 && ankleZero(kRight) && ankleZero(kLeft);}
+  bool boardZero() const {return board[0] == 0.0 && board[1] == 0.0;}
+  bool zero() const
+  {
+    return body_pitch == 0.0 && boardZero() && ankleZero(kRight) && ankleZero(kLeft);
+  }
 };
 
 class PoseCodec
@@ -108,6 +120,9 @@ public:
     std::vector<double> arm_deg;                        //!< 指令の腕角 [deg]
     //! 補正を入れると解けなかったので、補正を外して出した脚
     bool corr_dropped[kNumSide]{false, false};
+    //! 板の補正を出せた割合 [0,1]。1 = そのまま / 0 = 解けないので外した。
+    //! 板を掛けていない周期（足首方式・角度書き・補正なし）は 1
+    double board_scale = 1.0;
   };
   /// corr が null なら補正なし（ティーチ・起動時の門と同じ変換）。
   Encoded encode(const BodyPose & pose, const PoseCorrection * corr = nullptr);

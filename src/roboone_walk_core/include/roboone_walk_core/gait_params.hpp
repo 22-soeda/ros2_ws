@@ -13,6 +13,15 @@
 namespace roboone_walk_core
 {
 
+/// 両足支持の定数 (params.py GaitParams.ds_consts)。1 歩で c' = e·c - k·l
+struct DsConsts
+{
+  double ed;      //!< e^{ωTd}
+  double kappa;   //!< (e^{ωTd} - 1)/(ωTd)。Td → 0 で 1
+  double e;       //!< e^{ω(Td+Ts)}
+  double k;       //!< κ e^{ωTs}
+};
+
 struct GaitParams
 {
   // --- 力学 -----------------------------------------------------------
@@ -42,6 +51,10 @@ struct GaitParams
   // ★狙った値がそのまま出るわけではない。降下は td_speed_max で飽和するので、
   //   実際の着地は計画より遅れる。実際の値は checkSwingLanding() が出す。
   double swing_ratio = 1.0;        // [-]   遊脚が使う歩周期の割合
+  // 両足支持の時間 Td。**0 = 従来**。正にすると各歩の頭に Td の両足支持を置き、ZMP を
+  // 前の支持足から新しい支持足へ直線で移す。t_step はその後の単脚支持 Ts のまま
+  // (1 歩は Td + Ts。歩幅は v·t_step のまま)。値の根拠は params.py / gait.yaml
+  double ds_time = 0.0;            // [s]   両足支持の時間 Td
 
   // --- 指令の整形 -----------------------------------------------------
   // 歩幅 = v·T なので T を伸ばしたら下げること。T=0.60 で (0.15,0.08) のままだと
@@ -74,6 +87,14 @@ struct GaitParams
 
   double omega() const { return std::sqrt(gravity / z_c); }
   double e_wt() const { return std::exp(omega() * t_step); }
+  DsConsts ds_consts() const
+  {
+    const double es = e_wt();
+    const double wt = omega() * ds_time;
+    const double ed = std::exp(wt);
+    const double kappa = wt > 0.0 ? (ed - 1.0) / wt : 1.0;
+    return DsConsts{ed, kappa, ed * es, kappa * es};
+  }
 };
 
 }  // namespace roboone_walk_core

@@ -25,6 +25,25 @@ DCM オフセット b の式について (文書式 (6)(7)(8) の一般化):
     左右 (ℓ_A = -ℓ_B) では式 (7) の L/(e^{ωT}+1) に一致する。横移動 (Ly ≠ 0) では
     左右の変位が ±W + Ly と非対称になるため、この一般形をそのまま使う
     (文書式 (8) は Ly ≠ 0 で数 % の近似になる)。
+
+両足支持 (ds_time = Td > 0) について:
+    各歩の頭に Td の両足支持を置き、ZMP を前の支持足 p_{i-1} から新しい支持足 p_i へ
+    直線で移す (速度 ṗ = l_i/Td、l_i = p_i - p_{i-1})。この間の ξ は閉形式で
+        ξ(t) = p(t) + ṗ/ω + (ξ_0 - p_{i-1} - ṗ/ω) e^{ωt}
+    その後の単脚支持 Ts (= t_step) は従来と同じく ZMP を p_i に置く。
+    歩の頭の ZMP から見た ξ のずれを c_i = ξ_0 - p_{i-1} とおくと、1 歩で
+        c_{i+1} = ξ_end - p_i = E c_i - K l_i
+        E = e^{ω(Td+Ts)},  K = κ e^{ωTs},  κ = (e^{ωTd} - 1)/(ωTd)
+    2 歩周期の定常解は c_i = K (E l_i + l_{i+1}) / (E² - 1)。Td → 0 で κ → 1、
+    c_i - l_i が上の b に戻る。
+    着地点 p_{i+1} (= l_{i+1}) は、次の歩の終わりで定常解に戻るように選ぶ:
+        E c_{i+1} - K l_{i+1} = c_{i+2}(名目)
+        ⇔  p_{i+1} = p_nom + (e^{ωTd}/κ)(ξ_eos - p_i - c_{i+1}(名目))
+    (1 周期で戻る。Td → 0 で式 (10) に一致)。歩き出しは、押し出しで ξ を
+    両足の中点 m から c_1 = (c_2(名目) + K (p_1 - m))/E だけ進めてから、中点から最初の
+    支持足への両足支持に入る。停止は、最後の歩の後にもう一度両足支持を置いて ZMP を
+    両足の中点へ移し、そこで ξ が中点に止まるように最後の 2 歩の着地点を選ぶ。
+    **ds_time = 0 のときは従来の経路をそのまま通る** (数値は変わらない)。
 """
 
 from dataclasses import dataclass
@@ -97,8 +116,11 @@ class WalkOutputs:
     t: float = 0.0
     state: str = IDLE
     step_idx: int = 0
-    phase: float = 0.0            # 歩の位相 φ = t_local / T (START では押し出し経過)
+    # 歩の位相 φ = t_local / T (START では押し出し経過。両足支持の間は 0。単脚支持の中で測る)
+    phase: float = 0.0
     support: int = 0              # +1 左足支持 / -1 右足支持 / 0 両足
+    double_support: bool = False  # 歩の頭 (または停止) の両足支持で ZMP を移している最中か
+    ds_elapsed: float = 0.0       # その両足支持の経過時間 [s] (両足支持でなければ 0)
     v: tuple = (0.0, 0.0)         # 整形後の指令 (式 1, 2)
     xi: tuple = (0.0, 0.0)        # DCM ξ
     com: tuple = (0.0, 0.0)       # 重心 x_C (水平成分)
@@ -109,7 +131,9 @@ class WalkOutputs:
     # 計画中の 1 歩のパラメータ (STEP/START 中のみ。文書 §2 の中段)
     p_nom: Optional[tuple] = None     # 名目着地点 (式 5)
     p_land: Optional[tuple] = None    # 補正・クランプ後の着地点 (式 10, 11)
-    b_next: Optional[tuple] = None    # DCM オフセット (式 8 の一般形)
+    # DCM オフセット (式 8 の一般形)。ds_time > 0 では、いまの支持足から見た
+    # 歩の終わりの ξ の名目のずれ c_{i+1} (停止準備歩では最後の歩の終わりの狙い)
+    b_next: Optional[tuple] = None
     xi_eos: Optional[tuple] = None    # 歩の終端の ξ 予測 (式 9)
     clamp_box: Optional[tuple] = None  # (xmin, xmax, ymin, ymax) 世界座標
     locked: bool = False              # φ_lock を過ぎて着地点を凍結したか
@@ -175,6 +199,12 @@ class WalkEngine:
         self.locked = False
         self.stopping = False             # いまの歩が足を揃える最後の歩か
         self.stop_prep = False            # 次の歩で足を揃える (この歩は準備歩)
+        # 両足支持 (ds_time > 0)。STEP の頭と、STOP の頭 (最後の両足支持) で使う
+        self.in_ds = False
+        self.ds_t = 0.0                   # 両足支持の経過時間
+        self.ds_from = [0.0, 0.0]         # ZMP の出発点
+        self.ds_rate = [0.0, 0.0]         # ZMP の速度 ṗ
+        self.start_mid = [0.0, 0.0]       # 歩き出しの両足の中点
         self.steps: List[StepRecord] = []  # 歩の履歴 (可視化用)
 
     # ------------------------------------------------------------ 指令の整形
@@ -216,6 +246,27 @@ class WalkEngine:
         b_next = [(l_second[k] * ewt + l_first[k]) / denom for k in (0, 1)]
         return p_nom, b_here, b_next
 
+    def _step_params_ds(self):
+        """ds_time > 0 版。戻り値: (p_nom, c_next, c_after)。
+
+        c_next は歩の終わりの ξ の名目のずれ (いまの支持足 p_i から見た c_{i+1})、
+        c_after はその次の歩の終わりの名目 (p_{i+1} から見た c_{i+2})。
+        """
+        p = self.p
+        lx = self.v[0] * p.t_step
+        ly = self.v[1] * p.t_step
+        w = p.foot_spacing
+        s_next = -self.sup
+        px, py = self.foot[self.sup]
+        p_nom = [px + lx, py + s_next * w + ly]
+        _, _, e, k = p.ds_consts()
+        denom = e * e - 1.0
+        l_first = (lx, s_next * w + ly)     # p_i -> p_{i+1}
+        l_second = (lx, self.sup * w + ly)  # p_{i+1} -> p_{i+2}
+        c_next = [k * (e * l_first[i] + l_second[i]) / denom for i in (0, 1)]
+        c_after = [k * (e * l_second[i] + l_first[i]) / denom for i in (0, 1)]
+        return p_nom, c_next, c_after
+
     def _clamp_landing(self, p_land, p_nom):
         """式 (11)。クランプ域は名目着地点まわりで、内外は着地脚の側で決まる。"""
         p = self.p
@@ -234,13 +285,37 @@ class WalkEngine:
     def _predict_xi_eos(self):
         """式 (9)。歩の終端の ξ 予測 (計画値なので閉形式で厳密)。"""
         p = self.p
-        e = math.exp(p.omega * (p.t_step - self.t_local))
         sx, sy = self.foot[self.sup]
+        if self.in_ds:
+            # 両足支持の残りを閉形式で進めてから、単脚支持 Ts を丸ごと進める
+            w = p.omega
+            e_rem = math.exp(w * (p.ds_time - self.ds_t))
+            out = []
+            for k, s in enumerate((sx, sy)):
+                v = self.ds_rate[k] / w
+                rel_d = v + (self.xi[k] - self.zmp[k] - v) * e_rem   # ξ(Td) - p_i
+                out.append(s + rel_d * p.e_wt)
+            return out
+        e = math.exp(p.omega * (p.t_step - self.t_local))
         return [sx + (self.xi[0] - sx) * e, sy + (self.xi[1] - sy) * e]
 
     def _update_landing(self):
         """式 (9)〜(11)。φ_lock までは毎周期呼んで着地点を更新する。"""
         p = self.p
+        if p.ds_time > 0.0:
+            # 次の歩の終わりで定常解に戻る着地点 (モジュール docstring)。
+            # ずれの吸収に要るずらしは e^{ωTd}/κ 倍になる
+            p_nom, c_next, _ = self._step_params_ds()
+            xi_eos = self._predict_xi_eos()
+            ed, kappa, _, _ = p.ds_consts()
+            s = self.foot[self.sup]
+            g = p.k_dcm * ed / kappa
+            raw = [p_nom[k] + g * (xi_eos[k] - s[k] - c_next[k]) for k in (0, 1)]
+            self.p_nom = p_nom
+            self.b_next = c_next
+            self.xi_eos = xi_eos
+            self.p_land = self._clamp_landing(raw, p_nom)
+            return
         p_nom, _, b = self._step_params()
         xi_eos = self._predict_xi_eos()
         # 式 (10): 名目終端 ξ からのずれを着地点で吸収する (計画では START の
@@ -266,6 +341,19 @@ class WalkEngine:
         sx, sy = self.foot[self.sup]
         p_nom = [sx, sy + s_next * p.foot_spacing]   # v=0 の名目 (真横)
         xi_eos = self._predict_xi_eos()
+        if p.ds_time > 0.0:
+            # 最後の歩 (支持足 p_{N-1}) の終わりに、ξ が p_{N-1} から
+            # d = κ/(2 e^{ωTd}) · (p_N - p_{N-1}) にいれば、最後の両足支持で ZMP を中点へ
+            # 移したときに ξ も中点で止まる。その d に最後の歩で着くよう p_{N-1} を選ぶ
+            ed, kappa, e, k = p.ds_consts()
+            d = (0.0, kappa / (2.0 * ed) * self.sup * p.foot_spacing)
+            c = (xi_eos[0] - sx, xi_eos[1] - sy)
+            raw = [(sx, sy)[i] + (e * c[i] - d[i]) / k for i in (0, 1)]
+            self.p_nom = p_nom
+            self.b_next = list(d)
+            self.xi_eos = xi_eos
+            self.p_land = self._clamp_landing(raw, p_nom)
+            return
         b_stop = (0.0, self.sup * (p.foot_spacing / 2.0) / p.e_wt)
         raw = [xi_eos[k] - b_stop[k] for k in (0, 1)]
         self.p_nom = p_nom
@@ -285,22 +373,37 @@ class WalkEngine:
         sx, sy = self.foot[self.sup]
         p_nom = [sx, sy + s_next * p.foot_spacing]
         xi_eos = self._predict_xi_eos()
-        raw = [2.0 * xi_eos[k] - (sx, sy)[k] for k in (0, 1)]
+        if p.ds_time > 0.0:
+            # 最後の両足支持で中点 m へ移す ZMP に対し、ξ が m で止まる条件
+            # ξ_eos - p_{N-1} = κ/e^{ωTd} · (m - p_{N-1}) を p_N について解く
+            ed, kappa, _, _ = p.ds_consts()
+            g = 2.0 * ed / kappa
+            raw = [(sx, sy)[k] + g * (xi_eos[k] - (sx, sy)[k]) for k in (0, 1)]
+        else:
+            raw = [2.0 * xi_eos[k] - (sx, sy)[k] for k in (0, 1)]
         self.p_nom = p_nom
         self.b_next = None
         self.xi_eos = xi_eos
         self.p_land = self._clamp_landing(raw, p_nom)
 
     # ------------------------------------------------------------ 歩の境界処理
-    def _enter_step(self):
-        """文書 §4.2 の境界処理。呼ぶ前に self.sup を新しい支持足にしておく。"""
+    def _enter_step(self, ds_from=None):
+        """文書 §4.2 の境界処理。呼ぶ前に self.sup を新しい支持足にしておく。
+
+        ds_time > 0 なら、ZMP を ds_from (省略時はいまの ZMP = 前の支持足) から
+        新しい支持足へ移す両足支持から始める。
+        """
         p = self.p
         self.state = STEP
         self.step_idx += 1
         self.phase = 0.0
         self.t_local = 0.0
         self.locked = False
-        self.zmp = list(self.foot[self.sup])
+        self.in_ds = p.ds_time > 0.0
+        if self.in_ds:
+            self._start_ds(self.zmp if ds_from is None else ds_from, self.foot[self.sup])
+        else:
+            self.zmp = list(self.foot[self.sup])
         self.xi_ini = list(self.xi)
         swing = -self.sup
         self.swing_r0 = list(self.foot[swing])   # いま床を離れる足の現在位置
@@ -366,6 +469,34 @@ class WalkEngine:
         return x, y, z
 
     # ---------------------------------------------------------------- DCM 積分
+    def _start_ds(self, frm, to):
+        """ZMP を frm から to へ ds_time で直線に移す両足支持を始める。"""
+        td = self.p.ds_time
+        self.in_ds = True
+        self.ds_t = 0.0
+        self.phase = 0.0
+        self.ds_from = list(frm)
+        self.ds_rate = [(to[k] - frm[k]) / td for k in (0, 1)]
+        self.zmp = list(frm)
+        self.xi_ini = list(self.xi)
+
+    def _advance_ds(self, dt: float):
+        """両足支持の 1 周期。ξ は始点からの閉形式、重心はオイラー積分。
+
+        終わり (ds_t = Td) は閉形式でちょうどに取る (歩の境界と同じ増幅対策)。
+        戻り値: 両足支持が終わったか。
+        """
+        p = self.p
+        w = p.omega
+        self.ds_t = min(self.ds_t + dt, p.ds_time)
+        e = math.exp(w * self.ds_t)
+        for k in (0, 1):
+            v = self.ds_rate[k] / w
+            self.zmp[k] = self.ds_from[k] + self.ds_rate[k] * self.ds_t
+            self.xi[k] = self.zmp[k] + v + (self.xi_ini[k] - self.ds_from[k] - v) * e
+            self.com[k] += w * (self.xi[k] - self.com[k]) * dt
+        return self.ds_t >= p.ds_time
+
     def _advance_dcm(self, dt: float):
         """式 (12)。ξ は歩の始点からの閉形式、重心はオイラー積分 (文書どおり)。"""
         w = self.p.omega
@@ -425,6 +556,7 @@ class WalkEngine:
         self.t_local = 0.0
         self.phase = 0.0
         self.xi_ini = list(self.xi)
+        self.start_mid = self._midpoint()
         self.zmp = list(self.foot[-self.sup])      # ZMP は押し出し足 (式 19)
         self.stopping = False
         self.stop_prep = False
@@ -437,12 +569,23 @@ class WalkEngine:
         self._advance_dcm(dt)
         # 遷移目標: 支持足の上 + 最初の歩の始点オフセット b_1
         # (指令の立ち上がりに追従して毎周期更新する)
-        p_nom, b_here, b_next = self._step_params()
-        self.p_nom, self.b_next = p_nom, b_next
+        if p.ds_time > 0.0:
+            # 最初の歩は中点 m から支持足への両足支持で始まる。その歩の終わりで定常解に
+            # 乗るには、両足支持の頭で ξ が m から c_1 = (c_2 + K (p_1 - m))/E にいればよい
+            p_nom, c_next, _ = self._step_params_ds()
+            _, _, e, k = p.ds_consts()
+            m = self.start_mid
+            ps = self.foot[self.sup]
+            c1 = [(c_next[i] + k * (ps[i] - m[i])) / e for i in (0, 1)]
+            self.p_nom, self.b_next = p_nom, c_next
+            target_y = m[1] + c1[1]
+        else:
+            p_nom, b_here, b_next = self._step_params()
+            self.p_nom, self.b_next = p_nom, b_next
+            target_y = self.foot[self.sup][1] + b_here[1]
         self.p_land = None
         self.xi_eos = None
         self.clamp_box = None
-        target_y = self.foot[self.sup][1] + b_here[1]
         if self.sup * (self.xi[1] - target_y) >= 0.0:
             # ξ が支持足の上に乗った (式 20 の条件版)。
             # 5 ms 刻みのままだと交差の行き過ぎが最大 ~3 mm 出て、それが次の歩で
@@ -454,7 +597,7 @@ class WalkEngine:
                 e_star = (target_y - zy) / (y0 - zy)
                 self.xi[0] = self.zmp[0] + (self.xi_ini[0] - self.zmp[0]) * e_star
                 self.xi[1] = target_y
-            self._enter_step()
+            self._enter_step(ds_from=self.start_mid if p.ds_time > 0.0 else None)
         elif self.t_local > p.start_pushoff_max:
             # 押し出し切れず。実機では異常だが、計画では静かに立位へ戻す
             self.state = STOP
@@ -464,6 +607,19 @@ class WalkEngine:
     # ------------------------------------------------------------------ STEP
     def _tick_step(self, dt: float):
         p = self.p
+        if self.in_ds:
+            # 両足支持: 足は動かさず ZMP だけ移す。着地点は先に更新しておく
+            # (ξ の予測は両足支持の残りを含む)。位相は単脚支持の中で測る
+            self.phase = 0.0
+            done = self._advance_ds(dt)
+            if not self.locked:
+                self._update_landing()
+            if done:
+                self.in_ds = False
+                self.zmp = list(self.foot[self.sup])
+                self.xi_ini = list(self.xi)
+                self.t_local = 0.0
+            return
         # 歩の境界も閉形式で T ちょうどに取る (START の交差と同じ増幅対策)。
         # 残り時間 ≤5 ms の切り捨ては位相にだけ効き、ξ の整合には効かない。
         self.t_local = min(self.t_local + dt, p.t_step)
@@ -491,6 +647,9 @@ class WalkEngine:
             self.state = STOP
             self.p_nom = self.p_land = self.b_next = self.xi_eos = None
             self.clamp_box = None
+            if self.p.ds_time > 0.0:
+                # 最後の両足支持: ZMP を支持足から両足の中点へ移す
+                self._start_ds(self.foot[self.sup], self._midpoint())
         else:
             self.sup = swing            # 支持脚の交代
             self._enter_step()
@@ -502,6 +661,11 @@ class WalkEngine:
         ξ が支持多角形 (両足中心を結ぶ線分で近似) の外なら、もう 1 歩踏む。
         """
         p = self.p
+        if self.in_ds:
+            self.phase = 0.0
+            if self._advance_ds(dt):
+                self.in_ds = False
+            return
         proj, dist = self._project_between_feet(self.xi)
         if dist > p.stop_outside_eps:
             # 収束できない。ξ に近い側を支持足にしてもう 1 歩 (計画では通常来ない)
@@ -542,6 +706,7 @@ class WalkEngine:
 
     def _outputs(self) -> WalkOutputs:
         in_step = self.state == STEP
+        in_ds = self.in_ds and self.state in (STEP, STOP)
         swing = -self.sup
         lf = (self.foot[LEFT][0], self.foot[LEFT][1],
               self.swing_z if in_step and swing == LEFT else 0.0)
@@ -550,7 +715,9 @@ class WalkEngine:
         return WalkOutputs(
             t=self.t, state=self.state, step_idx=self.step_idx,
             phase=self.phase,
-            support=(self.sup if in_step else 0),
+            support=(self.sup if in_step and not in_ds else 0),
+            double_support=in_ds,
+            ds_elapsed=(self.ds_t if in_ds else 0.0),
             v=tuple(self.v), xi=tuple(self.xi), com=tuple(self.com),
             zmp=tuple(self.zmp), left_foot=lf, right_foot=rf,
             pelvis=(self.com[0], self.com[1], self.p.z_c),

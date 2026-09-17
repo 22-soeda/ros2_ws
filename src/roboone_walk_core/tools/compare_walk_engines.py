@@ -27,12 +27,16 @@ WS = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(WS / 'src' / 'roboone_walk_ref'))
 
 from roboone_walk_ref.static_walk import StaticGaitParams, StaticWalkEngine  # noqa: E402
-from roboone_walk_ref.walk_core import WalkEngine  # noqa: E402
+from roboone_walk_ref.walk_core import GaitParams, WalkEngine  # noqa: E402
 
 DT = 0.005
 TOL = 1e-6
 CASES = [(0.10, 0.0), (-0.10, 0.0), (0.0, 0.06), (0.0, -0.06),
          (0.08, 0.05), (0.15, 0.08)]
+# 両足支持 (ds_time, vx, vy)。JS 版 (walkcore.js) は ds_time を持たないので C++ とだけ比べる
+DS_T_END = 10.0
+DS_CASES = [(0.2, 0.10, 0.0), (0.4, 0.10, 0.0), (0.4, -0.10, 0.0), (0.4, 0.0, 0.04),
+            (0.4, 0.0, -0.04), (0.4, 0.08, 0.025)]
 COLS = ['t', 'st', 'ph', 'sup', 'vx', 'vy', 'xix', 'xiy', 'comx', 'comy',
         'zx', 'zy', 'lfx', 'lfy', 'lfz', 'rfx', 'rfy', 'rfz']
 # 5, 6 は静歩行だけが使う (C++ の State 列挙・record.py と同じ番号)
@@ -129,6 +133,12 @@ def check_dynamic():
         assert all(math.isfinite(v) for row in ref for v in row)
         ok &= compare('C++', ref, run_cpp(vx, vy))
         ok &= compare('JS ', ref, run_js(vx, vy))
+    print('--- 両足支持 (ds_time > 0。JS 版は未対応なので C++ だけ) ---')
+    for ds, vx, vy in DS_CASES:
+        print(f'ds_time={ds} 指令 ({vx:+.2f}, {vy:+.2f}):')
+        ref = run_python(vx, vy, t_end=DS_T_END, engine=WalkEngine(GaitParams(ds_time=ds)))
+        assert all(math.isfinite(v) for row in ref for v in row)
+        ok &= compare('C++', ref, run_cpp(vx, vy, extra=(4.5, DS_T_END, DT, f'ds_time={ds}')))
     return ok
 
 
