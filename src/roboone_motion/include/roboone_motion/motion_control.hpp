@@ -58,6 +58,7 @@
 
 #include "roboone_motion/body_pose.hpp"
 #include "roboone_motion/event.hpp"
+#include "roboone_motion/load_ff.hpp"
 #include "roboone_motion/motion_library.hpp"
 #include "roboone_motion/servo_map.hpp"
 #include "roboone_motion/side.hpp"
@@ -101,6 +102,15 @@ public:
   void configure(
     const ServoMap * map, const MotionLibrary * lib, const rwc::GaitParams & gait,
     const BodyPose & home, double body_pitch, const Options & opt);
+
+  /// 荷重の前送り（load_ff.hpp）。実行中に変えられるので、step() を呼ぶ側が
+  /// 毎周期渡す。**既定は sink = 0 で、入れても今までと同じ動き。**
+  void setLoadFf(const LoadFfParams & p) {load_ff_ = p;}
+  const LoadFfParams & loadFf() const {return load_ff_;}
+  /// 直近の周期で各脚に配った荷重の割合 [0,1]（記録用。sink = 0 でも入る）。
+  const double * loadShareLast() const {return load_share_;}
+  /// 直近の周期で実際に出している伸ばし量 [mm]（レート制限のあと）。
+  const double * loadFfOffset() const {return load_ff_state_.offset();}
 
   // --- 外からの指令（購読スレッドから呼ばれる。ロックを持つ）-------------
   void setEstop(bool v) {estop_.store(v);}
@@ -168,6 +178,8 @@ private:
   void handleMotionRequest(const std::string & name, double now);
   /// 歩行計画を 1 周期進めて、足先目標を cur_pose_ に書く。
   void tickWalk(double now, double dt);
+  /// 歩行を畳む（計画と荷重の前送りを一緒に戻す）。
+  void resetWalk();
   void reportPlayerWarning();
 
   const ServoMap * map_ = nullptr;
@@ -182,6 +194,9 @@ private:
   rk::Vec3 stance_off_[kNumSide]{};
   rwc::WalkOutputs walk_out_;
   bool walk_ticked_ = false;       //!< この周期に tickWalk を回したか
+  LoadFfParams load_ff_;
+  LoadFf load_ff_state_;
+  double load_share_[kNumSide]{0.0, 0.0};
   MotionPlayer player_;
   Motion blend_motion_;
   BodyPose home_pose_, hold_pose_, cur_pose_;

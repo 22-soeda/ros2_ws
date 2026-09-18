@@ -176,7 +176,7 @@ void MotionController::handleMotionRequest(const std::string & name, double now)
       ev_.info("その場保持を予約した (トルクが入っても動かず、実測姿勢を保持する)");
       return;
     }
-    walk_.reset();
+    resetWalk();
     player_.stop();
     hold_pose_ = cur_pose_;
     setState(State::STAY);
@@ -197,7 +197,7 @@ void MotionController::handleMotionRequest(const std::string & name, double now)
       ev_.info("ホーム姿勢を予約した (トルクが入ったらそこへ移る)");
       return;
     }
-    walk_.reset();
+    resetWalk();
     // ★hold の武装中 (ARMING) に home が来ることがある。落とさずに補間へ入ると、
     //   終わった時点で HOLD ではなく STAY に落ちて立位のまま固まる (歩けなくなる)。
     stay_after_arm_ = false;
@@ -222,7 +222,7 @@ void MotionController::handleMotionRequest(const std::string & name, double now)
     }
     ev_.warn("歩行を打ち切って技 \"" + name + "\" に入る");
   }
-  walk_.reset();
+  resetWalk();
   // 技のあとは HOLD。いまは上の ARMING 弾きで stay_after_arm_ が立ったまま
   // ここへ来ることはないが、弾きを緩めたときに STAY へ落ちないよう対にしておく。
   stay_after_arm_ = false;
@@ -230,6 +230,14 @@ void MotionController::handleMotionRequest(const std::string & name, double now)
   reportPlayerWarning();
   setState(State::MOTION);
   ev_.info(fmt("技 \"%s\" 再生 (%.2fs)", name.c_str(), player_.duration()));
+}
+
+void MotionController::resetWalk()
+{
+  walk_.reset();
+  // 荷重の前送りも戻す。残したまま次に歩き出すと、その分だけ足先が跳ぶ。
+  load_ff_state_.reset();
+  for (int s = 0; s < kNumSide; ++s) {load_share_[s] = 0.0;}
 }
 
 void MotionController::tickWalk(double now, double dt)
@@ -258,6 +266,9 @@ void MotionController::tickWalk(double now, double dt)
   // 歩き出した瞬間に機体が後傾する。立位と歩行で別々の値を持たない。
   // 組み立ては静歩行の到達域の門 (checkStaticWalkEnvelope) と共有する (walkFeet)。
   walkFeet(o, stance_off_, home_pose_, cur_pose_.foot);
+  // 荷重で縮む分を先に伸ばして返す (load_ff.hpp)。既定 (sink = 0) では何もしない。
+  // **門の後に足す**ので、伸ばした足先は下の 10Hz の見張りが見る。
+  load_ff_state_.update(o, load_ff_, dt, cur_pose_.foot, load_share_);
   for (int s = 0; s < kNumSide; ++s) {
     // 歩行は足裏書きしか作らない。直前の技が角度書きで終わっていたら、ここで
     // 書き方を戻す (戻さないと足先を書き換えても指令は古いサーボ角のまま出る)。
@@ -329,7 +340,7 @@ MotionController::Tick MotionController::step(
     if (state_ != State::RELAX) {
       setState(State::RELAX);
       player_.stop();
-      walk_.reset();
+      resetWalk();
       arm_in_place_ = false;
       stay_after_arm_ = false;
     }

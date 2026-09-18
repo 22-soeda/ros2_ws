@@ -30,6 +30,9 @@
 //       静歩行の計画で歩いて止まること、振り出し中の重心が門の言うとおりの位置に
 //       あること、安定化が SWING を片足支持として扱うこと。static_gait.yaml そのものの
 //       門の結果は [6] と同じく --strict のときだけ落とす
+//  [10] 荷重の前送り (load_ff.hpp)。荷重の割合が ZMP の射影どおりに出ること、
+//       遊脚には足さないこと、伸ばし量の合計が sink のまま (骨盤が上下しない) こと、
+//       既定 (sink = 0) で足先が動かないこと
 //
 // 落ちたら戻り値 1。config を書き換えたあとに 1 回通しておくところ。
 #include <algorithm>
@@ -44,6 +47,7 @@
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
 #include "roboone_motion/imu_attitude.hpp"
+#include "roboone_motion/load_ff.hpp"
 #include "roboone_motion/motion_config.hpp"
 #include "roboone_motion/motion_control.hpp"
 #include "roboone_motion/motion_library.hpp"
@@ -1741,6 +1745,220 @@ int main(int argc, char ** argv)
         st.debug().weight[rm::kRight] == 1.0 && st.debug().weight[rm::kLeft] == 1.0 &&
         !st.debug().gate,
         "重心移動 (SHIFT) の両足支持では両脚に効かせる");
+    }
+  }
+
+  // =======================================================================
+  // [10] 荷重の前送り (load_ff.hpp)
+  // =======================================================================
+  {
+    std::printf("\n[10] 荷重の前送り (load_ff.hpp)\n");
+    // 足は ±70mm、床は z = 0。ZMP を動かしながら割合と伸ばし量を見る
+    auto outs = [](double zmp_y, double zr, double zl) {
+        rm::rwc::WalkOutputs o;
+        o.right_foot = {0.0, -0.070, zr};
+        o.left_foot = {0.0, 0.070, zl};
+        o.zmp = {0.0, zmp_y};
+        return o;
+      };
+    double sh[rm::kNumSide]{};
+
+    rm::loadShare(outs(-0.070, 0.0, 0.0), sh);
+    check(
+      sh[rm::kRight] == 1.0 && sh[rm::kLeft] == 0.0,
+      "両足接地・ZMP が右足の真上 -> 右 1.0 / 左 0.0");
+
+    rm::loadShare(outs(0.0, 0.0, 0.0), sh);
+    check(
+      std::abs(sh[rm::kRight] - 0.5) < 1e-12 && std::abs(sh[rm::kLeft] - 0.5) < 1e-12,
+      "両足接地・ZMP が中点 -> 半分ずつ");
+
+    rm::loadShare(outs(0.035, 0.0, 0.0), sh);
+    check(
+      std::abs(sh[rm::kLeft] - 0.75) < 1e-12 && std::abs(sh[rm::kRight] - 0.25) < 1e-12,
+      "両足接地・ZMP が左寄り 3/4 の位置 -> 左 0.75 / 右 0.25");
+
+    rm::loadShare(outs(0.200, 0.0, 0.0), sh);
+    check(
+      sh[rm::kLeft] == 1.0 && sh[rm::kRight] == 0.0,
+      "ZMP が 2 足の線の外へ出ても端で止まる (合計 1 を保つ)");
+
+    // 片足支持: 遊脚が浮いていれば ZMP がどこにあっても支持脚が 1
+    rm::loadShare(outs(0.070, 0.0, 0.035), sh);
+    check(
+      sh[rm::kRight] == 1.0 && sh[rm::kLeft] == 0.0,
+      "遊脚 (左) が浮いていれば、ZMP が左寄りでも支持脚 (右) が 1.0");
+
+    // 伸ばし量。+z が上、脚を伸ばす = 足先を下げる。
+    // ここではレート制限を無効（十分速い）にして、狙いの量そのものを見る
+    rm::LoadFfParams p;
+    p.sink = 4.0;
+    p.rate = 1e6;
+    rm::FootPose f[rm::kNumSide];
+    rm::LoadFf ff;
+    auto run1 = [&](const rm::rwc::WalkOutputs & o, const rm::LoadFfParams & q) {
+        ff.reset();
+        for (int s = 0; s < rm::kNumSide; ++s) {f[s].p.z = -261.0;}
+        ff.update(o, q, 1.0, f, sh);      // dt を大きく取って 1 周期で目標へ届かせる
+      };
+
+    run1(outs(0.070, 0.0, 0.035), p);
+    check(
+      std::abs(f[rm::kRight].p.z - (-265.0)) < 1e-9 &&
+      std::abs(f[rm::kLeft].p.z - (-261.0)) < 1e-9,
+      "片足支持: 支持脚だけ sink ぶん伸びる (遊脚は動かさない)");
+
+    run1(outs(0.0, 0.0, 0.0), p);
+    check(
+      std::abs(f[rm::kRight].p.z - (-263.0)) < 1e-9 &&
+      std::abs(f[rm::kLeft].p.z - (-263.0)) < 1e-9,
+      "両足で立つ: 両脚が sink/2 ずつ伸びる (骨盤の高さは計画どおり)");
+
+    // 割合の合計が 1 なので、伸ばし量の合計は常に sink（余計な上下動が入らない）
+    bool sum_ok = true;
+    for (int k = 0; k <= 20; ++k) {
+      const double y = -0.070 + 0.140 * k / 20.0;
+      run1(outs(y, 0.0, 0.0), p);
+      const double tot = (-261.0 - f[rm::kRight].p.z) + (-261.0 - f[rm::kLeft].p.z);
+      sum_ok = sum_ok && std::abs(tot - p.sink) < 1e-9;
+    }
+    check(sum_ok, "ZMP をどこへ動かしても、伸ばし量の合計は sink のまま");
+
+    rm::LoadFfParams z;                   // 既定 (sink = 0)
+    run1(outs(0.0, 0.0, 0.0), z);
+    check(
+      f[rm::kRight].p.z == -261.0 && f[rm::kLeft].p.z == -261.0 &&
+      std::abs(sh[rm::kRight] - 0.5) < 1e-12,
+      "既定 (sink = 0) では足先を動かさない。割合だけは記録に出る");
+
+    rm::LoadFfParams c = p;
+    c.sink = 20.0;
+    c.clamp = 6.0;
+    run1(outs(-0.070, 0.0, 0.0), c);
+    check(
+      std::abs(f[rm::kRight].p.z - (-267.0)) < 1e-9,
+      "clamp が 1 脚あたりの伸ばし量を頭打ちにする");
+
+    // レート制限。目標 4mm に対し 10mm/s なら 1 周期 (5ms) で 0.05mm しか動かない
+    rm::LoadFfParams r = p;
+    r.rate = 10.0;
+    ff.reset();
+    for (int s = 0; s < rm::kNumSide; ++s) {f[s].p.z = -261.0;}
+    ff.update(outs(-0.070, 0.0, 0.0), r, 0.005, f, sh);
+    check(
+      std::abs(f[rm::kRight].p.z - (-261.05)) < 1e-9,
+      "rate が 1 周期あたりの変化を頭打ちにする (10mm/s x 5ms = 0.05mm)");
+
+    // 実際の計画を通す。静歩行はなめらか / 動歩行は歩の境界で割合が飛ぶので、
+    // rate が無いと足先に段差が出る（この段差こそ直したいもの）
+    auto planScan = [&](bool is_static, double rate, double & max_share_jump,
+        double & max_foot_jump) {
+        rm::rwc::StaticWalkEngine st{rm::rwc::StaticGaitParams{}};
+        rm::rwc::WalkEngine dy{rm::rwc::GaitParams{}};
+        rm::LoadFfParams q;
+        q.sink = 4.0;
+        q.rate = rate;
+        rm::LoadFf lf;
+        const double dt = 1.0 / 200.0;
+        double prev_share = -1.0, prev_z = 0.0;
+        max_share_jump = max_foot_jump = 0.0;
+        for (int i = 0; i < 4000; ++i) {
+          const rm::rwc::WalkOutputs o = is_static ? st.update(0.10, 0.0, dt)
+            : dy.update(0.10, 0.0, dt);
+          rm::FootPose g[rm::kNumSide];
+          for (int s = 0; s < rm::kNumSide; ++s) {g[s].p.z = -261.0;}
+          double sr[rm::kNumSide];
+          lf.update(o, q, dt, g, sr);
+          if (i > 400) {      // 歩き出しの立ち上がりは見ない
+            if (prev_share >= 0.0) {
+              max_share_jump =
+                std::max(max_share_jump, std::abs(sr[rm::kRight] - prev_share));
+              max_foot_jump =
+                std::max(max_foot_jump, std::abs(g[rm::kRight].p.z - prev_z));
+            }
+            prev_share = sr[rm::kRight];
+            prev_z = g[rm::kRight].p.z;
+          } else {
+            prev_share = sr[rm::kRight];
+            prev_z = g[rm::kRight].p.z;
+          }
+        }
+      };
+
+    double sj = 0.0, fj = 0.0;
+    planScan(true, 1e6, sj, fj);
+    check(
+      sj < 0.01 && fj < 0.05,
+      fmt(
+        "静歩行の計画では割合そのものがなめらか (1 周期の変化 最大 %.4f = 足先 %.3fmm)",
+        sj, fj));
+
+    planScan(false, 1e6, sj, fj);
+    const bool dyn_jumps = sj > 0.5;
+    planScan(false, 10.0, sj, fj);
+    check(
+      dyn_jumps && fj <= 10.0 / 200.0 + 1e-9,
+      fmt(
+        "動歩行は歩の境界で割合が飛ぶが、rate 10mm/s が足先の段差を %.3fmm/周期 に抑える",
+        fj));
+
+    // 状態機械ごと通す。同じ指令で sink = 0 と sink = 4mm を歩かせ、支持脚だけが
+    // ちょうど 4mm 伸びること・遊脚は 1 ミリも動かないことを見る（tickWalk の配線）
+    if (home_ok) {
+      rm::WalkSetup w10;
+      w10.mode = rm::WalkMode::Static;      // 既定値で見る（yaml の調整に左右されない）
+      const rm::BodyPose meas10 = asMeasured(map, home);
+      const std::string why10 = "(テスト)";
+      const double dt10 = 1.0 / 200.0;
+
+      auto walkOnce = [&](double sink, std::vector<double> & sup_z,
+          std::vector<double> & sw_z) {
+          rm::MotionController::Options copt;
+          rm::MotionController c;
+          c.configure(&map, &lib5, w10, home, body_pitch, copt);
+          rm::LoadFfParams q;
+          q.sink = sink;
+          q.rate = 1e6;
+          c.setLoadFf(q);
+          c.setEstop(false);
+          c.requestMotion("home");
+          double now = 0.0;
+          auto t = c.step(now, dt10, &meas10, why10, true);
+          for (int i = 0; i < 800 && t.state != rm::State::HOLD; ++i) {
+            now += dt10;
+            c.setLoadFf(q);
+            t = c.step(now, dt10, &meas10, why10, true);
+          }
+          for (int i = 0; i < static_cast<int>(12.0 / dt10); ++i) {
+            now += dt10;
+            c.setWalkCmd(0.10, 0.0, 0.0, now);
+            c.setLoadFf(q);
+            c.step(now, dt10, &meas10, why10, true);
+            const rm::rwc::WalkOutputs * w = c.walkOutputs();
+            if (!w || w->state != rm::rwc::State::SWING) {continue;}
+            const int sup = (w->support == rm::rwc::LEFT) ? rm::kLeft : rm::kRight;
+            const int sw = (sup == rm::kLeft) ? rm::kRight : rm::kLeft;
+            sup_z.push_back(c.currentPose().foot[sup].p.z);
+            sw_z.push_back(c.currentPose().foot[sw].p.z);
+          }
+        };
+
+      std::vector<double> sup0, sw0, sup4, sw4;
+      walkOnce(0.0, sup0, sw0);
+      walkOnce(4.0, sup4, sw4);
+      bool same_n = sup0.size() == sup4.size() && !sup0.empty();
+      double sup_d = 0.0, sw_d = 0.0;
+      if (same_n) {
+        for (std::size_t i = 0; i < sup0.size(); ++i) {
+          sup_d = std::max(sup_d, std::abs((sup0[i] - sup4[i]) - 4.0));
+          sw_d = std::max(sw_d, std::abs(sw0[i] - sw4[i]));
+        }
+      }
+      check(
+        same_n && sup_d < 1e-9 && sw_d < 1e-9,
+        fmt(
+          "歩かせると片足支持の支持脚だけが sink 4.0mm ぶん伸びる"
+          " (ずれ %.2g mm / 遊脚の動き %.2g mm、%zu 点)", sup_d, sw_d, sup0.size()));
     }
   }
 

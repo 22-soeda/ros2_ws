@@ -304,7 +304,8 @@ ros2 param describe /motion stab.kd_pitch
 ros2 param dump /motion | grep -A30 "stab:"    # いまの値をまとめて見る
 
 # 3) 中身を見る（100Hz。並びは layout に名前で載っている）
-ros2 topic echo --once /motion/stab | python3 -c "
+#    ★--full-length が要る。付けないと label が途中で切られ、19 列しか出ない
+ros2 topic echo --once --full-length /motion/stab | python3 -c "
 import sys,yaml,math
 d=next(yaml.safe_load_all(sys.stdin))
 for n,v in zip(d['layout']['dim'][0]['label'].split(','), d['data']):
@@ -348,6 +349,48 @@ ros2 run roboone_motion motion_node --ros-args -p dry_run:=true -p allow_torque:
 `imu_rx_lag`（受信時刻 − header.stamp）は RealSense が機器の時計を換算した stamp なので
 **約 −20ms の定数が乗る**（2026-09-16 実測）。絶対の遅れではない。受信間隔は p50 5.0ms /
 p99 5.7ms / 最大 27ms（0.5% が 8ms 超）。
+
+## 荷重の前送り（load_ff。脚が縮む分を先に伸ばす）
+
+両足が床に着いている間は、2 本の脚の**指令上の長さの差がそのまま床を押し合う力**になる
+（不静定。位置指令だけでは荷重配分が決まらない）。計画は荷重で縮む分を見ていないので、
+荷重が移るほど軽くなる側の脚が「長すぎる」まま取り残されて床を押す。これが着地の押し込みと、
+両足支持で重心を移している最中に遊脚側が床を押す件の共通の原因。
+
+各脚を「これから受け持つ荷重の割合 × `sink`」だけ先に伸ばす。中身は
+`roboone_motion/include/roboone_motion/load_ff.hpp`、設定は `motion_node.yaml` の `load_ff`。
+**既定は `sink: 0.0` で今までと同じ動き。** 実行中に変えられる。
+
+```bash
+# 実装の検算（実機なし。[10] が全部 ok になること）
+ros2 run roboone_motion motion_selftest
+
+# 起動時の一行で今の値を見る（バスを開かない）
+ros2 run roboone_motion motion_node --ros-args -p dry_run:=true -p allow_torque:=false \
+  -p walk_mode:=static 2>&1 | grep "荷重の前送り"
+
+# 実行中に入れる・変える（★トルクが入っている機体では足先が動く。支えてから）
+ros2 param set /motion load_ff.sink 3.5      # [mm] 全荷重で脚が縮む量。実測して入れる
+ros2 param set /motion load_ff.clamp 10.0    # [mm] 1 脚あたりの伸ばし量の上限
+ros2 param set /motion load_ff.rate 10.0     # [mm/s] 変化の速さの上限（動歩行に要る）
+ros2 param set /motion load_ff.sink 0.0      # 切る（跳ねずに rate で抜ける）
+
+# 配った割合を見る（/motion/stab の load_R / load_L。sink = 0 でも割合は出る）
+# ★--full-length が要る。付けないと layout の label が途中で切られ、列が足りなくなる
+ros2 topic echo --once --full-length /motion/stab | python3 -c "
+import sys,yaml
+d=next(yaml.safe_load_all(sys.stdin))
+z=dict(zip(d['layout']['dim'][0]['label'].split(','), d['data']))
+print('load_R %.3f  load_L %.3f  walk_state %.0f' % (z['load_R'], z['load_L'], z['walk_state']))
+"
+```
+
+`sink` の決め方: bag で「骨盤から見た支持足が指令よりどれだけ高いか」を測る
+（`/motion/joint_commands` と `/joint_states` を `leg_service` の `fk` に通す。手順は
+`docs/静歩行の着地の蹴り_調査と対策.md` §6）。2026-09-18 の実測は片足支持で 2.2〜4.2mm。
+
+★起動時の到達域の門（`checkWalkEnvelope` / `checkStaticWalkEnvelope`）は**この伸ばしを
+含めずに**見る。伸ばした足先は motion の 10Hz の見張りが機構の到達域で見る。
 
 ## 胴体の前傾（body_pitch）
 

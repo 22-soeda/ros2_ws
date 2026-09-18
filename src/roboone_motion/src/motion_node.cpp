@@ -119,6 +119,8 @@ constexpr const char * kStabFields[] = {
   "board_roll",   // 29 [rad] 両足の平面ごと回した量（stab.board = true のときだけ）
   "board_pitch",  // 30 [rad]
   "board_scale",  // 31 板を出せた割合 [0,1]。1 = そのまま / 0 = 解けないので外した
+  "load_R",       // 32 右脚に配った荷重の割合 [0,1]（load_ff.hpp。合計 1。歩行中だけ）
+  "load_L",       // 33 左脚 [0,1]。load_ff.sink = 0 でも割合そのものは出る
 };
 constexpr std::size_t kStabN = sizeof(kStabFields) / sizeof(kStabFields[0]);
 
@@ -169,6 +171,24 @@ const DoubleParam kDoubleParams[] = {
     "角速度の 1 次 LPF [Hz]。0 で素通し"},
   {"imu.accel_band", 0.01, 1.0, nullptr, &rm::ImuOptions::accel_band,
     "|f| が g からこの割合だけ外れたら加速度を使わない"},
+};
+
+/// 荷重の前送り（load_ff.hpp）。こちらも実行中に変えられる。
+struct LoadParam
+{
+  const char * name;
+  double lo, hi;
+  double rm::LoadFfParams::* member;
+  const char * desc;
+};
+const LoadParam kLoadParams[] = {
+  {"load_ff.sink", 0.0, 20.0, &rm::LoadFfParams::sink,
+    "全荷重が乗ったときに脚が縮む量 [mm]。その脚が受け持つ荷重の割合ぶんだけ、"
+    "あらかじめ脚を伸ばして返す。0 = 補正なし (既定)。実機の実測値を入れる"},
+  {"load_ff.clamp", 0.0, 20.0, &rm::LoadFfParams::clamp,
+    "1 脚あたりの伸ばし量の上限 [mm]"},
+  {"load_ff.rate", 0.0, 200.0, &rm::LoadFfParams::rate,
+    "伸ばし量の変化の速さの上限 [mm/s]。動歩行は荷重の割合が歩の境界で飛ぶので要る"},
 };
 
 double steadySec()
@@ -506,7 +526,11 @@ private:
         arm_meas_deg_ = meas.pose.arm;
       }
 
-      // 2) 状態機械を 1 周期
+      // 2) 状態機械を 1 周期。荷重の前送りは足先目標に入るので step() の前に渡す
+      {
+        std::lock_guard<std::mutex> lk(param_mtx_);
+        ctrl_.setLoadFf(load_ff_);
+      }
       const rm::MotionController::Tick t =
         ctrl_.step(now, dt, meas.ok ? &meas.pose : nullptr, meas.why, bank_.torqueReady());
       bank_.setWantTorque(t.want_torque);
@@ -609,6 +633,18 @@ private:
       throw std::invalid_argument("imu.mount_rpy_deg: " + err);
     }
 
+    // 荷重の前送り（load_ff.hpp）。**既定 0 = 今までと同じ動き。**
+    for (const LoadParam & l : kLoadParams) {
+      rcl_interfaces::msg::ParameterDescriptor desc;
+      desc.description = l.desc;
+      rcl_interfaces::msg::FloatingPointRange r;
+      r.from_value = l.lo;
+      r.to_value = l.hi;
+      r.step = 0.0;
+      desc.floating_point_range.push_back(r);
+      load_ff_.*l.member = declare_parameter<double>(l.name, load_ff_.*l.member, desc);
+    }
+
     for (const DoubleParam & d : kDoubleParams) {
       rcl_interfaces::msg::ParameterDescriptor desc;
       desc.description = d.desc;
@@ -651,10 +687,12 @@ private:
     res.successful = true;
     rm::StabGains g;
     rm::ImuOptions o;
+    rm::LoadFfParams lf;
     {
       std::lock_guard<std::mutex> lk(param_mtx_);
       g = gains_;
       o = imu_opt_;
+      lf = load_ff_;
     }
     bool touched = false;
     for (const auto & p : ps) {
@@ -693,12 +731,18 @@ private:
         }
         touched = true;
       }
+      for (const LoadParam & l : kLoadParams) {
+        if (n != l.name) {continue;}
+        lf.*l.member = p.as_double();
+        touched = true;
+      }
     }
     if (!touched) {return res;}
     {
       std::lock_guard<std::mutex> lk(param_mtx_);
       gains_ = g;
       imu_opt_ = o;
+      load_ff_ = lf;
     }
     {
       std::lock_guard<std::mutex> lk(imu_mtx_);
@@ -712,20 +756,39 @@ private:
   {
     rm::StabGains g;
     rm::ImuOptions o;
+    rm::LoadFfParams lf;
     {
       std::lock_guard<std::mutex> lk(param_mtx_);
       g = gains_;
       o = imu_opt_;
+      lf = load_ff_;
     }
-    char buf[512];
+    char buf[640];
     std::snprintf(
       buf, sizeof(buf),
       "%s kd=(p %.3f, r %.3f) kp=(p %.3f, r %.3f) k_torso=%.2f 上限 足首 %.3f / 胴体 %.3f rad"
-      " | IMU %s 取り付け [%.2f, %.2f, %.2f] deg tau_c %.2fs LPF %.0fHz 加速度の差し引き %s",
+      " | IMU %s 取り付け [%.2f, %.2f, %.2f] deg tau_c %.2fs LPF %.0fHz 加速度の差し引き %s"
+      " | 荷重の前送り %s",
       g.enable ? (g.anyGain() ? "有効" : "有効 (ゲイン 0 なので補正なし)") : "無効",
       g.kd_pitch, g.kd_roll, g.kp_pitch, g.kp_roll, g.k_torso, g.ankle_clamp, g.torso_clamp,
       imu_topic_.c_str(), o.mount_rpy[0] * kR2D, o.mount_rpy[1] * kR2D, o.mount_rpy[2] * kR2D,
-      o.tau_c, o.gyro_lpf_hz, accel_ff_.load() ? "あり" : "なし");
+      o.tau_c, o.gyro_lpf_hz, accel_ff_.load() ? "あり" : "なし",
+      loadFfText(lf).c_str());
+    return buf;
+  }
+
+  /// 荷重の前送りの一行（起動ログと param set の応答に出す）。
+  static std::string loadFfText(const rm::LoadFfParams & lf)
+  {
+    char buf[160];
+    if (!lf.active()) {
+      std::snprintf(buf, sizeof(buf), "なし (load_ff.sink = 0)");
+    } else {
+      std::snprintf(
+        buf, sizeof(buf),
+        "sink %.1fmm (上限 %.1fmm / %.0fmm/s)。支持脚をその分伸ばす。"
+        "★起動時の到達域の門はこれを含めずに見ている", lf.sink, lf.clamp, lf.rate);
+    }
     return buf;
   }
 
@@ -819,7 +882,9 @@ private:
       w ? static_cast<double>(w->support) : 0.0,
       w ? w->phase : 0.0,
       static_cast<double>(dropped), ff[0], ff[1],
-      c.board[0], c.board[1], board_scale};
+      c.board[0], c.board[1], board_scale,
+      w ? ctrl_.loadShareLast()[rm::kRight] : 0.0,
+      w ? ctrl_.loadShareLast()[rm::kLeft] : 0.0};
     pub_stab_->publish(m);
   }
 
@@ -1036,9 +1101,10 @@ private:
   rm::ImuAttitude imu_;
   double imu_rx_ = 0.0;           //!< 最後に受けた時刻 [s]（steady）
   double imu_rx_lag_ = 0.0;       //!< 受信時刻 - header.stamp [s]
-  std::mutex param_mtx_;          //!< gains_ / imu_opt_（パラメータの callback と control）
+  std::mutex param_mtx_;          //!< gains_ / imu_opt_ / load_ff_（パラメータの callback と control）
   rm::StabGains gains_;
   rm::ImuOptions imu_opt_;
+  rm::LoadFfParams load_ff_;
   rm::Stabilizer stab_;           //!< control スレッドだけが触る
   std::atomic<bool> accel_ff_{true};
   double start_steady_ = 0.0;
