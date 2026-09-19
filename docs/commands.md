@@ -1297,15 +1297,23 @@ ros2 param set /motion march true
 ros2 topic echo --once /motion/state      # "WALK march" が出る
 ros2 param set /motion march false        # 次の歩の境界から停止シーケンス -> HOLD
 
-# トルクを入れずに通しで見る（バスは開くが位置指令を送らない）
-ros2 launch roboone_bringup motion.launch.py allow_torque:=false
+# トルクを入れずに通しで見る（バスは開いて読むが、トルクも位置指令も送らない）
+ros2 launch roboone_motion motion.launch.py allow_torque:=false
+#   別端末で home -> 武装（allow_torque:=false なら「入ったことにして」HOLD まで進む）
+ros2 topic pub -t 3 /cmd_motion std_msgs/msg/String "{data: home}"
+ros2 topic pub -t 3 --qos-durability transient_local --qos-reliability reliable \
+  /estop std_msgs/msg/Bool "{data: false}"
 ros2 param set /motion march true
 ros2 topic echo /joint_states             # 計画・IK は回るので関節角は動く
 ```
 
-- 起動時に `march:=true` を渡すこともできる（`-p march:=true`）
+- **`motion.launch.py` は `march` 引数を持たない。**起動時から入れたいなら
+  `motion_node.yaml` の `march` を true にするか、`ros2 run` で
+  `--ros-args -p march:=true` を渡す。通常は起動後に `ros2 param set` で入れる
 - `/motion/state` は `WALK march`（静歩行なら `WALK walk=static march`）
 - 切っても止まらないときは `/cmd_walk` が来ていないか見る（指令があれば普通に歩く）
+- 止まらない・暴れるときの最短手は脱力: コントローラの **L1**、または
+  `/estop true`（下の「motion ノード」の節の QoS つきの pub）
 
 ## 歩行の横振り（foot_spacing と home_pose.yaml の foot.y）
 
