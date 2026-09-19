@@ -33,7 +33,7 @@ DT = 0.005
 TOL = 1e-6
 CASES = [(0.10, 0.0), (-0.10, 0.0), (0.0, 0.06), (0.0, -0.06),
          (0.08, 0.05), (0.15, 0.08)]
-# 両足支持 (ds_time, vx, vy)。JS 版 (walkcore.js) は ds_time を持たないので C++ とだけ比べる
+# 両足支持 (ds_time, vx, vy)。3 実装とも ds_time を持つ (JS は 2026-09-19 に移植)
 DS_T_END = 10.0
 DS_CASES = [(0.2, 0.10, 0.0), (0.4, 0.10, 0.0), (0.4, -0.10, 0.0), (0.4, 0.0, 0.04),
             (0.4, 0.0, -0.04), (0.4, 0.08, 0.025)]
@@ -133,12 +133,14 @@ def check_dynamic():
         assert all(math.isfinite(v) for row in ref for v in row)
         ok &= compare('C++', ref, run_cpp(vx, vy))
         ok &= compare('JS ', ref, run_js(vx, vy))
-    print('--- 両足支持 (ds_time > 0。JS 版は未対応なので C++ だけ) ---')
+    print('--- 両足支持 (ds_time > 0) ---')
     for ds, vx, vy in DS_CASES:
         print(f'ds_time={ds} 指令 ({vx:+.2f}, {vy:+.2f}):')
         ref = run_python(vx, vy, t_end=DS_T_END, engine=WalkEngine(GaitParams(ds_time=ds)))
         assert all(math.isfinite(v) for row in ref for v in row)
-        ok &= compare('C++', ref, run_cpp(vx, vy, extra=(4.5, DS_T_END, DT, f'ds_time={ds}')))
+        extra = (4.5, DS_T_END, DT, f'ds_time={ds}')
+        ok &= compare('C++', ref, run_cpp(vx, vy, extra=extra))
+        ok &= compare('JS ', ref, run_js(vx, vy, extra=extra))
     return ok
 
 

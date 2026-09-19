@@ -712,8 +712,9 @@ T=0.60 で 39.6、T=1.00 で 460。静歩行に寄せるほど「重心が支持
 （単脚支持の中央での重心と支持足の距離 = `(W/2) sech(ωT/2)`、T=0.30 で 61.4 mm、
 T=0.60 で 27.7 mm）が、同時に計画と実機のずれが 1 歩で `e^{ωT}` 倍に増える。
 **推定 ξ (IMU / 状態推定) を入れるまで T=0.60 より伸ばさないこと。**
-なお walk_core は両脚支持期を持たない（支持脚の交代は瞬時）ので、T を伸ばしても
-厳密な静歩行にはならない。
+なお `t_step` は**単脚支持**の長さ。両足支持は `ds_time` で別に持つ（2026-09-19 から
+既定 0.3 s）ので、1 歩は `ds_time + t_step` ＝ 0.90 s、`e^{ωT}` は 249 になる。
+横振りを減らしたいときは `t_step` ではなく `ds_time` を動かすこと（下の節）。
 
 `swing_height` を上げると、起動ログの `歩行の足先の箱の隅に **届かない**` が出る
 ことがある。これはチェックが `x = ±step_clamp_x` と `z = +swing_height` を
@@ -726,8 +727,9 @@ T=0.60 で 27.7 mm）が、同時に計画と実機のずれが 1 歩で `e^{ωT
 colcon build --packages-select roboone_walk_core roboone_walk_ref roboone_motion
 python3 -m pytest src/roboone_walk_ref/test/test_walk_core.py
 python3 src/roboone_walk_core/tools/compare_walk_engines.py   # 「照合: 全て一致」
-#   両足支持 (ds_time > 0) のケースは C++ とだけ比べる (JS 版は ds_time を持たない)
+#   両足支持 (ds_time > 0) のケースも 3 実装で比べる (JS は 2026-09-19 に移植)
 ./build/roboone_walk_core/walk_dump 0.10 0 4.5 10 0.005 ds_time=0.4 | head   # key=value で上書き
+node src/roboone_viz/roboone_viz/walkcore.js 0.10 0 4.5 10 0.005 ds_time=0.4 | head  # JS も同じ引数
 
 # 膝 4 節リンク 3D（デモ / 実機追従）
 python3 src/roboone_viz/roboone_viz/serve_knee3d.py --demo
@@ -1243,10 +1245,13 @@ done
 
 ## 両足支持（gait.yaml の ds_time）
 
-`ds_time` を正にすると、動歩行の各歩の頭に両足支持を置き、その間に ZMP を前の支持足から
-新しい支持足へ移す（既定 0 = 従来）。骨盤の横の速さが落ち、骨盤が支持足へ寄る。
-**足上げと足間隔を一緒に動かさないと遊脚が届かない。** 値の候補と理由は `gait.yaml` の
-`ds_time` の注記（例: `ds_time 0.3 / foot_spacing 0.140 / swing_height 0.04`）。
+`ds_time` は、動歩行の各歩の頭に置く両足支持の長さ。その間に ZMP を前の支持足から
+新しい支持足へ移す。骨盤の横の速さが落ち、骨盤が支持足へ寄る。
+**足上げと足間隔はひと組で動かす（片方だけ戻すと遊脚が届かない）。**
+
+**2026-09-19 から既定は `ds_time 0.3 / foot_spacing 0.140 / swing_height 0.04`**
+（それ以前は `0 / 0.170 / 0.05`）。`ds_time: 0.0` に戻せば数値ごと従来の歩き方に戻る。
+値の選び方と走査表は `gait.yaml` の `ds_time` の注記。
 
 - 起動ログに「両足支持 0.30s + 単脚支持 0.60s = 1 歩 0.90s。歩く速さは指令の 67%」が出る
 - 0.4 s を超えると警告が出る（今の `a_max` では計画が発散しうる）
@@ -1265,8 +1270,9 @@ python3 src/roboone_viz/roboone_viz/walk_reach.py \
 横の重心経路（骨盤をどこまで支持足へ寄せるか）は `gait.yaml` の **`foot_spacing`**（計画上の
 足間隔）で決まる。**実機の足の位置は `home_pose.yaml` の `foot.y` だけで決まり**、歩行と HOLD の
 立位もそこに揃う（motion ノードが計画の立位をホーム姿勢の足へ平行移動する）。計画だけ広げると、
-**足の位置はそのままで骨盤の横振りだけが増える**。今は計画 170mm・実機 ±70mm（2026-09-17）。
-理由と候補の表は `gait.yaml` の `foot_spacing` のコメント。
+**足の位置はそのままで骨盤の横振りだけが増える**。今は計画 140mm・実機 ±70mm で同じ
+（2026-09-19 に `ds_time` 0.3 を入れ、両足支持の間に骨盤が支持足へ寄るようになったので
+2026-09-17 の 170 から戻した）。理由と候補の表は `gait.yaml` の `foot_spacing` のコメント。
 （2026-09-18 に `motion_node.yaml` の `stance_y_offset` を廃止した。params に残っていると
 起動時に警告が出る。）
 

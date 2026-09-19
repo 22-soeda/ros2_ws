@@ -34,9 +34,9 @@ walk_core は 3 か所に同じロジックがある。**変更は必ず 3 つ�
 | C++ | この walk_engine.hpp | motion ノード (実機 200 Hz) |
 | JS | roboone_viz/walkcore.js | ブラウザのライブ操縦シミュレータ |
 
-★両足支持 (`ds_time` > 0、2026-09-18) は Python と C++ だけにある。JS 版 (walkcore.js) は
-`ds_time` を持たないので、照合ツールは `ds_time` > 0 のケースを C++ とだけ比べる
-(`ds_time` = 0 は 3 実装で同じ)。
+★両足支持 (`ds_time` > 0) は 2026-09-18 に Python と C++ へ、2026-09-19 に JS へ入れた。
+照合ツールは `ds_time` > 0 のケースも 3 実装で比べる (`walk_dump` / `walkcore.js` とも
+`ds_time=0.4` のような `key=value` で上書きできる)。
 
 静歩行 (static_walk) も同じ扱い。原本は `roboone_walk_ref/static_walk/engine.py`、
 C++ は `static_walk_engine.hpp`、JS は `roboone_viz/staticwalk.js`。静歩行は軌道に加えて

@@ -646,16 +646,21 @@ int main(int argc, char ** argv)
 
       int changes = 0;
       bool saw_walk = false;
-      // 2 秒歩かせる
-      for (int i = 0; i < 400; ++i) {
+      // **待ち時間は 1 歩 (両足支持 + 単脚支持) の倍数で取る。** ds_time を足すと
+      // 1 歩が Td + Ts に伸びるので、秒で固定すると停止シーケンスが終わらない
+      const double t_one = gait.ds_time + gait.t_step;
+      const int n_walk = static_cast<int>(std::lround(3.34 * t_one / dt));   // T=0.60 で 2.0s
+      const int n_stop = static_cast<int>(std::lround(5.0 * t_one / dt));    // T=0.60 で 3.0s
+      // 3.3 歩ぶん歩かせる
+      for (int i = 0; i < n_walk; ++i) {
         now += dt;
         c->setWalkCmd(0.05, 0.0, 0.0, now);
         t = c->step(now, dt, &meas, why, true);
         changes += t.state_changed ? 1 : 0;
         saw_walk = saw_walk || t.state == rm::State::WALK;
       }
-      // 指令を止めて 3 秒。停止シーケンス -> IDLE -> (walk_idle_hold) -> HOLD
-      for (int i = 0; i < 600; ++i) {
+      // 指令を止めて 5 歩ぶん。停止シーケンス -> IDLE -> (walk_idle_hold) -> HOLD
+      for (int i = 0; i < n_stop; ++i) {
         now += dt;
         c->setWalkCmd(0.0, 0.0, 0.0, now);
         t = c->step(now, dt, &meas, why, true);

@@ -308,10 +308,12 @@ function makeLive() {
                    'xix','xiy','comx','comy','zx','zy',
                    'lfx','lfy','lfz','rfx','rfy','rfz',
                    'pnx','pny','plx','ply','bx','by','xex','xey','mf','sm']) cols[k] = [];
-  // 静歩行は static_gait.yaml の値 (DATA.static.params) で回す。動歩行は従来どおり walkcore.js の既定値
+  // どちらも yaml の値で回す (静歩行 = DATA.static.params / 動歩行 = DATA.params)。
+  // 2026-09-19 まで動歩行だけ walkcore.js の既定値 (足間隔 178.6mm・両足支持なし) で
+  // 回していて、上の記録済みシナリオ (gait.yaml) と食い違っていた
   const eng = (livePlanner === 'static')
     ? new MarchStaticWalkEngineJS(DATA.static.params)
-    : new MarchWalkEngineJS();
+    : new MarchWalkEngineJS(DATA.params);
   return {
     eng,
     cmd: [0, 0],              // ジョイスティックの生指令
