@@ -950,6 +950,42 @@ ros2 run roboone_motion motion_node --ros-args \
 2026-08-29: 後傾 10 deg に対し `z_c=0.261` のままで入るのは **pitch -8 まで**
 （-10 は届かない）。走査結果の表は `home_pose.yaml` の `rpy` のコメントにある。
 
+## 相手機の認識（テストラン・ビューア）
+
+検出器 `opponent_detector` をそのまま回して、俯瞰図・深度・「立っている / 倒れている」の
+判定をブラウザで見る。**サーボには触れない**（motion ノードを上げない）。
+見方と確かめる順は [相手機の認識.md](相手機の認識.md) §9。
+
+```bash
+# 実機のカメラで。起動時に出る URL（既定 8105 番）を手元の PC のブラウザで開く
+ros2 launch roboone_perception opponent_testrun.launch.py camera:=true
+
+# カメラが既に depth つきで上がっているなら（roboone.launch.py camera:=true など）
+ros2 launch roboone_perception opponent_testrun.launch.py
+
+# 1 フレームごとの判定を CSV に残す / ポートを変える
+ros2 launch roboone_perception opponent_testrun.launch.py camera:=true log:=/tmp/opp.csv
+ros2 launch roboone_perception opponent_testrun.launch.py camera:=true port:=8106
+
+# 実機なしで画面と判定だけ確かめる（合成シーン。ROS のトピックも要らない）
+ros2 run roboone_perception opponent_viewer --demo
+```
+
+前提と注意:
+
+- `roboone.launch.py` が既定（`imu:=true`）で上がっていると RealSense は IMU 専用で
+  掴まれていて depth が出ない。**先に機体の launch を止める**か、機体を `camera:=true` で
+  上げ直してから `camera` 無しのテストランを足す。
+- ビューアは検出器ノードそのもの。`opponent_detector.launch.py` や
+  `roboone.launch.py detector:=true` と**同時に上げない**（`/opponent` が二重になる）。
+- 画面の「カメラ高さ 実測」が `opponent_detector.yaml` の `body.cam_height` の答え合わせ。
+
+```bash
+# 検出と転倒判定の単体テスト（実機なし）
+cd src/roboone_perception && python3 -m pytest test/test_detect.py -q
+python3 -m pytest src/roboone_behavior/test/test_behavior.py -q -k "fall or flat or arms"
+```
+
 ## 自律動作（behavior）
 
 **behavior は上げただけでは機体を動かさない。** `/autonomy` が true の間しか
@@ -1311,9 +1347,21 @@ ros2 topic echo /joint_states             # 計画・IK は回るので関節角
   `motion_node.yaml` の `march` を true にするか、`ros2 run` で
   `--ros-args -p march:=true` を渡す。通常は起動後に `ros2 param set` で入れる
 - `/motion/state` は `WALK march`（静歩行なら `WALK walk=static march`）
-- 切っても止まらないときは `/cmd_walk` が来ていないか見る（指令があれば普通に歩く）
-- 止まらない・暴れるときの最短手は脱力: コントローラの **L1**、または
-  `/estop true`（下の「motion ノード」の節の QoS つきの pub）
+- **`march false` にしてから止まりきるまで約 3 秒かかる。**計画の停止シーケンス
+  （準備歩 → 足を揃える最後の歩 → 最後の両足支持）を踏むため。実測で IDLE まで
+  `ds_time` 0.3 で 2.89s（`ds_time` 0 なら 2.15s）、`walk_idle_hold` 0.25s を足して
+  HOLD まで約 3.1s。**待たずに「止まらない」と判断しないこと**
+- **すぐ止めたいときは L3 長押し（その場保持）。**トルクは入ったまま歩行だけ即座に
+  打ち切られ、今の姿勢で止まる（機体は倒れない）。`STAY` 中は `tickWalk` が回らないので
+  **march が true のままでも歩かない**。端末からは
+  `ros2 topic pub -t 3 /cmd_motion std_msgs/msg/String "{data: hold}"`
+- ★`STAY` から Options 長押しで HOLD に戻すと、**march が true のままなら即座にまた
+  歩き出す。**再開の前に `ros2 param set /motion march false` を打つこと
+- 3 秒待っても止まらないときは `/cmd_walk` が来ている（指令があれば march と無関係に
+  普通に歩く）。teleop のスティックのドリフトが `deadzone` を超えていることが多い:
+  `timeout 2 ros2 topic echo /cmd_walk --field linear`
+- 脱力させたいなら コントローラの **L1**、または `/estop true`（下の「motion ノード」の
+  節の QoS つきの pub）。★力が抜けるので支えていないと崩れる
 
 ## 歩行の横振り（foot_spacing と home_pose.yaml の foot.y）
 
