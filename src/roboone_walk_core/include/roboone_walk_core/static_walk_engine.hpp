@@ -313,6 +313,18 @@ public:
   }
 
   const StaticGaitParams & params() const { return p_; }
+
+  /// 歩き出し・歩き続けのしきい値だけを差し替える（足踏みの包み用）。
+  /// **幾何には一切触らない**ので、入れ切りしても軌道は跳ばない。負の値を入れると
+  /// 「指令がどれだけ小さくても歩き続ける」= その場で歩を踏み続ける（歩幅は v·T の
+  /// ままなので指令 0 で 0）。Python 版と JS 版は同じことを self.p / this.p の
+  /// 差し替えでやっている（roboone_viz/record.py の MarchWalkEngine、
+  /// template.html の MarchWalkEngineJS）。使うのは roboone_motion の WalkPlanner。
+  void setStartStopEps(double start_eps, double stop_eps)
+  {
+    p_.v_start_eps = start_eps;
+    p_.v_stop_eps = stop_eps;
+  }
   const std::vector<StepRecord> & steps() const { return steps_; }
 
 private:

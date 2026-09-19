@@ -112,6 +112,11 @@ public:
   /// 直近の周期で実際に出している伸ばし量 [mm]（レート制限のあと）。
   const double * loadFfOffset() const {return load_ff_state_.offset();}
 
+  /// 足踏み（walk_planner.hpp の WalkPlanner::setMarch）。実行中に変えられるので、
+  /// step() を呼ぶ側が毎周期渡す。**既定 false。true にした周期からその場で歩き出す。**
+  void setMarch(bool on) {walk_.setMarch(on);}
+  bool march() const {return walk_.march();}
+
   // --- 外からの指令（購読スレッドから呼ばれる。ロックを持つ）-------------
   void setEstop(bool v) {estop_.store(v);}
   void setWalkCmd(double vx, double vy, double wz, double stamp);

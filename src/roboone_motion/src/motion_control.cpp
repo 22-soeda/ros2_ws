@@ -71,6 +71,7 @@ std::string MotionController::stateText() const
   if (state_ == State::MOTION && player_.active()) {s += ":" + player_.name();}
   // 静歩行のときだけ足す。動歩行の文字列は今までと同じにしておく（behavior のテスト）
   if (walk_.mode() == WalkMode::Static) {s += " walk=static";}
+  if (walk_.march()) {s += " march";}   // 足踏み中は外から見えるようにする
   return s;
 }
 

@@ -734,6 +734,77 @@ int main(int argc, char ** argv)
       drop(c);
     }
 
+    // [5-9] 足踏み (march)。指令 0 のままその場で歩を踏み続ける。
+    //   **前後に進まないこと**が要点。2026-09-18〜19 は walk_engine.hpp の歩幅を
+    //   0 にする改造でこれをやっていて、C++ の歩行そのものが前に進まなくなっていた
+    //   (docs/サーボ追従と両足支持_実装計画.md §5)。march は歩き出し・歩き続けの
+    //   しきい値だけを無効にするので、歩幅は v·t_step = 0 で自然に 0 になる。
+    {
+      auto c = make();
+      c->setEstop(false);
+      c->requestMotion("home");
+      double now = 0.0;
+      auto t = c->step(now, dt, &meas, why, true);
+      for (int i = 0; i < 800 && t.state != rm::State::HOLD; ++i) {
+        now += dt;
+        t = c->step(now, dt, &meas, why, true);
+      }
+      check(t.state == rm::State::HOLD, "足踏みの前は HOLD");
+
+      // march を入れずに指令 0 を入れ続けても歩き出さない
+      for (int i = 0; i < 200; ++i) {
+        now += dt;
+        c->setWalkCmd(0.0, 0.0, 0.0, now);
+        t = c->step(now, dt, &meas, why, true);
+      }
+      check(t.state == rm::State::HOLD, "★march = false なら指令 0 で歩き出さない (既定)");
+
+      // march を入れる。指令は 0 のまま
+      c->setMarch(true);
+      const double t_one = gait.ds_time + gait.t_step;
+      const int n_march = static_cast<int>(std::lround(4.0 * t_one / dt));
+      double x_min = 1e9, x_max = -1e9, z_max[rm::kNumSide] = {-1e9, -1e9};
+      bool saw_walk = false;
+      int lifts[rm::kNumSide] = {0, 0};
+      bool up[rm::kNumSide] = {false, false};
+      for (int i = 0; i < n_march; ++i) {
+        now += dt;
+        c->setWalkCmd(0.0, 0.0, 0.0, now);
+        t = c->step(now, dt, &meas, why, true);
+        saw_walk = saw_walk || t.state == rm::State::WALK;
+        for (int sd = 0; sd < rm::kNumSide; ++sd) {
+          const rm::FootPose & f = c->currentPose().foot[sd];
+          x_min = std::min(x_min, f.p.x);
+          x_max = std::max(x_max, f.p.x);
+          // ホーム姿勢より 10mm 以上持ち上がったら 1 回と数える (z は下向きが負)
+          const bool now_up = f.p.z - home.foot[sd].p.z > 10.0;
+          if (now_up && !up[sd]) {lifts[sd] += 1;}
+          up[sd] = now_up;
+          z_max[sd] = std::max(z_max[sd], f.p.z - home.foot[sd].p.z);
+        }
+      }
+      check(saw_walk, "march = true なら指令 0 でも WALK に入る");
+      check(
+        lifts[rm::kRight] >= 1 && lifts[rm::kLeft] >= 1,
+        fmt(
+          "左右とも足が上がる (右 %d 回 / 左 %d 回、最高 右 %.1f / 左 %.1f mm)",
+          lifts[rm::kRight], lifts[rm::kLeft], z_max[rm::kRight], z_max[rm::kLeft]));
+      check(
+        x_max - x_min < 1.0,
+        fmt("★前後に進まない (足先の前後の振れ幅 %.3f mm)", x_max - x_min));
+
+      // march を切ると止まって HOLD へ戻る
+      c->setMarch(false);
+      const int n_stop = static_cast<int>(std::lround(6.0 * t_one / dt));
+      for (int i = 0; i < n_stop; ++i) {
+        now += dt;
+        c->setWalkCmd(0.0, 0.0, 0.0, now);
+        t = c->step(now, dt, &meas, why, true);
+      }
+      check(t.state == rm::State::HOLD, "march を切ったら HOLD に戻る");
+      drop(*c);
+    }
+
     // [5-7] 武装の起点はサーボ角。脱力して垂れた足首から跳ばずに立つ。
     //   2026-09-17 の bag: 起動直後の脱力で両脚とも足首クランク ≈ (+94.5°, +94.0°)。
     //   CRANK_LIMIT_DEG の箱の外なので、FK で足裏を出す旧方式では武装しなかった

@@ -1265,6 +1265,39 @@ python3 src/roboone_viz/roboone_viz/walk_reach.py \
     --ds-time 0,0.2,0.3,0.4 --foot-spacing 0.14,0.15 --swing-height 0.05,0.04,0.03
 ```
 
+## 足踏み（march）
+
+`/cmd_walk` が 0 でも**その場で歩を踏み続ける**。歩幅は `v·t_step` なので指令 0 で 0。
+前進させずに、歩の周期・足上げ・安定化・両足支持の効き目だけを実機で見るためのもの。
+動歩行・静歩行のどちらでも効く。**既定 false。**
+
+中身は `roboone_motion/include/roboone_motion/walk_planner.hpp` の `WalkPlanner::setMarch`。
+歩き出し・歩き続けのしきい値（`v_start_eps` / `v_stop_eps`）だけを無効にする実装で、
+**歩行計画の幾何には一切触らない**（入れ切りしても足先は跳ばない）。
+
+★**歩幅を 0 にする改造で足踏みを作らないこと。** 2026-09-18〜19 は `walk_engine.hpp` の
+`lx = 0.0` でそれをやっていて、コミットに紛れて C++ の歩行そのものが前に進まなくなっていた
+（`compare_walk_engines.py` の前進・斜めのケースが検出する）。
+
+```bash
+# 実装の検算（実機なし。[5-9] が全部 ok になること）
+ros2 run roboone_motion motion_selftest
+
+# ★実機。トルクが入っていれば true にした周期から動く。必ず機体を支えてから
+ros2 param set /motion march true
+ros2 topic echo --once /motion/state      # "WALK march" が出る
+ros2 param set /motion march false        # 次の歩の境界から停止シーケンス -> HOLD
+
+# トルクを入れずに通しで見る（バスは開くが位置指令を送らない）
+ros2 launch roboone_bringup motion.launch.py allow_torque:=false
+ros2 param set /motion march true
+ros2 topic echo /joint_states             # 計画・IK は回るので関節角は動く
+```
+
+- 起動時に `march:=true` を渡すこともできる（`-p march:=true`）
+- `/motion/state` は `WALK march`（静歩行なら `WALK walk=static march`）
+- 切っても止まらないときは `/cmd_walk` が来ていないか見る（指令があれば普通に歩く）
+
 ## 歩行の横振り（foot_spacing と home_pose.yaml の foot.y）
 
 横の重心経路（骨盤をどこまで支持足へ寄せるか）は `gait.yaml` の **`foot_spacing`**（計画上の

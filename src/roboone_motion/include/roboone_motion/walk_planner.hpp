@@ -91,17 +91,43 @@ struct WalkSetup
 };
 
 /// 選んだほうの計画器だけを回す。
+///
+/// 足踏み (march) について:
+///   指令が小さいと計画器は歩き出さず (v_start_eps)、歩の境界で止まる (v_stop_eps)。
+///   march の間はこの 2 つのしきい値だけを無効にするので、**指令 0 のままその場で
+///   歩を踏み続ける** (歩幅は v·T なので 0)。計画の幾何は何も変えないから、
+///   入れ切りしても足先は跳ばない。既定は false。
+///   同じ包みが Python 版 (roboone_viz/record.py の MarchWalkEngine) と
+///   JS 版 (template.html の MarchWalkEngineJS) にあり、walk_core 本体 (3 実装照合の
+///   対象) には入っていない。**足踏みのために歩幅を 0 にするような改造をしないこと**
+///   (2026-09-18〜19 に walk_engine.hpp の lx = 0 がコミットに紛れ、C++ だけ前に
+///   進まなくなった。docs/サーボ追従と両足支持_実装計画.md §5)。
 class WalkPlanner
 {
 public:
   void configure(const WalkSetup & s)
   {
     mode_ = s.mode;
+    eps_[0][0] = s.gait.v_start_eps;
+    eps_[0][1] = s.gait.v_stop_eps;
+    eps_[1][0] = s.stat.v_start_eps;
+    eps_[1][1] = s.stat.v_stop_eps;
     dyn_ = rwc::WalkEngine(s.gait);
     stat_ = rwc::StaticWalkEngine(s.stat);
+    applyMarch();          // configure でエンジンを作り直すので入れ直す
   }
 
   WalkMode mode() const {return mode_;}
+
+  /// 足踏み。**true にした周期からその場で歩き始める** (立位で torque が入っていれば
+  /// 実機が動く)。false に戻すと次の歩の境界から通常の停止シーケンスに入る。
+  void setMarch(bool on)
+  {
+    if (on == march_) {return;}
+    march_ = on;
+    applyMarch();
+  }
+  bool march() const {return march_;}
 
   rwc::WalkOutputs update(double vx, double vy, double dt)
   {
@@ -116,7 +142,17 @@ public:
   }
 
 private:
+  void applyMarch()
+  {
+    // 負のしきい値 = 「どれだけ小さい指令でも歩いている」
+    dyn_.setStartStopEps(march_ ? -1.0 : eps_[0][0], march_ ? -1.0 : eps_[0][1]);
+    stat_.setStartStopEps(march_ ? -1.0 : eps_[1][0], march_ ? -1.0 : eps_[1][1]);
+  }
+
   WalkMode mode_ = WalkMode::Dynamic;
+  bool march_ = false;
+  //! configure() で受け取った素のしきい値 [動歩行/静歩行][start/stop]
+  double eps_[2][2] = {{0.005, 0.010}, {0.005, 0.010}};
   rwc::WalkEngine dyn_{rwc::GaitParams{}};
   rwc::StaticWalkEngine stat_{rwc::StaticGaitParams{}};
 };

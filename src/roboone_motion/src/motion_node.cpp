@@ -531,6 +531,7 @@ private:
         std::lock_guard<std::mutex> lk(param_mtx_);
         ctrl_.setLoadFf(load_ff_);
       }
+      ctrl_.setMarch(march_.load());   // 足踏み (実行中に変えられる)
       const rm::MotionController::Tick t =
         ctrl_.step(now, dt, meas.ok ? &meas.pose : nullptr, meas.why, bank_.torqueReady());
       bank_.setWantTorque(t.want_torque);
@@ -619,6 +620,11 @@ private:
     en.description =
       "歩行計画の重心加速度 ω²(x_C − p) を IMU の比力から引いてから傾きを出すか";
     accel_ff_ = declare_parameter<bool>("imu.accel_ff", accel_ff_, en);
+    en.description =
+      "足踏み。true の間は /cmd_walk が 0 でもその場で歩を踏み続ける "
+      "(歩幅は v·t_step なので 0)。動歩行・静歩行のどちらでも効く。"
+      "**立位でトルクが入っていれば、true にした周期から実機が動く。** 既定 false";
+    march_ = declare_parameter<bool>("march", march_, en);
 
     rcl_interfaces::msg::ParameterDescriptor mount;
     mount.description =
@@ -709,6 +715,19 @@ private:
       }
       if (n == "imu.accel_ff") {
         accel_ff_ = p.as_bool();
+        touched = true;
+        continue;
+      }
+      if (n == "march") {
+        const bool on = p.as_bool();
+        if (on != march_.load()) {
+          RCLCPP_WARN(
+            get_logger(),
+            on ?
+            "足踏み ON — /cmd_walk が 0 でもその場で歩き続ける。トルクが入っていれば動く" :
+            "足踏み OFF — 次の歩の境界から停止シーケンスに入る");
+        }
+        march_ = on;
         touched = true;
         continue;
       }
@@ -1107,6 +1126,8 @@ private:
   rm::LoadFfParams load_ff_;
   rm::Stabilizer stab_;           //!< control スレッドだけが触る
   std::atomic<bool> accel_ff_{true};
+  //! 足踏み (walk_planner.hpp)。**既定 false。true の間は指令 0 でもその場で歩き続ける。**
+  std::atomic<bool> march_{false};
   double start_steady_ = 0.0;
   bool imu_seen_ = false, imu_warned_ = false;
   std_msgs::msg::MultiArrayLayout stab_layout_;
