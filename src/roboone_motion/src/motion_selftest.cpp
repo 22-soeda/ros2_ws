@@ -687,13 +687,21 @@ int main(int argc, char ** argv)
       const rm::BodyPose meas8 = asMeasured(map, home8);
       rm::MotionController c;
       c.configure(&map, &lib5, gait, home8, body_pitch, copt);
+      static char dev_where[64] = "";
       auto dev = [&home8](const rm::BodyPose & p) {
           double d = 0.0;
           for (int s = 0; s < rm::kNumSide; ++s) {
-            d = std::max(
-              {d, std::abs(p.foot[s].p.x - home8.foot[s].p.x),
-                std::abs(p.foot[s].p.y - home8.foot[s].p.y),
-                std::abs(p.foot[s].p.z - home8.foot[s].p.z)});
+            const double e[3] = {
+              p.foot[s].p.x - home8.foot[s].p.x, p.foot[s].p.y - home8.foot[s].p.y,
+              p.foot[s].p.z - home8.foot[s].p.z};
+            for (int k = 0; k < 3; ++k) {
+              if (std::abs(e[k]) > d) {
+                d = std::abs(e[k]);
+                std::snprintf(
+                  dev_where, sizeof(dev_where), "%s脚 %c %+.3f",
+                  s == rm::kRight ? "R" : "L", "xyz"[k], e[k]);
+              }
+            }
           }
           return d;
         };
@@ -713,7 +721,7 @@ int main(int argc, char ** argv)
       }
       check(
         t.state == rm::State::HOLD && hold_dev < 1e-6,
-        fmt("★HOLD の足はホーム姿勢の足のまま (0.5s の最大ずれ %.2g mm)", hold_dev));
+        fmt("★HOLD の足はホーム姿勢の足のまま (0.5s の最大ずれ %.2g mm: %s)", hold_dev, dev_where));
 
       // 歩いて止まると、ホーム姿勢の足へ戻る。残るのは計画の停止位置のずれ
       // （重心の静止判定 settle_eps と、最後の歩の着地補正）だけ
@@ -730,7 +738,7 @@ int main(int argc, char ** argv)
       const double walk_dev = dev(c.currentPose());
       check(
         t.state == rm::State::HOLD && walk_dev < 3.0,
-        fmt("歩いて止まった後の足もホーム姿勢の足 (ずれ %.2f mm)", walk_dev));
+        fmt("歩いて止まった後の足もホーム姿勢の足 (ずれ %.2f mm: %s)", walk_dev, dev_where));
       drop(c);
     }
 

@@ -361,6 +361,11 @@ p99 5.7ms / 最大 27ms（0.5% が 8ms 超）。
 `roboone_motion/include/roboone_motion/load_ff.hpp`、設定は `motion_node.yaml` の `load_ff`。
 **既定は `sink: 0.0` で今までと同じ動き。** 実行中に変えられる。
 
+★2026-09-19 まで `LoadFfParams::sink` の**構造体の既定だけ 8.0** が残っていた
+（yaml・ヘッダの説明・セルフテストは全部 0 と書いてあった）。`motion_node.yaml` を
+通さずに使うと立位でも両脚が 4mm = `sink/2` 伸びる（**HOLD でも `tickWalk` が回り、
+両足接地の割合は 0.5 ずつになる**）。`motion_selftest` の 4 件の NG はこれだった。
+
 ```bash
 # 実装の検算（実機なし。[10] が全部 ok になること）
 ros2 run roboone_motion motion_selftest
@@ -1256,6 +1261,10 @@ done
 - 起動ログに「両足支持 0.30s + 単脚支持 0.60s = 1 歩 0.90s。歩く速さは指令の 67%」が出る
 - 0.4 s を超えると警告が出る（今の `a_max` では計画が発散しうる）
 - `/motion/stab` では、両足支持の間は `walk_state` = 2（STEP）で `support` = 0
+- **歩くのが遅くなる**（歩幅は `v·t_step` のままなので、実効速度は `t_step/(ds_time+t_step)` 倍）
+- 2026-09-19 に `td_overdrive` も 0 にした（静歩行は 9/18 に先に 0）。4mm の押し込みは
+  歩の境界の 1 周期（5ms）で 0 へ戻るので、その瞬間だけ要求速度が ID5 5913 step/s まで
+  跳ねていた。今は遊脚が位相 1.000 ちょうどで床に着く（起動ログの「遊脚」の行）
 
 ```bash
 # 設定ごとに横振り・発散・足先の到達を走査する（実機不要。leg_service を使う。数分かかる）
