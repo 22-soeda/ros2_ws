@@ -255,8 +255,7 @@ private:
   // 戻り値: (p_nom, b_here, b_next)
   void step_params(Vec2 & p_nom, Vec2 & b_here, Vec2 & b_next) const
   {
-    // const double lx = v_[0] * p_.t_step; // 歩行用実装
-    const double lx = 0.0; // 足踏み用
+    const double lx = v_[0] * p_.t_step;
     const double ly = v_[1] * p_.t_step;
     const double w = p_.foot_spacing;
     const int s_next = -sup_;
@@ -275,8 +274,7 @@ private:
   // ds_time > 0 版 (engine.py _step_params_ds 参照)。戻り値: (p_nom, c_next, c_after)
   void step_params_ds(Vec2 & p_nom, Vec2 & c_next, Vec2 & c_after) const
   {
-    // const double lx = v_[0] * p_.t_step; // 歩行用実装
-    const double lx = 0.0; // 足踏み用
+    const double lx = v_[0] * p_.t_step;
     const double ly = v_[1] * p_.t_step;
     const double w = p_.foot_spacing;
     const int s_next = -sup_;
