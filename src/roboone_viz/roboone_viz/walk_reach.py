@@ -8,6 +8,8 @@ IK + 機構層 (reach.py) に通す。
 
     python3 src/roboone_viz/roboone_viz/walk_reach.py \
         --ds-time 0,0.2,0.3,0.4 --foot-spacing 0.14,0.15 --swing-height 0.05,0.04,0.03
+    python3 src/roboone_viz/roboone_viz/walk_reach.py          # 今の gait.yaml そのもの
+    # 横の寄り (骨盤が支持足へ寄る割合) は --t-step / --ds-time / --foot-spacing で決まる
 
 先に colcon build --packages-select roboone_kinematics (leg_service を使う)。
 ★足裏は水平で見ている (reach.py の注記。home_pose の rpy・body_pitch が 0 の前提)。
@@ -153,6 +155,7 @@ def main(argv=None):
     ap.add_argument('--ds-time', default=None, help='両足支持 [s] (カンマ区切り)')
     ap.add_argument('--foot-spacing', default=None, help='計画上の足間隔 [m] (カンマ区切り)')
     ap.add_argument('--swing-height', default=None, help='足上げ [m] (カンマ区切り)')
+    ap.add_argument('--t-step', default=None, help='単脚支持 [s] (カンマ区切り)')
     args = ap.parse_args(argv)
 
     base = GaitParams.from_yaml(args.gait)
@@ -167,15 +170,18 @@ def main(argv=None):
         return 1
     print(f'実機の足 ±{real_half:.1f}mm (home_pose.yaml)。届かない時間は 10ms 刻みで数えた合計')
     try:
-        for td, w, h in itertools.product(
+        for ts, td, w, h in itertools.product(
+                axis(args.t_step, base.t_step),
                 axis(args.ds_time, base.ds_time),
                 axis(args.foot_spacing, base.foot_spacing),
                 axis(args.swing_height, base.swing_height)):
-            p = replace(base, ds_time=td, foot_spacing=w, swing_height=h)
+            p = replace(base, t_step=ts, ds_time=td, foot_spacing=w, swing_height=h)
             r = scan(reach, p, real_half)
             bad = r['bad']
-            print(f'ds={td:.2f}s W={w * 1000:5.1f}mm h={h * 1000:3.0f}mm | '
-                  f'骨盤→支持足 {r["inward"]:5.1f}mm 横速 {r["vlat"]:.2f}m/s | '
+            print(f'T={ts:.2f}s ds={td:.2f}s W={w * 1000:5.1f}mm h={h * 1000:3.0f}mm | '
+                  f'骨盤→支持足 {r["inward"]:5.1f}mm '
+                  f'(寄り {100.0 * (1.0 - r["inward"] / real_half):3.0f}%) '
+                  f'横速 {r["vlat"]:.2f}m/s | '
                   f'発散 {",".join(r["diverged"]) or "-"} | '
                   f'クランプ {",".join(r["clamped"]) or "-"} | '
                   f'届かない {sum(bad.values()) * 10}ms '
