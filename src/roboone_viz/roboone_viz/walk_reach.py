@@ -76,10 +76,17 @@ def profiles(vx, vy):
 
 
 def home_half(path):
-    """home_pose.yaml の foot.y [mm] (実機の足の半間隔)。"""
+    """home_pose.yaml の動歩行の foot.y [mm] (実機の足の半間隔)。
+
+    立位は歩行の計画器ごとに持てる (walk_mode: dynamic: foot:)。あればそちらが優先
+    (motion ノードの loadHomePose と同じ読み方)。
+    """
     import yaml
     with open(path, encoding='utf-8') as f:
-        return float((yaml.safe_load(f) or {}).get('foot', {}).get('y', 89.3))
+        d = yaml.safe_load(f) or {}
+    y = d.get('foot', {}).get('y', 89.3)
+    over = ((d.get('walk_mode') or {}).get('dynamic') or {}).get('foot') or {}
+    return float(over.get('y', y))
 
 
 def scan(reach, p, real_half):

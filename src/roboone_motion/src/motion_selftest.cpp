@@ -453,6 +453,62 @@ int main(int argc, char ** argv)
     } else {
       rm::checkPoseReachable(map, home, "ホーム姿勢", ev);
       rm::checkStance(gait, home, ev);
+
+      // 立位は歩行の計画器ごとに持てる (home_pose.yaml の walk_mode:)。上書きが効くこと、
+      // 書いていないキーは共通の foot: のままなこと、打ち間違いを黙って通さないこと
+      {
+        const std::string tmp = "/tmp/roboone_selftest_home_pose.yaml";
+        auto write = [&tmp](const char * text) {
+            FILE * fp = std::fopen(tmp.c_str(), "w");
+            if (fp) {
+              std::fputs(text, fp);
+              std::fclose(fp);
+            }
+          };
+        rm::WalkSetup wd, ws;
+        wd.mode = rm::WalkMode::Dynamic;
+        ws.mode = rm::WalkMode::Static;
+        wd.gait.z_c = 0.280;
+        rm::BodyPose hd, hs;
+        double bp = 0.0;
+        rm::EventQueue evm;
+        std::string em;
+        write(
+          "foot: {height: 261.0, x: -3.0, y: 70.0, rpy: [0, 0, 0]}\n"
+          "walk_mode:\n"
+          "  dynamic:\n"
+          "    foot: {height: 280.0, y: 89.3}\n");
+        const bool okd = rm::loadHomePose(tmp, map, wd, hd, bp, evm, em);
+        const bool oks = rm::loadHomePose(tmp, map, ws, hs, bp, evm, em);
+        check(
+          okd && oks &&
+          std::abs(hd.foot[rm::kLeft].p.y - 89.3) < 1e-9 &&
+          std::abs(hd.foot[rm::kLeft].p.z + 280.0) < 1e-9 &&
+          std::abs(hs.foot[rm::kLeft].p.y - 70.0) < 1e-9 &&
+          std::abs(hs.foot[rm::kLeft].p.z + 261.0) < 1e-9,
+          "★立位はモードごとに持てる (動歩行 ±89.3 / 280、指定の無い静歩行は共通の ±70 / 261)");
+        check(
+          std::abs(hd.foot[rm::kLeft].p.x + 3.0) < 1e-9 &&
+          std::abs(hd.foot[rm::kRight].p.y + 89.3) < 1e-9,
+          "上書きしていないキー (x) は共通の foot: のまま。左右は鏡像");
+        write(
+          "foot: {height: 261.0, y: 70.0}\n"
+          "walk_mode:\n"
+          "  dynamic:\n"
+          "    foot: {hight: 280.0}\n");
+        check(
+          !rm::loadHomePose(tmp, map, wd, hd, bp, evm, em),
+          "walk_mode: の foot: の打ち間違い (hight) は読み込みで落とす");
+        write(
+          "foot: {height: 261.0, y: 70.0}\n"
+          "walk_mode:\n"
+          "  dynamik:\n"
+          "    foot: {height: 280.0}\n");
+        check(
+          !rm::loadHomePose(tmp, map, wd, hd, bp, evm, em),
+          "walk_mode: のモード名の打ち間違い (dynamik) も落とす");
+        std::remove(tmp.c_str());
+      }
       rm::checkWalkEnvelope(map, gait, home, body_pitch, ev);
     }
     // Error が 1 つでも出たら落とす。**実機を起こす前にここで止める**のが目的。
@@ -1601,13 +1657,25 @@ int main(int argc, char ** argv)
     walk_yaml.gait = gait;
     rm::WalkSetup walk = walk_yaml;
 
+    // 静歩行の立位。home_pose.yaml の walk_mode: static: で動歩行とは別に持てるので、
+    // この節は静歩行として読み直したホーム姿勢で見る
+    rm::BodyPose home_s = home;
+    {
+      rm::EventQueue evh;
+      std::string eh;
+      double bp = 0.0;
+      check(
+        rm::loadHomePose(home_pose_path, map, walk_yaml, home_s, bp, evh, eh),
+        "静歩行の立位 (home_pose.yaml の walk_mode: static:) を読める " + eh);
+    }
+
     // (a) static_gait.yaml そのものの門。config の話なので --strict のときだけ落とす
     {
       rm::EventQueue ev;
       rm::loadStaticGait(static_gait_path, walk_yaml.stat, ev);
       rm::checkStaticGait(walk_yaml.stat, ev);
-      rm::checkStaticStance(walk_yaml.stat, home, ev);
-      rm::checkStaticWalkEnvelope(map, walk_yaml, home, body_pitch, ev);
+      rm::checkStaticStance(walk_yaml.stat, home_s, ev);
+      rm::checkStaticWalkEnvelope(map, walk_yaml, home_s, body_pitch, ev);
       int nerr = 0;
       rm::Event e;
       while (ev.pop(e)) {
@@ -1628,7 +1696,7 @@ int main(int argc, char ** argv)
     // (b) 門が食い違いを拾うこと (コードの検算。config に依らず落とす)
     {
       const rm::rwc::StaticGaitParams base;       // 既定値 = static_gait.yaml
-      rm::BodyPose home70 = home;
+      rm::BodyPose home70 = home_s;
       for (int s = 0; s < rm::kNumSide; ++s) {
         const double lat = (s == rm::kLeft) ? +1.0 : -1.0;
         home70.foot[s].p = rk::Vec3{0.0, lat * base.foot_spacing * 500.0, -base.z_c * 1000.0};
@@ -1678,7 +1746,7 @@ int main(int argc, char ** argv)
     // (c) 状態機械が静歩行で歩いて止まる。振り出し中の重心は門の言うとおりの位置
     //     (ホーム姿勢の足を計画の足間隔から 5mm 外へずらし、重心が内へ 5mm ずれる形で見る)
     {
-      rm::BodyPose home5 = home;
+      rm::BodyPose home5 = home_s;
       const double half = walk.stat.foot_spacing * 500.0;
       for (int s = 0; s < rm::kNumSide; ++s) {
         const double lat = (s == rm::kLeft) ? +1.0 : -1.0;
@@ -1691,7 +1759,7 @@ int main(int argc, char ** argv)
       c.configure(&map, &lib5, walk, home5, body_pitch, copt);
       const std::string why = "(テスト)";
       c.setEstop(false);
-      c.requestMotion("home");
+      c.requestMotion("home");   // ★技名。BodyPose の home_s と間違えないこと
       double now = 0.0;
       auto t = c.step(now, dt, &meas5, why, true);
       for (int i = 0; i < 800 && t.state != rm::State::HOLD; ++i) {
@@ -1776,7 +1844,7 @@ int main(int argc, char ** argv)
 
       // 動歩行で組んだら、状態の文字列は今までと同じ
       rm::MotionController d;
-      d.configure(&map, &lib5, gait, home, body_pitch, copt);
+      d.configure(&map, &lib5, gait, home_s, body_pitch, copt);
       check(
         d.walkMode() == rm::WalkMode::Dynamic && d.stateText() == "RELAX",
         "動歩行では /motion/state に何も足さない (" + d.stateText() + ")");
@@ -1786,7 +1854,7 @@ int main(int argc, char ** argv)
     {
       rm::Stabilizer st;
       const rm::SwingTiming sw = walk.swingTiming();
-      st.configure(&map, home, body_pitch, sw);
+      st.configure(&map, home_s, body_pitch, sw);
       {
         rm::Event e;
         while (st.popEvent(e)) {}

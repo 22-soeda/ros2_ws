@@ -165,6 +165,16 @@ bool loadHomePose(
   const std::string & path, const ServoMap & map, const rwc::GaitParams & gait,
   BodyPose & out, double & body_pitch, EventQueue & ev, std::string & err)
 {
+  WalkSetup walk;
+  walk.mode = WalkMode::Dynamic;
+  walk.gait = gait;
+  return loadHomePose(path, map, walk, out, body_pitch, ev, err);
+}
+
+bool loadHomePose(
+  const std::string & path, const ServoMap & map, const WalkSetup & walk,
+  BodyPose & out, double & body_pitch, EventQueue & ev, std::string & err)
+{
   YAML::Node y;
   try {
     y = YAML::LoadFile(path);
@@ -180,13 +190,53 @@ bool loadHomePose(
     return false;
   }
   const YAML::Node & f = y["foot"];
-  const double h = f["height"] ? f["height"].as<double>() : 282.0;
-  const double x = f["x"] ? f["x"].as<double>() : 0.0;
-  const double half = f["y"] ? f["y"].as<double>() : -rk::config::HIP_Y;
+  double h = f["height"] ? f["height"].as<double>() : 282.0;
+  double x = f["x"] ? f["x"].as<double>() : 0.0;
+  double half = f["y"] ? f["y"].as<double>() : -rk::config::HIP_Y;
   double rpy[3]{0.0, 0.0, 0.0};
-  if (f["rpy"] && f["rpy"].IsSequence() && f["rpy"].size() == 3) {
-    for (int k = 0; k < 3; ++k) {
-      rpy[k] = f["rpy"][k].as<double>() * M_PI / 180.0;
+  auto read_rpy = [&rpy](const YAML::Node & n) {
+      if (n && n.IsSequence() && n.size() == 3) {
+        for (int k = 0; k < 3; ++k) {
+          rpy[k] = n[k].as<double>() * M_PI / 180.0;
+        }
+      }
+    };
+  read_rpy(f["rpy"]);
+
+  // 歩行の計画器ごとの立位 (walk_mode: <mode>: foot:)。書いてあるキーだけ上書きする。
+  // 打ち間違いを黙って既定へ落とさない (モード名も、foot: の中のキーも)。
+  const char * mode_name = walkModeName(walk.mode);
+  std::string over;
+  if (const YAML::Node wm = y["walk_mode"]) {
+    for (const auto & kv : wm) {
+      const std::string name = kv.first.as<std::string>();
+      WalkMode dummy;
+      if (!parseWalkMode(name, dummy)) {
+        err = path + ": walk_mode: に知らないモード \"" + name + "\" (dynamic / static)";
+        return false;
+      }
+    }
+    // ★無いキーを続けて引くと yaml-cpp は例外を投げる (InvalidNode)。1 段ずつ確かめる
+    const YAML::Node m = wm[mode_name];
+    const YAML::Node mf = (m && m.IsMap()) ? m["foot"] : YAML::Node();
+    if (mf && mf.IsMap()) {
+      for (const auto & kv : mf) {
+        const std::string key = kv.first.as<std::string>();
+        if (key == "height") {
+          h = kv.second.as<double>();
+        } else if (key == "x") {
+          x = kv.second.as<double>();
+        } else if (key == "y") {
+          half = kv.second.as<double>();
+        } else if (key == "rpy") {
+          read_rpy(kv.second);
+        } else {
+          err = path + ": walk_mode: " + mode_name + ": foot: に知らないキー \"" + key +
+            "\" (height / x / y / rpy)";
+          return false;
+        }
+        over += (over.empty() ? "" : ", ") + key;
+      }
     }
   }
   if (!(h > 0.0)) {
@@ -225,6 +275,12 @@ bool loadHomePose(
       "ホーム姿勢 (%s): 足裏 高さ %.1fmm / 前後 %+.1fmm / 半間隔 %.1fmm / "
       "姿勢 rpy [%.1f, %.1f, %.1f] deg / 胴体の前傾 %+.1f deg",
       path.c_str(), h, x, half, rpy[0] * kR2D, rpy[1] * kR2D, rpy[2] * kR2D, bp_deg));
+  if (!over.empty()) {
+    ev.info(
+      fmt(
+        "ホーム姿勢は walk_mode: %s: の立位 (%s を上書き)。HOLD・home・歩行とも"
+        "この立位に揃う", mode_name, over.c_str()));
+  }
   if (bp_deg != 0.0) {
     ev.info(
       fmt(
@@ -232,12 +288,14 @@ bool loadHomePose(
         "膝・足首の関節角は変わらない)", bp_deg, -bp_deg));
   }
 
-  // 骨盤高さ (z_c) が gait.yaml と食い違っていたら言う。歩行の計画高さと実際の
-  // 立位高さがずれると、LIPM の ω が実機と合わない。
-  if (std::abs(h / 1000.0 - gait.z_c) > 0.005) {
+  // 骨盤高さ (z_c) が**選んだモードの**計画と食い違っていたら言う。歩行の計画高さと
+  // 実際の立位高さがずれると、LIPM の ω が実機と合わない。静歩行は checkStaticStance も
+  // 同じことを言うので、ここでは動歩行だけ見る。
+  if (!walk.isStatic() && std::abs(h / 1000.0 - walk.gait.z_c) > 0.005) {
     ev.warn(
       fmt(
-        "ホーム姿勢の骨盤高さ %.3fm が gait.yaml の z_c %.3fm と違う", h / 1000.0, gait.z_c));
+        "ホーム姿勢の骨盤高さ %.3fm が gait.yaml の z_c %.3fm と違う",
+        h / 1000.0, walk.gait.z_c));
   }
   // 足間隔は gait.yaml の foot_spacing と違っていてよい (歩行の足はこちらに揃える。
   // checkStance が関係を言う)

@@ -68,6 +68,15 @@ void loadGait(const std::string & path, rwc::GaitParams & out, EventQueue & ev);
 ///
 /// body_pitch は foot: の外に置いてある。足裏そのものの性質ではなく**骨盤の姿勢**
 /// だから（歩行・技・ホームの全部に一様に掛かる）。
+///
+/// **立位は歩行の計画器 (walk.mode) ごとに持てる。** yaml の `walk_mode: <dynamic|static>:
+/// foot:` に書いたキー (height / x / y / rpy) だけが `foot:` を上書きする。モードは
+/// 起動時に 1 回決まるので、HOLD・home・歩行は全部そのモードの立位に揃う。
+/// 骨盤高さの突き合わせも、選んだモードの計画の z_c (walk.planZc()) とだけ行う。
+bool loadHomePose(
+  const std::string & path, const ServoMap & map, const WalkSetup & walk,
+  BodyPose & out, double & body_pitch, EventQueue & ev, std::string & err);
+/// 動歩行で読む（従来の呼び方）。
 bool loadHomePose(
   const std::string & path, const ServoMap & map, const rwc::GaitParams & gait,
   BodyPose & out, double & body_pitch, EventQueue & ev, std::string & err);

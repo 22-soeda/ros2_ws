@@ -1317,8 +1317,9 @@ done
 **足上げと足間隔はひと組で動かす（片方だけ戻すと遊脚が届かない）。**
 
 **2026-09-19 から既定は `ds_time 0.3 / foot_spacing 0.140 / swing_height 0.04`**
-（それ以前は `0 / 0.170 / 0.05`）。`ds_time: 0.0` に戻せば数値ごと従来の歩き方に戻る。
-値の選び方と走査表は `gait.yaml` の `ds_time` の注記。
+（それ以前は `0 / 0.170 / 0.05`）。値の選び方と走査表は `gait.yaml` の `ds_time` の注記。
+**2026-09-20 に動歩行の足を股の真下へ広げ、`foot_spacing 0.1786 / swing_height 0.035 /
+z_c 0.280` になった**（下の「立位は歩行の計画器ごとに持つ」の節）。
 
 - 起動ログに「両足支持 0.30s + 単脚支持 0.60s = 1 歩 0.90s。歩く速さは指令の 67%」が出る
 - 0.4 s を超えると警告が出る（今の `a_max` では計画が発散しうる）
@@ -1369,25 +1370,77 @@ ros2 param set /motion march true
 ros2 topic echo /joint_states             # 計画・IK は回るので関節角は動く
 ```
 
-- **`motion.launch.py` は `march` 引数を持たない。**起動時から入れたいなら
-  `motion_node.yaml` の `march` を true にするか、`ros2 run` で
-  `--ros-args -p march:=true` を渡す。通常は起動後に `ros2 param set` で入れる
-- `/motion/state` は `WALK march`（静歩行なら `WALK walk=static march`）
-- **`march false` にしてから止まりきるまで約 3 秒かかる。**計画の停止シーケンス
-  （準備歩 → 足を揃える最後の歩 → 最後の両足支持）を踏むため。実測で IDLE まで
-  `ds_time` 0.3 で 2.89s（`ds_time` 0 なら 2.15s）、`walk_idle_hold` 0.25s を足して
-  HOLD まで約 3.1s。**待たずに「止まらない」と判断しないこと**
-- **すぐ止めたいときは L3 長押し（その場保持）。**トルクは入ったまま歩行だけ即座に
-  打ち切られ、今の姿勢で止まる（機体は倒れない）。`STAY` 中は `tickWalk` が回らないので
-  **march が true のままでも歩かない**。端末からは
-  `ros2 topic pub -t 3 /cmd_motion std_msgs/msg/String "{data: hold}"`
-- ★`STAY` から Options 長押しで HOLD に戻すと、**march が true のままなら即座にまた
-  歩き出す。**再開の前に `ros2 param set /motion march false` を打つこと
-- 3 秒待っても止まらないときは `/cmd_walk` が来ている（指令があれば march と無関係に
-  普通に歩く）。teleop のスティックのドリフトが `deadzone` を超えていることが多い:
-  `timeout 2 ros2 topic echo /cmd_walk --field linear`
-- 脱力させたいなら コントローラの **L1**、または `/estop true`（下の「motion ノード」の
-  節の QoS つきの pub）。★力が抜けるので支えていないと崩れる
+## 立位は歩行の計画器ごとに持つ（home_pose.yaml の walk_mode:）
+
+実機の足の位置（`foot.y`）と骨盤の高さ（`foot.height`）は `home_pose.yaml` で決まるが、
+**動歩行と静歩行で別々の値を持てる**（2026-09-20）。`walk_mode: <dynamic|static>: foot:` に
+書いたキー（`height` / `x` / `y` / `rpy`）だけが共通の `foot:` を上書きする。モードは起動時に
+1 回決まるので、HOLD・home・歩行は全部そのモードの立位に揃う（足は跳ばない）。
+
+| | 動歩行 (`gait.yaml`) | 静歩行 (`static_gait.yaml`) |
+|---|---|---|
+| 足 `y` ＝ `foot_spacing`/2 | **±89.3（股の真下・足幅 178.6mm）** | ±70（足幅 140mm） |
+| 骨盤 `height` ＝ `z_c` | **280mm** | 261mm |
+| 足上げ | 35mm | 30mm |
+| 計画の足幅 `foot_spacing` | 155mm（実機より狭い。「横の寄り」の節） | 140mm（実機と同じ） |
+
+- **`height` と `z_c`、`y` と `foot_spacing` をそれぞれ揃えること**（食い違いは起動時に言う）
+- 動歩行の ±89.3 は骨盤 280 とひと組。足首パラレルリンクの横の到達は足を上げるほど
+  狭くなり（足上げ 40mm で骨盤から 152.5mm まで）、骨盤 261 のままでは届かない。
+  上げすぎると支持脚が伸び切る（290 で歩けない）。表は `home_pose.yaml` の注記
+- 静歩行を ±89.3 にできないのは、重心を支持足の真上まで運ぶぶん遊脚が足幅そのまま
+  （178.6mm + 横の歩幅）開くため。歩幅を半分にすれば届くが遅くなる
+- `motions.yaml` の技は絶対座標で書いてある（z −261 など）。**動歩行モードでは立位が
+  280 なので、技の最中は骨盤が 19mm 下がって戻る**
+
+```bash
+# どちらの立位で上がったかは起動ログに出る（バスを開かない）
+ROS_DOMAIN_ID=87 timeout -s INT 8 ros2 run roboone_motion motion_node --ros-args \
+    -r __node:=motion_check \
+    --params-file install/roboone_motion/share/roboone_motion/config/motion_node.yaml \
+    -p dry_run:=true -p allow_torque:=false -p walk_mode:=dynamic 2>&1 | grep "ホーム姿勢"
+#   ホーム姿勢 (...): 足裏 高さ 280.0mm / 前後 +0.0mm / 半間隔 89.3mm ...
+#   ホーム姿勢は walk_mode: dynamic: の立位 (height, y を上書き)。...
+#   -p walk_mode:=static なら 261.0mm / 70.0mm
+
+# 到達の走査（動歩行は home_pose.yaml の walk_mode: dynamic: の y を読む）
+python3 src/roboone_viz/roboone_viz/walk_reach.py          # 今の設定そのもの -> 届かない 0ms
+python3 src/roboone_viz/roboone_viz/static_reach.py        # 静歩行（足幅は static_gait.yaml）
+```
+
+## 横の寄り（動歩行で骨盤を支持足へどこまで寄せるか）
+
+単脚支持で骨盤が支持足へ寄る量を、足幅の半分（実機 89.3mm）に対する割合で見る。
+**静歩行は 100%。動歩行で 85% まで寄せたら、実機の足踏みで支持脚の外側へ倒れた**（2026-09-20）。
+単脚支持に入る瞬間の ξ（重心 + 速度/ω）の余裕が 2.4mm しか無く、純 FF では実機の勢いが
+少し大きいだけで外へ倒れ続ける。**外への倒れは次の一歩で受けられない**（足を外へは出せない）ので、
+計画は内寄りに取る。今は **61%**（`foot_spacing` 0.155 / `ds_time` 0.2 / `t_step` 0.45）。
+
+決めるつまみは `gait.yaml` の 3 つ。表と副作用は `foot_spacing` の注記:
+
+- `foot_spacing` 横振りだけを比例で縮める。時間もサーボの速さも変わらない。狭めるほど計画の
+  ZMP が実機の足の中心より内側へ寄る（今 11.8mm。足裏の半幅 37mm）。**まずここを動かす**
+- `ds_time` 短くすると寄りは減るが**横の最高速が上がる**（ξ の余裕は増えない）
+- `t_step` 短くすると寄りも増幅 e^{ωT} も減るが、足上げが速くなる
+
+まだ外へ倒れるなら `foot_spacing` を 0.150 → 0.145、遊脚側へ倒れ始めたら 0.160 へ戻す。
+起動時の「計画上の足間隔が実機の足より狭い」の警告は、この調整のために出ている（意図どおり）。
+
+```bash
+# 今の gait.yaml の寄り・横速・発散・到達を見る（実機不要。1 設定 30 秒ほど）
+python3 src/roboone_viz/roboone_viz/walk_reach.py
+#   T=0.45s ds=0.20s W=155.0mm h= 35mm | 骨盤→支持足 35.0mm (寄り 61%) 横速 0.33m/s | 発散 - | ... 届かない 0ms
+
+# つまみを振る（yaml は書き換えない）
+python3 src/roboone_viz/roboone_viz/walk_reach.py --foot-spacing 0.145,0.150,0.155,0.160
+python3 src/roboone_viz/roboone_viz/walk_reach.py --t-step 0.40,0.45,0.50 --ds-time 0.15,0.2
+
+# 値を変えたら（gait.yaml は起動時にしか読まない）
+colcon build --packages-select roboone_walk_ref   # そのあと motion を上げ直す
+
+# 横の減衰（実行中に試せる。2026-09-20 に 0.05 で「少し良くなった」。既定は 0 のまま）
+ros2 param set /motion stab.kd_roll 0.05
+```
 
 ## 歩行の横振り（foot_spacing と home_pose.yaml の foot.y）
 
@@ -1403,7 +1456,7 @@ ros2 topic echo /joint_states             # 計画・IK は回るので関節角
 - 単脚支持で**遊脚側へ**倒れる（`bag_walk_roll.py` の「遊脚側への傾き」が + で歩ごとに育つ）
   → 横振りが足りない。`foot_spacing` を上げる（`foot.y` は触らない）
 - 支持足の**外側へ**倒れる（同じ値が −）→ 振りすぎ。`foot_spacing` を下げる
-- `foot.y` を 89.3（股の真下）へ広げると、足上げ 50mm の遊脚が届かなくなる（`home_pose.yaml` の注記）
+- `foot.y` を 89.3（股の真下）へ広げるには骨盤を 280 へ上げ、足上げを 35mm に下げる必要がある（骨盤 261 のままでは足上げ 20mm でも届かない。`home_pose.yaml` の `walk_mode: dynamic:` の注記）
 - どちらのファイルも起動時にしか読まない。両方ビルドして motion を上げ直す
 
 ```bash

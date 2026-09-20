@@ -368,8 +368,9 @@ public:
     } else {
       rm::checkGait(walk_.gait, boot_);
     }
+    // 立位はモードごとに持てる (home_pose.yaml の walk_mode:)。walk_ を丸ごと渡す
     if (!rm::loadHomePose(
-        home_pose_yaml_, map_, walk_.gait, home_pose_, body_pitch_, boot_, err))
+        home_pose_yaml_, map_, walk_, home_pose_, body_pitch_, boot_, err))
     {
       drain();
       RCLCPP_ERROR(get_logger(), "%s", err.c_str());
