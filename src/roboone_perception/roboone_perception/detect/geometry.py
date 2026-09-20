@@ -103,6 +103,20 @@ def forward_ref(cam_pitch_deg):
     return np.array([0.0, -math.sin(t), math.cos(t)])
 
 
+def floor_visible_from(intr, cam_height, cam_pitch_deg):
+    """床が写り始める水平距離 [m]。画像の下端の視線が床と交わるところ。
+
+    下端の視線の俯角は「取り付けの俯角 + 垂直画角の下半分」。水平付け・高さ 0.40 m・
+    垂直画角 58 度なら 0.40 / tan(29 度) = 0.72 m。これより近い床は 1 画素も写らない。
+    下端が水平より上を向いている (床が写らない) ときは inf を返す。
+    """
+    lower = math.atan2(intr.height - 1 - intr.cy, intr.fy)
+    a = math.radians(cam_pitch_deg) + lower
+    if a <= 1e-3:
+        return float('inf')
+    return float(cam_height) / math.tan(a)
+
+
 def ring_basis(u, fwd=(0.0, 0.0, 1.0)):
     """鉛直 u から (e1: 前方, e2: 左) を作る。式 (1)(2)。
 

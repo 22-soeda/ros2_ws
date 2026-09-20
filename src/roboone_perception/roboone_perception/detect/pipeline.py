@@ -25,6 +25,7 @@ ROS には依存しない。入力は numpy の深度画像と内部パラメー
 """
 
 from dataclasses import dataclass, field
+import math
 import time
 
 import numpy as np
@@ -34,8 +35,10 @@ from . import edge as ed
 from . import grid as g
 from . import ring as rg
 from .attitude import AttitudeEstimator
-from .geometry import Deprojector, forward_ref, ring_basis, to_plane
+from .geometry import (Deprojector, floor_visible_from, forward_ref,
+                       ring_basis, to_plane)
 from .params import DetectorParams
+from .polar import PolarIndex
 from .tracker import AlphaBetaTracker
 
 # 状態 (§9.2)。「相手なし」を 1 つに潰さないための区別
@@ -55,6 +58,8 @@ class DetectionResult:
     ring_area: float = 0.0             # [m^2] ±30mm のスライスに残った面積
     plane_resid: float = float('nan')  # [m] 面あてはめの残差
     plane_corrected: bool = False      # このフレームで u が引き戻されたか
+    plane_angle_deg: float = float('nan')   # 推定中の鉛直と面法線の食い違い (門は 12 度)
+    stale_frames: int = 0              # 引き戻しが入らないまま進んだフレーム数
     n_points: int = 0
 
     # 相手 (追尾後)。status が OK でなくても、取れているときは埋める
@@ -71,6 +76,9 @@ class DetectionResult:
     clusters: list = field(default_factory=list)
     selected: object = None
     ring_mask: np.ndarray = None
+    interior_mask: np.ndarray = None   # リングの内側 (見えた面と自機の凸包)
+    outside_mask: np.ndarray = None    # 縁の外の帯にある「外の物」
+    seed_window: tuple = None          # (near, far) [m] 実際に使った種の窓
     obj_mask: np.ndarray = None
     above_mask: np.ndarray = None      # 面より上の全セル (リング外も含む)
     fov_cells: np.ndarray = None
@@ -98,24 +106,54 @@ class RingDetector:
         self.spec = g.GridSpec(cell=t.cell,
                                u_min=-t.grid_back, u_max=t.grid_forward,
                                v_min=-t.grid_side, v_max=t.grid_side)
+        self.polar = PolarIndex(self.spec)
         self._deproj = None
         self._seed = None
+        self._seed_key = None
+        self.seed_window = None
         #: 方位の基準にする機体前方 (カメラ座標)。光軸ではない (geometry の注記)
         self._fwd_ref = forward_ref(self.p.body.cam_pitch_deg)
         #: 追尾が外挿している間は、最後に観測した寸法を保つ
         self._last_shape = (float('nan'), float('nan'), float('nan'))
         self.frames = 0
 
+    def reset_reference(self, accel=None):
+        """基準姿勢を取り直す (AttitudeEstimator.reset の注記)。追尾も捨てる。
+
+        accel は静止中の加速度の平均。None なら取り付けから決まる鉛直へ戻す
+        (水平付けでホーム姿勢に立っていれば、それが正しい値に近い)。
+        """
+        ok = self.attitude.reset(up=self.p.body.up_from_mount, accel=accel)
+        self.tracker.reset()
+        self._last_shape = (float('nan'), float('nan'), float('nan'))
+        return ok
+
     # ---------------------------------------------------------------- 種
-    def _seed_mask(self):
-        """リング成分の種にするセル (params.TuneParams.seed_* の注記を参照)。"""
-        if self._seed is None:
-            t = self.p.tune
+    def _seed_mask(self, intr=None):
+        """リング成分の種にするセル (params.TuneParams.seed_* の注記を参照)。
+
+        seed_auto のときは、床が写り始める距離 (取り付けと画角で決まる) の先に窓を
+        置く。水平付けのカメラでは固定の 0.15〜0.70 m に床が 1 画素も写らない。
+        """
+        t = self.p.tune
+        key = None
+        if t.seed_auto and intr is not None:
+            key = (intr.height, round(intr.fy, 3), round(intr.cy, 3))
+        if self._seed is None or key != self._seed_key:
+            near, far = t.seed_near, t.seed_far
+            if key is not None:
+                start = floor_visible_from(intr, self.p.body.cam_height,
+                                           self.p.body.cam_pitch_deg)
+                if math.isfinite(start):
+                    near = max(t.seed_near, start + t.cell)
+                    far = near + (t.seed_far - t.seed_near)
             iu = np.arange(self.spec.nu)[:, None]
             iv = np.arange(self.spec.nv)[None, :]
             fwd, left = self.spec.centers(iu, iv)
-            self._seed = ((fwd >= t.seed_near) & (fwd <= t.seed_far)
+            self._seed = ((fwd >= near) & (fwd <= far)
                           & (np.abs(left) <= t.seed_half_width))
+            self._seed_key = key
+            self.seed_window = (near, far)
         return self._seed
 
     def _deprojector(self, intr):
@@ -124,6 +162,47 @@ class RingDetector:
                                                             t.border_px):
             self._deproj = Deprojector(intr, t.stride, t.border_px)
         return self._deproj
+
+    def _bridge_shadows(self, ring_mask, labels, n, pick, occ, above_mask,
+                        rel_h, fwd, left):
+        """相手の影で分断された床を、影をまたいでリングへつなぎ直す。
+
+        近い相手は見えている床を左右 2 つに分け、種の窓も影に入る。種の成分 (か最大の
+        成分) だけをリングにすると片側しか拾えず、「リングの内側」の凸包が相手を
+        覆わなくなる。そこで、影と物のセルを通れば種の成分へ届く床の成分を足す。
+
+        足してよいのは**純粋な床**の成分だけ。リングの外に立つ人や什器の垂直な面は
+        リング面の高さを横切るので床の帯に点を落とすが、同じセルに面より上か下の点も
+        必ず持つ。それが半分を超える成分や、小さすぎる成分は床ではないので足さない
+        (足すと凸包が場外の人まで伸びて、人が相手の候補に入る)。
+        """
+        t = self.p.tune
+        flat = labels.ravel()
+        size = np.bincount(flat, minlength=n + 1)
+        others = size.copy()
+        others[[0, pick]] = 0
+        if others.max() < t.bridge_min_cells:
+            return ring_mask            # 足す候補が無い。影のラベリング (数 ms) を省く
+        low = rel_h < -t.below_band
+        below = g.count_cells(self.spec, fwd[low], left[low]) >= 3
+        bridge = (self.polar.shadow(above_mask, t.shadow_bridge)
+                  | above_mask) & ~below
+        joined, _ = g.label_components(occ | bridge)
+        root = joined[ring_mask]
+        if root.size == 0:
+            return ring_mask
+        root = int(np.bincount(root).argmax())
+        impure = np.bincount(flat, weights=(above_mask | below).ravel(),
+                             minlength=n + 1)
+        _, first = np.unique(flat, return_index=True)
+        out = ring_mask.copy()
+        for k, i0 in zip(np.unique(flat).tolist(), first.tolist()):
+            if k in (0, pick) or size[k] < t.bridge_min_cells:
+                continue
+            if joined.ravel()[i0] != root or impure[k] > 0.5 * size[k]:
+                continue
+            out |= labels == k
+        return out
 
     # ---------------------------------------------------------------- 本体
     def step(self, depth, intr, dt, gyro=(), accel=None, depth_scale=0.001,
@@ -209,10 +288,18 @@ class RingDetector:
         floor = np.abs(h - h_r) < t.floor_band
         occ = g.count_cells(self.spec, fwd[floor], left[floor]) > 0
         occ = g.close(occ, 1)
+        # 面より上のセル。ここでは影を作るものとして、あとで縁と物体でも使う
+        above = (h - h_r > t.obj_h_lo) & (h - h_r < t.obj_h_hi)
+        above_mask = g.count_cells(self.spec, fwd[above], left[above]) > 0
+        res.above_mask = above_mask
         labels, n = g.label_components(occ)
-        pick = g.component_of_seed(labels, n, self._seed_mask(),
+        pick = g.component_of_seed(labels, n, self._seed_mask(intr),
                                    t.seed_fallback_to_largest)
+        res.seed_window = self.seed_window
         ring_mask = (labels == pick) if pick else np.zeros(self.spec.shape, bool)
+        if pick and n > 1 and t.shadow_bridge > 0 and above_mask.any():
+            ring_mask = self._bridge_shadows(ring_mask, labels, n, pick, occ,
+                                             above_mask, h - h_r, fwd, left)
         res.ring_mask = ring_mask
         res.ring_area = float(np.count_nonzero(ring_mask)) * t.cell * t.cell
         # 視野の縁に接するセル。境界がここに乗る方位は d_cliff を NaN にする
@@ -227,8 +314,6 @@ class RingDetector:
         # 面より上のセルは、エッジ側では「影を作るもの」として先に要る。
         # (物体クラスタリングはこの後、リング成分の内側に閉じてから改めて行う)
         t4 = time.perf_counter()
-        above = (h - h_r > t.obj_h_lo) & (h - h_r < t.obj_h_hi)
-        res.above_mask = g.count_cells(self.spec, fwd[above], left[above]) > 0
         res.cliff = ed.cliff_distances(self.spec, ring_mask, fov,
                                        t.edge_bins, t.edge_half_fov_deg,
                                        blocked_cells=g.dilate(res.above_mask, 1))
@@ -236,8 +321,19 @@ class RingDetector:
 
         # --- 物体 (§8) ---------------------------------------------------
         t5 = time.perf_counter()
+        # リングの内側 = 見えたリング面と自機の位置の凸包 (params.ring_hull の注記)
+        interior = None
+        if t.ring_hull:
+            iu0, iv0, ok0 = self.spec.index(np.array([0.0]), np.array([0.0]))
+            origin = [(int(iu0[0]), int(iv0[0]))] if ok0[0] else []
+            interior = g.convex_hull_mask(ring_mask, origin)
+        res.interior_mask = interior
+        outside = []
+        beyond = self.polar.beyond_floor_end(res.above_mask, ring_mask)
         found, obj_mask, _ = cl.extract(self.spec, h, fwd, left, h_r,
-                                        ring_mask, t)
+                                        ring_mask, t, interior=interior,
+                                        beyond=beyond, outside_out=outside)
+        res.outside_mask = outside[0] if outside else None
         best, _ = cl.select(found, self.p.match, t)
         res.clusters = found
         res.obj_mask = obj_mask
@@ -273,6 +369,8 @@ class RingDetector:
         else:
             res.status = OK
 
+        res.plane_angle_deg = math.degrees(self.attitude.last_angle)
+        res.stale_frames = int(self.attitude.since_correction)
         clk['total'] = sum(v for k, v in clk.items() if k != 'total')
         res.timings = clk
         return res

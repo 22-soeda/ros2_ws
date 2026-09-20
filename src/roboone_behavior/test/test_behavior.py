@@ -165,6 +165,40 @@ def test_fall_detection_needs_the_width_evidence_inside_the_strike_range():
     assert _feed(det, 0.12, 0.40, close, p.tune.fallen_time + 0.1)
 
 
+def test_arms_spread_wide_is_not_a_fall():
+    """腕を広げて立つ相手 (T ポーズ) を転倒にしないこと。
+
+    幅は H_o を超えるが上端は立位のまま。幅だけで転倒側に数えると、構えている
+    だけの相手から離れてしまう。
+    """
+    p = BehaviorParams()
+    det = FallenDetector(p.tune, p.robot)
+    _feed(det, 0.45, 0.25, 1.5, p.tune.height_cal_time + 0.2)
+    assert not _feed(det, 0.45, 0.75, 1.5, p.tune.fallen_time + 1.0)
+    assert not det.evidence['wide']
+
+
+def test_flat_shape_is_a_fall_without_calibration():
+    """較正が間違っていても、平たい形なら転倒と見ること (docs/相手機の認識.md §5)。
+
+    再開時に倒れた相手の前へ置かれると、較正の窓は倒れた高さを立位高さとして覚え、
+    高さの比だけでは二度と転倒にならない。平たい形は較正に入れず、形だけで転倒と見る。
+    """
+    p = BehaviorParams()
+    det = FallenDetector(p.tune, p.robot)
+    assert _feed(det, 0.14, 0.45, 1.5, p.tune.height_cal_time + 1.0)
+    assert det.evidence['flat']
+    assert det.h_stand == pytest.approx(p.tune.height_default), '倒れた高さを覚えない'
+    # 較正が小さく入ってしまっていても (H_o = 0.16)、平たい形は「立っている」にしない
+    det = FallenDetector(p.tune, p.robot)
+    det.h_stand, det._cal_time = 0.16, p.tune.height_cal_time
+    assert _feed(det, 0.14, 0.45, 1.5, p.tune.fallen_time + 0.2)
+    assert not det.evidence['low'] and not det.evidence['high']
+    # 小さい相手が普通に立っているのは平たいと言わない (上端 > 幅)
+    det = FallenDetector(p.tune, p.robot)
+    assert not _feed(det, 0.20, 0.15, 1.5, p.tune.height_cal_time + 1.0)
+
+
 def test_recovery_stays_frozen_inside_the_strike_range():
     """近いままでは復帰を認めない。離れてから判定する。"""
     p = BehaviorParams()

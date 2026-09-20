@@ -30,6 +30,30 @@ def _normalize(v):
     return v / n if n > 1e-12 else v
 
 
+def mean_accel_if_still(samples, window=0.4, min_samples=40, gyro_max=0.15,
+                        accel_tol=0.6, gravity=9.81):
+    """直近 window 秒が静止なら加速度の平均を返す。返り値は (平均 or None, 理由)。
+
+    samples は [(時刻[s], 加速度[3], |ω| [rad/s]), ...] で時刻の昇順。基準姿勢の
+    取り直しに使う。**動いている間の加速度は使わない** (歩行中は傾きが p95 で 28 度
+    ずれる。§5.2)。静止の条件は、窓の中の角速度の最大と、平均の大きさが重力に合うこと。
+    """
+    if not samples:
+        return None, 'IMU が来ていない'
+    t_end = samples[-1][0]
+    win = [x for x in samples if x[0] >= t_end - window]
+    if len(win) < min_samples or win[-1][0] - win[0][0] < 0.75 * window:
+        return None, 'IMU のサンプルが足りない'
+    gyro = max(x[2] for x in win)
+    if gyro > gyro_max:
+        return None, '動いている (角速度 %.2f rad/s)' % gyro
+    acc = np.mean([x[1] for x in win], axis=0)
+    norm = float(np.linalg.norm(acc))
+    if abs(norm - gravity) > accel_tol:
+        return None, '加速度が重力と合わない (%.2f m/s^2)' % norm
+    return acc, ''
+
+
 class AttitudeEstimator:
     """鉛直 u (カメラ座標) を持ち、predict / correct の 2 段で更新する。"""
 
@@ -61,6 +85,24 @@ class AttitudeEstimator:
             return False
         self.u = _normalize(a)
         self.initialized_from_accel = True
+        return True
+
+    def reset(self, up=None, accel=None):
+        """基準姿勢を取り直す。accel (静止中の平均) か up (取り付けから決まる鉛直) で置く。
+
+        ジャイロで運び面法線で引き戻す構成は、u が一度 12 度 (補正の門) より大きく
+        外れると**正しい床の法線まで門で弾き続けて二度と戻れない**。脱力した姿勢から
+        立ち上がる間や転倒のあとは床が見えず引き戻しが効かないので、実際に起きる
+        (2026-09-20 実機のテストランで発生)。静止して立っているときに呼ぶ。
+        """
+        if accel is not None and self.init_from_accel(accel):
+            pass
+        elif up is not None:
+            self.u = _normalize(up)
+        else:
+            return False
+        self.since_correction = 0
+        self.last_angle = 0.0
         return True
 
     # ------------------------------------------------------------ 予測

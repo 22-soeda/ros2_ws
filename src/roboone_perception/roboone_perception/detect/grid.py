@@ -183,3 +183,71 @@ def component_of_seed(labels, n_labels, seed_mask, fallback_to_largest=True):
 def boundary(mask):
     r"""成分の境界セル E = R \ erode(R, 1)。式 (10)。"""
     return mask & ~erode(mask, 1)
+
+
+def _hull(points):
+    """2 次元の凸包 (Andrew の monotone chain)。points は (r, c) のタプルの列。"""
+    pts = sorted(set(points))
+    if len(pts) < 3:
+        return pts
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower = []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    upper = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return lower[:-1] + upper[:-1]
+
+
+def convex_hull_mask(mask, extra_cells=()):
+    """凸包を塗ったマスクを返す。対象は mask の True セルと extra_cells [(iu, iv), ...]。
+
+    「リングの内側」を作るのに使う (docs/相手機の認識.md §3)。見えたリング面は
+    相手の影や足元の死角で欠けるが、リングは凸で自機はその上に立っているので、
+    見えた面と自機の位置の凸包はリングの中に収まる。
+
+    凸包の頂点になりうるのは各行の両端のセルだけなので、候補は 2·nu 点で済む。
+    塗りは辺ごとの半平面判定を格子全体に numpy で掛ける (辺は数十本)。
+    """
+    nu, nv = mask.shape
+    rows = np.flatnonzero(mask.any(axis=1))
+    pts = []
+    if rows.size:
+        first = mask.argmax(axis=1)
+        last = nv - 1 - mask[:, ::-1].argmax(axis=1)
+        for r in rows.tolist():
+            pts.append((r, int(first[r])))
+            pts.append((r, int(last[r])))
+    for iu, iv in extra_cells:
+        if 0 <= iu < nu and 0 <= iv < nv:
+            pts.append((int(iu), int(iv)))
+    out = mask.copy()
+    for iu, iv in pts:
+        out[iu, iv] = True
+    hull = _hull(pts)
+    if len(hull) < 3:
+        return out
+
+    r_lo = min(p[0] for p in hull)
+    r_hi = max(p[0] for p in hull)
+    c_lo = min(p[1] for p in hull)
+    c_hi = max(p[1] for p in hull)
+    rr = np.arange(r_lo, r_hi + 1, dtype=np.float64)[:, None]
+    cc = np.arange(c_lo, c_hi + 1, dtype=np.float64)[None, :]
+    inside = np.ones((r_hi - r_lo + 1, c_hi - c_lo + 1), dtype=bool)
+    n = len(hull)
+    for i in range(n):
+        a, b = hull[i], hull[(i + 1) % n]
+        # 反時計回りの辺 a→b に対して左側 (cross >= 0) が内側。境界のセルも含める
+        cr = (b[0] - a[0]) * (cc - a[1]) - (b[1] - a[1]) * (rr - a[0])
+        inside &= cr >= -1e-9
+    out[r_lo:r_hi + 1, c_lo:c_hi + 1] |= inside
+    return out

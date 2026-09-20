@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>相手機の認識 テストラン</title>
+<style>
+:root{
+  --bg:#0f1216; --panel:#171c22; --line:#28303a; --text:#e6eaf0; --dim:#8b96a5;
+  --ok:#46c46a; --bad:#ef5350; --warn:#f2a93b; --accent:#5aa9ff; --sel:#ffe45c;
+  --ring:#4a525d; --hull:#252b33; --edge:#e68c28; --above:#c84a4a; --obj:#3fc86a; --intr:#e640c8;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);
+  font:14px/1.5 system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif}
+header{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;
+  padding:10px 16px;border-bottom:1px solid var(--line)}
+header h1{font-size:16px;margin:0;font-weight:600}
+header .src{color:var(--dim);font-size:12px}
+header .sp{flex:1}
+.pill{padding:2px 10px;border-radius:999px;border:1px solid var(--line);font-size:12px;color:var(--dim)}
+.pill b{color:var(--text);font-weight:600}
+main{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:12px;padding:12px 16px}
+@media (max-width:900px){main{grid-template-columns:minmax(0,1fr)}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
+.card h2{font-size:12px;letter-spacing:.06em;color:var(--dim);margin:0 0 8px;font-weight:600}
+.col{display:flex;flex-direction:column;gap:12px;min-width:0}
+canvas{display:block;width:100%;border-radius:6px;background:#0a0d10}
+.tools{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center}
+button{background:#202731;color:var(--text);border:1px solid var(--line);border-radius:6px;
+  padding:5px 10px;font:inherit;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.on{border-color:var(--accent);color:var(--accent)}
+.legend{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:8px;color:var(--dim);font-size:12px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+#verdict{font-size:30px;font-weight:700;line-height:1.2;margin:2px 0 4px}
+#verdictSub{color:var(--dim);min-height:1.5em}
+.v-ok{color:var(--ok)} .v-bad{color:var(--bad)} .v-warn{color:var(--warn)} .v-dim{color:var(--dim)}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.chip{padding:2px 9px;border-radius:999px;border:1px solid var(--line);color:var(--dim);font-size:12px}
+.chip.on{border-color:var(--bad);color:var(--bad)}
+.chip.good.on{border-color:var(--ok);color:var(--ok)}
+.chip.info.on{border-color:var(--warn);color:var(--warn)}
+.bars{display:grid;grid-template-columns:auto 1fr auto;gap:4px 8px;align-items:center;margin-top:10px;font-size:12px;color:var(--dim)}
+.bar{height:6px;background:#0a0d10;border-radius:3px;overflow:hidden}
+.bar>span{display:block;height:100%;width:0;background:var(--bad)}
+.bar.up>span{background:var(--ok)}
+.kv{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:8px}
+.kv div{background:#11161b;border:1px solid var(--line);border-radius:8px;padding:6px 8px;min-width:0}
+.kv span{display:block;color:var(--dim);font-size:11px}
+.kv b{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
+.kv small{color:var(--dim);font-weight:400}
+table{width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums}
+th,td{padding:4px 6px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--dim);font-weight:500}
+td.l,th.l{text-align:left;white-space:normal}
+tr.sel td{color:var(--sel)}
+tr.rej td{color:var(--dim)}
+tr.intr td.l{color:var(--intr)}
+.scroll{overflow-x:auto}
+#events{max-height:170px;overflow:auto;font-size:12px;margin:0;padding:0;list-style:none}
+#events li{padding:2px 0;border-bottom:1px dashed var(--line)}
+#events time{color:var(--dim);margin-right:8px;font-variant-numeric:tabular-nums}
+#truth{display:none;margin-top:8px;padding:6px 10px;border-radius:6px;background:#1c2330;color:var(--accent);font-size:12px}
+#motionbar{display:none;flex-wrap:wrap;gap:6px 16px;align-items:center;padding:8px 16px;
+  background:#2c2413;border-bottom:1px solid #6b5420;color:#ffd98a;font-size:13px}
+#motionbar .sp{flex:1}
+#motionbar b{color:#fff}
+button.danger{border-color:var(--bad);color:#fff;background:#7a2424;font-weight:600;padding:6px 18px}
+#offline{display:none;background:#3a1e1e;color:#ffb4b0;padding:6px 16px;font-size:12px}
+</style>
+</head>
+<body>
+<div id="motionbar">
+  <b>★ トルクが入る構成</b>
+  <span>motion: <b id="m-state">-</b></span>
+  <span id="m-phase"></span>
+  <span class="sp"></span>
+  <button id="btn-home">ホームへ</button>
+  <button id="btn-relax" class="danger">脱力</button>
+</div>
+<div id="offline">サーバから応答が無い。opponent_viewer が動いているか確認する。</div>
+<header>
+  <h1>相手機の認識 テストラン</h1>
+  <span class="src" id="src">-</span>
+  <span class="sp"></span>
+  <span class="pill">周期 <b id="fps">-</b> Hz</span>
+  <span class="pill">処理 <b id="proc">-</b> ms</span>
+  <span class="pill">フレーム <b id="frames">-</b></span>
+</header>
+<main>
+  <div class="col">
+    <div class="card">
+      <h2>俯瞰図（上が前方・左が機体の左）</h2>
+      <canvas id="top" width="900" height="720"></canvas>
+      <div class="tools">
+        <span style="color:var(--dim);font-size:12px">表示範囲</span>
+        <button data-r="2">2 m</button><button data-r="3" class="on">3 m</button><button data-r="4">4 m</button>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--ring)"></i>見えたリング面</span>
+        <span><i style="background:var(--hull)"></i>リングの内側（凸包）</span>
+        <span><i style="background:var(--edge)"></i>リング面の境界</span>
+        <span><i style="background:var(--obj)"></i>内側の塊（相手の候補）</span>
+        <span><i style="background:var(--above)"></i>面より上・リングの外</span>
+        <span><i style="background:var(--intr)"></i>確かに外の物（差し込みの判定に使う）</span>
+        <span><i style="background:var(--sel)"></i>相手に選んだ塊</span>
+        <span><i style="background:var(--accent)"></i>床の切れ目 d_cliff</span>
+      </div>
+      <div id="truth"></div>
+    </div>
+    <div class="card">
+      <h2>塊ごとの判定（近い順）</h2>
+      <div class="scroll"><table>
+        <thead><tr><th>距離</th><th>方位</th><th>上端</th><th>幅</th><th>点数</th><th>外</th><th class="l">判定</th></tr></thead>
+        <tbody id="clusters"></tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="card">
+      <h2>判定</h2>
+      <div id="verdict" class="v-dim">待機中</div>
+      <div id="verdictSub"></div>
+      <div class="chips">
+        <span class="chip" id="e-low">低い</span>
+        <span class="chip" id="e-flat">平たい</span>
+        <span class="chip" id="e-wide">横に広い</span>
+        <span class="chip good" id="e-high">立位の高さ</span>
+        <span class="chip info" id="e-close">間合いの中</span>
+        <span class="chip info" id="e-extra">外挿中</span>
+      </div>
+      <div class="bars">
+        <span>転倒まで</span><div class="bar"><span id="b-below"></span></div><span id="t-below">-</span>
+        <span>復帰まで</span><div class="bar up"><span id="b-above"></span></div><span id="t-above">-</span>
+        <span>H_o 較正</span><div class="bar up"><span id="b-cal"></span></div><span id="t-cal">-</span>
+      </div>
+      <div class="tools"><button id="recal">立位高さを較正し直す</button>
+        <span style="color:var(--dim);font-size:12px">相手を立たせた状態で押す</span></div>
+    </div>
+    <div class="card">
+      <h2>相手</h2>
+      <div class="kv">
+        <div><span>距離 ρ</span><b id="k-range">-</b> <small>m</small></div>
+        <div><span>方位 β（左が正）</span><b id="k-bearing">-</b> <small>deg</small></div>
+        <div><span>上端</span><b id="k-top">-</b> <small>m</small></div>
+        <div><span>幅</span><b id="k-width">-</b> <small>m</small></div>
+        <div><span>幅 / 上端</span><b id="k-aspect">-</b></div>
+        <div><span>立位高さ H_o</span><b id="k-ho">-</b> <small>m</small></div>
+        <div><span>位置 x, y</span><b id="k-xy">-</b></div>
+        <div><span>速度</span><b id="k-vel">-</b> <small>m/s</small></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>深度（近い = 暖色）</h2>
+      <canvas id="depth" width="424" height="240"></canvas>
+    </div>
+    <div class="card">
+      <h2>リング面と姿勢</h2>
+      <div class="kv">
+        <div><span>カメラ高さ 実測</span><b id="k-hmeas">-</b> <small>m</small></div>
+        <div><span>同 設定値</span><b id="k-hparam">-</b> <small>m</small></div>
+        <div><span>俯角 / ロール</span><b id="k-tilt">-</b> <small>deg</small></div>
+        <div><span>リング面の面積</span><b id="k-area">-</b> <small>m²</small></div>
+        <div><span>面あてはめ残差</span><b id="k-resid">-</b> <small>mm</small></div>
+        <div><span>種の窓</span><b id="k-seed">-</b> <small>m</small></div>
+        <div><span>鉛直と床の食い違い</span><b id="k-angle">-</b> <small>deg（門 12）</small></div>
+        <div><span>引き戻しなしの連続</span><b id="k-stale">-</b> <small>枚</small></div>
+      </div>
+      <div class="tools"><button id="reset-att">基準姿勢を取り直す</button>
+        <span style="color:var(--dim);font-size:12px">ホーム姿勢で静止しているときに押す。<span id="reset-status"></span></span></div>
+    </div>
+    <div class="card">
+      <h2>出来事</h2>
+      <ul id="events"></ul>
+    </div>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const CLASS_COLORS = [null, css('--hull'), css('--ring'), css('--edge'),
+                      css('--above'), css('--obj'), css('--intr')];
+let viewRange = 3;
+try { viewRange = Number(localStorage.getItem('opp.range')) || 3; } catch (e) {}
+
+function fmt(v, nd) { return (v === null || v === undefined) ? '-' : Number(v).toFixed(nd); }
+function b64(s) { const r = atob(s), a = new Uint8Array(r.length);
+  for (let i = 0; i < r.length; i++) a[i] = r.charCodeAt(i); return a; }
+
+document.querySelectorAll('button[data-r]').forEach(b => {
+  b.classList.toggle('on', Number(b.dataset.r) === viewRange);
+  b.onclick = () => { viewRange = Number(b.dataset.r);
+    try { localStorage.setItem('opp.range', viewRange); } catch (e) {}
+    document.querySelectorAll('button[data-r]').forEach(x => x.classList.toggle('on', x === b)); };
+});
+$('recal').onclick = () => fetch('/recal', {method: 'POST'});
+$('reset-att').onclick = () => fetch('/reset_attitude', {method: 'POST'});
+$('btn-relax').onclick = () => fetch('/relax', {method: 'POST'});
+$('btn-home').onclick = () => {
+  if (confirm('トルクを入れてホーム姿勢へ移ります。機体を支えていますか？')) fetch('/home', {method: 'POST'});
+};
+
+// ---------------------------------------------------------------- 俯瞰図
+function drawTop(s) {
+  const cv = $('top'), g = cv.getContext('2d');
+  const W = cv.width, H = cv.height, back = 0.35;
+  const scale = (H - 20) / (viewRange + back);
+  const X = left => W / 2 - left * scale;
+  const Y = fwd => H - 10 - (fwd + back) * scale;
+  g.clearRect(0, 0, W, H);
+
+  if (s.grid) {
+    const d = b64(s.grid.data), c = s.grid.cell, px = Math.ceil(c * scale) + 1;
+    for (let iu = 0; iu < s.grid.nu; iu++) {
+      const fwd = s.grid.u_min + (iu + 1) * c;
+      if (fwd < -back || fwd - c > viewRange) continue;
+      for (let iv = 0; iv < s.grid.nv; iv++) {
+        const k = d[iu * s.grid.nv + iv];
+        if (!k) continue;
+        g.fillStyle = CLASS_COLORS[k];
+        g.fillRect(X(s.grid.v_min + (iv + 1) * c), Y(fwd), px, px);
+      }
+    }
+  }
+  // 距離の輪と視野
+  g.lineWidth = 1; g.font = '11px system-ui'; g.fillStyle = '#6b7684';
+  for (let r = 0.5; r <= viewRange + 1e-6; r += 0.5) {
+    g.strokeStyle = (Math.abs(r - Math.round(r)) < 1e-6) ? '#2c3540' : '#1c232b';
+    g.beginPath(); g.arc(X(0), Y(0), r * scale, Math.PI, 2 * Math.PI); g.stroke();
+    if (Math.abs(r - Math.round(r)) < 1e-6) g.fillText(r + ' m', X(0) + 4, Y(r) - 3);
+  }
+  if (s.fov_half_deg) {
+    const a = s.fov_half_deg * Math.PI / 180, R = viewRange * 1.5;
+    g.strokeStyle = '#3a4654'; g.setLineDash([5, 5]); g.beginPath();
+    g.moveTo(X(R * Math.sin(a)), Y(R * Math.cos(a))); g.lineTo(X(0), Y(0));
+    g.lineTo(X(-R * Math.sin(a)), Y(R * Math.cos(a))); g.stroke(); g.setLineDash([]);
+  }
+  if (s.seed_window) {                       // 種の窓
+    const [n, f] = s.seed_window, hw = s.seed_half_width;
+    g.strokeStyle = '#5b6675'; g.setLineDash([3, 4]);
+    g.strokeRect(X(hw), Y(f), 2 * hw * scale, (f - n) * scale); g.setLineDash([]);
+  }
+  if (s.cliff) {                             // 床の切れ目
+    const n = s.cliff.length, hf = s.cliff_half_deg * Math.PI / 180;
+    g.fillStyle = css('--accent');
+    for (let k = 0; k < n; k++) {
+      const r = s.cliff[k]; if (r === null) continue;
+      const th = -hf + (k + 0.5) * 2 * hf / n;
+      g.beginPath(); g.arc(X(r * Math.sin(th)), Y(r * Math.cos(th)), 2.5, 0, 7); g.fill();
+    }
+  }
+  // 塊
+  for (const c of (s.clusters || [])) {
+    const x = X(c.left), y = Y(c.fwd), r = Math.max(6, (c.width || 0.1) * scale / 2);
+    g.lineWidth = c.selected ? 2.5 : 1.2;
+    g.strokeStyle = c.selected ? css('--sel') : (c.outside_cells ? css('--intr') : '#9aa5b3');
+    if (!c.selected) g.setLineDash([4, 3]);
+    g.beginPath(); g.arc(x, y, r, 0, 7); g.stroke(); g.setLineDash([]);
+  }
+  // 追尾後の相手
+  if (s.opponent) {
+    const o = s.opponent, x = X(o.y), y = Y(o.x);
+    const fallen = s.fall && s.fall.fallen;
+    g.strokeStyle = fallen ? css('--bad') : css('--ok'); g.lineWidth = 2;
+    g.beginPath(); g.moveTo(X(0), Y(0)); g.lineTo(x, y); g.stroke();
+    g.fillStyle = g.strokeStyle; g.beginPath(); g.arc(x, y, 5, 0, 7); g.fill();
+    g.font = '600 13px system-ui';
+    g.fillText((fallen ? '倒れている ' : '立っている ') + fmt(o.range, 2) + ' m / '
+               + fmt(o.bearing_deg, 0) + '°', x + 10, y - 8);
+  }
+  // 自機
+  g.fillStyle = css('--accent'); g.beginPath();
+  g.moveTo(X(0), Y(0) - 9); g.lineTo(X(0) + 7, Y(0) + 6); g.lineTo(X(0) - 7, Y(0) + 6);
+  g.closePath(); g.fill();
+}
+
+// ---------------------------------------------------------------- 深度
+function ramp(v) {                           // 0..1 → 近い = 暖色、遠い = 寒色
+  const t = 1 - v, r = Math.round(255 * Math.min(1, Math.max(0, 1.5 - Math.abs(4 * t - 1)) + Math.max(0, 1.5 - Math.abs(4 * t - 0))));
+  const gg = Math.round(255 * Math.max(0, 1.5 - Math.abs(4 * t - 2)));
+  const b = Math.round(255 * Math.max(0, 1.5 - Math.abs(4 * t - 3)));
+  return [Math.min(255, r), Math.min(255, gg), Math.min(255, b)];
+}
+const RAMP = Array.from({length: 256}, (_, i) => i ? ramp((i - 1) / 254) : [12, 14, 18]);
+function drawDepth(d) {
+  if (!d || !d.ready) return;
+  const cv = $('depth');
+  if (cv.width !== d.w || cv.height !== d.h) { cv.width = d.w; cv.height = d.h; }
+  const g = cv.getContext('2d'), img = g.createImageData(d.w, d.h), src = b64(d.data);
+  for (let i = 0; i < src.length; i++) {
+    const c = RAMP[src[i]];
+    img.data[4 * i] = c[0]; img.data[4 * i + 1] = c[1]; img.data[4 * i + 2] = c[2]; img.data[4 * i + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+}
+
+// ---------------------------------------------------------------- 文字の面
+function setChip(id, on) { $(id).classList.toggle('on', !!on); }
+function setBar(bar, label, v, full) {
+  $(bar).style.width = Math.min(100, 100 * (v || 0) / full) + '%';
+  $(label).textContent = fmt(v, 2) + ' / ' + fmt(full, 1) + ' s';
+}
+function drawText(s) {
+  $('src').textContent = s.source || '';
+  $('fps').textContent = fmt(s.fps, 1); $('proc').textContent = fmt(s.proc_ms, 1);
+  $('frames').textContent = s.frames ?? '-';
+
+  const v = $('verdict'), sub = $('verdictSub'), o = s.opponent, f = s.fall;
+  v.className = 'v-dim';
+  if (s.status === 'OK' && o) {
+    if (f && f.fallen) { v.textContent = '相手が倒れている'; v.className = 'v-bad';
+      sub.textContent = '行動層は離れて復帰を待つ（規則 10.2(b)）'; }
+    else if (f) { v.textContent = '相手が立っている'; v.className = 'v-ok';
+      sub.textContent = f.calibrated ? '' : '立位高さ H_o を較正中…'; }
+    else { v.textContent = '相手を捉えている'; v.className = 'v-ok';
+      sub.textContent = 'roboone_behavior が無いので転倒判定は出ない'; }
+  } else {
+    v.textContent = s.status_ja || '-';
+    v.className = (s.status === 'NO_OPPONENT') ? 'v-dim' : 'v-warn';
+    sub.textContent = (s.status === 'NO_OPPONENT' && (s.clusters || []).length)
+      ? '塊はあるが、どれも相手の条件を通らない（下の表）' : '';
+    if (s.status === 'ATTITUDE_STALE' || s.status === 'RING_LOST')
+      sub.textContent = 'ホーム姿勢で静止して、下の「基準姿勢を取り直す」を押す';
+    if (f && f.fallen) sub.textContent = '直前の判定は「倒れている」のまま保持';
+  }
+  const ev = (f && f.evidence) || {};
+  setChip('e-low', ev.low); setChip('e-flat', ev.flat); setChip('e-wide', ev.wide);
+  setChip('e-high', ev.high); setChip('e-close', ev.close); setChip('e-extra', o && o.extrapolated);
+  if (f) { setBar('b-below', 't-below', f.below, f.fallen_time);
+           setBar('b-above', 't-above', f.above, f.stand_time);
+           $('b-cal').style.width = 100 * (f.cal_progress || 0) + '%';
+           $('t-cal').textContent = f.calibrated ? '済' : '測定中'; }
+
+  $('k-range').textContent = o ? fmt(o.range, 2) : '-';
+  $('k-bearing').textContent = o ? fmt(o.bearing_deg, 1) : '-';
+  $('k-top').textContent = o ? fmt(o.top, 2) : '-';
+  $('k-width').textContent = o ? fmt(o.width, 2) : '-';
+  $('k-aspect').textContent = (o && o.top) ? fmt(o.width / o.top, 2) : '-';
+  $('k-ho').textContent = f ? fmt(f.h_stand, 2) : '-';
+  $('k-xy').textContent = o ? fmt(o.x, 2) + ', ' + fmt(o.y, 2) : '-';
+  $('k-vel').textContent = o ? fmt(Math.hypot(o.vx || 0, o.vy || 0), 2) : '-';
+
+  $('k-hmeas').textContent = fmt(s.cam_height_meas, 3);
+  $('k-hparam').textContent = fmt(s.cam_height_param, 3);
+  $('k-tilt').textContent = s.tilt ? fmt(s.tilt.pitch_deg, 1) + ' / ' + fmt(s.tilt.roll_deg, 1) : '-';
+  $('k-area').textContent = fmt(s.ring_area, 2);
+  $('k-resid').textContent = fmt(s.plane_resid_mm, 1);
+  $('k-angle').textContent = fmt(s.plane_angle_deg, 1);
+  $('k-stale').textContent = s.stale_frames ?? '-';
+  $('reset-status').textContent = s.reset_status || '';
+  $('k-seed').textContent = s.seed_window ? fmt(s.seed_window[0], 2) + '–' + fmt(s.seed_window[1], 2) : '-';
+
+  const tb = $('clusters'); tb.textContent = '';
+  for (const c of (s.clusters || [])) {
+    const tr = document.createElement('tr');
+    tr.className = c.selected ? 'sel' : (c.reason ? 'rej' + (c.outside_cells ? ' intr' : '') : '');
+    const cells = [fmt(c.range, 2), fmt(Math.atan2(c.left, c.fwd) * 180 / Math.PI, 0) + '°',
+                   fmt(c.top, 2), fmt(c.width, 2), c.points, c.outside_cells || ''];
+    for (const t of cells) { const td = document.createElement('td'); td.textContent = t; tr.appendChild(td); }
+    const td = document.createElement('td'); td.className = 'l';
+    td.textContent = c.selected ? '相手' : (c.reason || '条件は通る（より近い塊が選ばれた）');
+    tr.appendChild(td); tb.appendChild(tr);
+  }
+  if (!(s.clusters || []).length) {
+    const tr = document.createElement('tr'), td = document.createElement('td');
+    td.colSpan = 7; td.className = 'l'; td.style.color = 'var(--dim)';
+    td.textContent = 'リングの内側に、面より上の塊は無い'; tr.appendChild(td); tb.appendChild(tr);
+  }
+
+  const ul = $('events'); ul.textContent = '';
+  for (const e of (s.events || []).slice().reverse()) {
+    const li = document.createElement('li'), t = document.createElement('time');
+    t.textContent = fmt(e.t, 1) + ' s'; li.appendChild(t);
+    li.appendChild(document.createTextNode(e.text)); ul.appendChild(li);
+  }
+  const tr = $('truth');
+  tr.style.display = s.truth ? 'block' : 'none';
+  if (s.truth) tr.textContent = '合成シーンの筋書き: ' + s.truth;
+}
+
+// ---------------------------------------------------------------- 取得
+async function tick() {
+  try {
+    const s = await (await fetch('/state')).json();
+    $('offline').style.display = 'none';
+    $('motionbar').style.display = s.motion ? 'flex' : 'none';
+    if (s.motion) { $('m-state').textContent = s.motion.state || '(まだ見えない)';
+                    $('m-phase').textContent = s.motion.phase || ''; }
+    if (s.ready) { drawTop(s); drawText(s); } else { $('src').textContent = (s.source || '') + '（最初のフレームを待っている）'; }
+  } catch (e) { $('offline').style.display = 'block'; }
+  setTimeout(tick, 100);
+}
+async function tickDepth() {
+  try { drawDepth(await (await fetch('/depth')).json()); } catch (e) {}
+  setTimeout(tickDepth, 300);
+}
+tick(); tickDepth();
+</script>
+</body>
+</html>

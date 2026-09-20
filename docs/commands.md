@@ -971,6 +971,32 @@ ros2 launch roboone_perception opponent_testrun.launch.py camera:=true port:=810
 ros2 run roboone_perception opponent_viewer --demo
 ```
 
+**★ここから下はトルクが入る。機体を支えてから。** カメラは胴体に付いているので、本番と
+同じ高さで見るためにホーム姿勢で立たせる。`home:=true` のときだけ motion ノードも
+この launch が上げ、motion を確かめて 3 秒後に `home` → `/estop false` を送り、
+**6 秒かけてゆっくり**ホームへ移る（`torque_on_time` / `home_move_time` を上書き）。
+
+```bash
+ros2 launch roboone_perception opponent_testrun.launch.py camera:=true home:=true
+ros2 launch roboone_perception opponent_testrun.launch.py camera:=true home:=true home_time:=10.0   # もっとゆっくり
+ros2 launch roboone_perception opponent_testrun.launch.py camera:=true home:=true home_delay:=5.0   # トルクまでの待ち
+ros2 launch roboone_perception opponent_testrun.launch.py camera:=true home:=true allow_torque:=false  # 流れだけ。動かない
+```
+
+- 止めるのは**画面上部の「脱力」ボタン**か Ctrl-C。teleop は上がらないので
+  コントローラの脱力（L1）は効かない。
+- **`roboone.launch.py` と同時に上げない**（motion が 2 つになりバスを取り合う）。
+
+**基準姿勢の取り直し。** 脱力した姿勢で起動すると、立ったあとも「姿勢が劣化」のまま
+床が取れないことがある（鉛直の推定が 12° より外れると自力で戻れない）。ホーム姿勢で
+**静止して**から取り直す。画面の「基準姿勢を取り直す」ボタンと同じもの。
+試合では `/autonomy` が true になった瞬間に自動で走る。`home:=true` のテストランでも、
+立ち終えて motion が `HOLD` になった時点で自動で走る。
+
+```bash
+ros2 topic pub --once /detector/reset_attitude std_msgs/msg/Empty "{}"
+```
+
 前提と注意:
 
 - `roboone.launch.py` が既定（`imu:=true`）で上がっていると RealSense は IMU 専用で

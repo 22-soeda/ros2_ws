@@ -164,8 +164,9 @@ def main(argv=None):
                    help='1 フレームの処理時間の予算 [ms]。30Hz なら 33')
     p.add_argument('--min-ring', type=float, default=80.0,
                    help='リング面が取れたフレームの下限 [%%]')
-    p.add_argument('--cam-height', type=float, default=0.35, help='h_cam [m]')
-    p.add_argument('--cam-pitch', type=float, default=30.0, help='俯角 [deg]')
+    # 既定は config/opponent_detector.yaml と同じ (水平付け。2026-09-20)
+    p.add_argument('--cam-height', type=float, default=0.40, help='h_cam [m]')
+    p.add_argument('--cam-pitch', type=float, default=0.0, help='俯角 [deg]')
     p.add_argument('--depth-topic', default='/camera/depth/image_rect_raw')
     p.add_argument('--info-topic', default='/camera/depth/camera_info')
     p.add_argument('--imu-topic', default='/camera/imu')

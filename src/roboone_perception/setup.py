@@ -15,6 +15,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
+        (os.path.join('share', package_name, 'viz'), glob('viz/*.html')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -31,6 +32,7 @@ setup(
         'console_scripts': [
             'opponent_detector = roboone_perception.opponent_detector_node:main',
             'detector_bench = roboone_perception.detector_bench:main',
+            'opponent_viewer = roboone_perception.opponent_viewer:main',
         ],
     },
 )

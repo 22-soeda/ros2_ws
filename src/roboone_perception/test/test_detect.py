@@ -20,13 +20,14 @@ import numpy as np
 import pytest
 from roboone_perception.detect import (AlphaBetaTracker, ATTITUDE_STALE,
                                        AttitudeEstimator, DetectorParams,
-                                       forward_ref, Intrinsics, NO_OPPONENT,
+                                       forward_ref, Intrinsics,
+                                       mean_accel_if_still, NO_OPPONENT,
                                        OK, ring_basis, RING_LOST, RingDetector)
 from roboone_perception.detect import clusters as cl
 from roboone_perception.detect import edge as ed
 from roboone_perception.detect import grid as g
 from roboone_perception.detect import ring as rg
-import scene as S
+from roboone_perception.sim import scene as S
 
 # 桜木町の記録の depth 内部パラメータ (§7)
 INTR = Intrinsics(640, 480, 386.9, 386.9, 325.7, 246.8)
@@ -166,6 +167,94 @@ def test_oversized_object_rejected():
     assert res.selected is None
 
 
+# ------------------------------------------------------ 水平付けのカメラ
+#: 848x480 の D435 (垂直画角 58 度前後)。水平付けの実機と同じ条件
+INTR_H = Intrinsics(848, 480, 424.0, 424.0, 424.0, 240.0)
+
+
+def run_horizontal(scene, params=None, frames=3, cam_height=0.40):
+    flat = {'body.cam_pitch_deg': 0.0, 'body.cam_height': cam_height}
+    flat.update(params or {})
+    depth = S.render(scene, INTR_H, cam_height=cam_height, pitch_deg=0.0,
+                     noise=NOISE)
+    det = RingDetector(DetectorParams.from_flat(flat))
+    res = None
+    for _ in range(frames):
+        res = det.step(depth, INTR_H, DT)
+    return det, res
+
+
+def test_seed_window_follows_the_visible_floor():
+    """水平付けでは床が 0.72 m より先にしか写らない。種の窓がそこへ動くこと。"""
+    _, res = run_horizontal(S.Scene())
+    assert res.status == NO_OPPONENT, 'リング面が取れていること'
+    assert res.seed_window[0] > 0.70
+    assert res.ring_area > 1.0
+    # 固定の窓のままだと種が空で、最大成分への逃げ道に頼ることになる
+    _, res = run_horizontal(S.Scene(), {'tune.seed_auto': False,
+                                        'tune.seed_fallback_to_largest': False})
+    assert res.status == RING_LOST
+
+
+def test_close_opponent_survives_the_floor_blind_zone():
+    """床が写らない近距離の相手を落とさないこと (docs/相手機の認識.md §3)。
+
+    0.40 m 先の相手は足元に床が 1 画素も写らない。従来の「見えたリング面の隣まで」
+    では候補から丸ごと落ち、間合いに入った相手を見失う。
+    """
+    sc = S.Scene(boxes=[S.Box(0.45, 0.0, 0.25, 0.15, 0.0, 0.45)])
+    _, res = run_horizontal(sc)
+    assert res.status == OK
+    assert res.position[0] == pytest.approx(0.40, abs=0.08)
+    _, res = run_horizontal(sc, {'tune.ring_hull': False})
+    assert res.selected is None, '凸包を切ると落ちる (これが直した不具合)'
+
+
+def test_hull_stays_inside_the_ring():
+    """凸包が場外へはみ出さず、縁の外の什器を候補に入れないこと。"""
+    sc = S.Scene(center=(-0.8, 0.0),
+                 boxes=[S.Box(1.35, 0.0, 1.4, 0.5, -0.34, 0.5)])
+    _, res = run(sc)
+    assert res.selected is None
+    assert not res.clusters or all(c.fwd < 1.1 for c in res.clusters)
+
+
+# ------------------------------------------------------ 外から差し込む塊
+def _referee_reaching_in():
+    """左の縁 (y = +0.6) の外に立つ人が、リングの上へ腕を伸ばしている。"""
+    person = S.Box(1.2, 0.95, 0.4, 0.3, -0.34, 1.3)
+    arm = S.Box(1.2, 0.50, 0.6, 0.08, 0.25, 0.33)      # y = 0.2〜0.8
+    return S.Scene(center=(0.0, -1.2), boxes=[person, arm])
+
+
+def test_intruding_arm_is_not_an_opponent():
+    """リングの外から差し込む腕を相手にしないこと (門 3)。"""
+    _, res = run(_referee_reaching_in())
+    assert res.status == NO_OPPONENT
+    arms = [c for c in res.clusters if c.intruding]
+    assert arms, '腕の塊は取れていて、外から差し込んでいると判定されること'
+    p = DetectorParams()
+    assert '外から' in cl.reject_reason(arms[0], p.match, p.tune)
+
+
+def test_intrusion_gate_can_be_switched_off():
+    """門 3 を切ると、同じ腕が相手として通ってしまうこと (門が効いている証拠)。"""
+    _, res = run(_referee_reaching_in(),
+                 params=DetectorParams.from_flat({'tune.intrude_min_cells': 0}))
+    assert res.status == OK
+    assert res.position[1] > 0.1
+
+
+def test_opponent_at_the_edge_is_not_an_intruder():
+    """縁に立つ相手と、縁の外に立つ人が離れていれば、相手は落ちないこと。"""
+    person = S.Box(1.2, 1.05, 0.4, 0.3, -0.34, 1.3)      # 縁から 25 cm 外
+    robot = S.Box(1.2, 0.45, 0.23, 0.20, 0.0, 0.40)      # 縁の内側
+    _, res = run(S.Scene(center=(0.0, -1.2), boxes=[person, robot]))
+    assert res.status == OK
+    assert res.position[1] == pytest.approx(0.45, abs=0.12)
+    assert not res.selected.intruding
+
+
 # ------------------------------------------------------ §5 姿勢
 def test_tilt_does_not_move_the_opponent():
     """機体が傾いても相手の位置と上端高さが動かないこと。
@@ -251,6 +340,61 @@ def test_attitude_goes_stale_without_correction():
     for _ in range(4):
         est.missed()
     assert est.stale
+
+
+def _tilted(u, deg):
+    """鉛直 u をカメラの x 軸まわりに deg 度回したもの (= 俯角の読み違い)。"""
+    a = math.radians(deg)
+    r = np.array([[1, 0, 0], [0, math.cos(a), -math.sin(a)],
+                  [0, math.sin(a), math.cos(a)]])
+    return r @ np.asarray(u)
+
+
+def test_attitude_cannot_recover_by_itself_but_reset_does():
+    """鉛直が門 (12 度) より大きく外れると自力では戻れず、取り直せば戻ること。
+
+    2026-09-20 の実機のテストランで起きた形。脱力した姿勢で起動すると、立ち上がる
+    間は床が見えず引き戻しが効かない。立ったあとは正しい床の法線が門で弾かれ続ける。
+    """
+    sc = S.Scene(boxes=[opponent(x=1.06, y=0.2)])
+    depth = S.render(sc, INTR, cam_height=CAM_H, noise=NOISE)
+    det = RingDetector()
+    det.step(depth, INTR, DT)
+    det.attitude.u = _tilted(det.attitude.u, 25.0)
+    for _ in range(20):
+        res = det.step(depth, INTR, DT)
+    assert res.status in (ATTITUDE_STALE, RING_LOST), '自力では戻れない'
+
+    # 静止中の加速度 (= 上向き) から置き直す。取り付けの鉛直と同じ向き
+    assert det.reset_reference(accel=9.81 * np.asarray(det.p.body.up_from_mount))
+    for _ in range(3):
+        res = det.step(depth, INTR, DT)
+    assert res.status == OK
+    assert res.position[0] == pytest.approx(1.06, abs=0.15)
+
+
+def test_reset_without_imu_falls_back_to_the_mount():
+    """IMU が無くても、取り付けから決まる鉛直へ戻せること。"""
+    det = RingDetector()
+    det.attitude.u = _tilted(det.attitude.u, 25.0)
+    assert det.reset_reference(accel=None)
+    assert np.allclose(det.attitude.u, det.p.body.up_from_mount)
+
+
+def test_reference_is_only_taken_while_standing_still():
+    """動いている間の加速度では基準姿勢を取らないこと (§5.2: 歩行中は 28 度ずれる)。"""
+    def imu(gyro, acc=(0.0, -9.81, 0.0), n=100):
+        return [(0.005 * k, acc, gyro) for k in range(n)]
+
+    acc, why = mean_accel_if_still(imu(0.01))
+    assert why == '' and acc[1] == pytest.approx(-9.81)
+    acc, why = mean_accel_if_still(imu(0.8))
+    assert acc is None and '動いている' in why
+    acc, why = mean_accel_if_still(imu(0.01, acc=(3.0, -11.5, 0.0)))
+    assert acc is None and '重力' in why
+    acc, why = mean_accel_if_still(imu(0.01, n=10))
+    assert acc is None and '足りない' in why
+    assert mean_accel_if_still([])[0] is None
 
 
 def test_plane_fit_is_restricted_to_near_points():

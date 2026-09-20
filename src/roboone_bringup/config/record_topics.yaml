@@ -41,6 +41,7 @@ topics:
   # --- 判断層 ---
   - /opponent           # 敵機の位置・上端高さ・状態（roboone_interfaces/Opponent）
   - /ring_edge          # 方位ごとの床の切れ目。64 個の float なので軽い
+  - /detector/reset_attitude   # 基準姿勢を手で取り直した時刻（/autonomy の立ち上がりでも走る）
   - /behavior/state     # 状態と、そこへ入った理由。「なぜそう動いたか」の一次資料
   - /behavior/debug     # ρ, β, z_top, d_edge, d_cliff(0), λ, 各タイマ（20Hz）
   # --- 表示（何が出ていたか。操作者の見ていたものを再現できる）---

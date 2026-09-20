@@ -21,6 +21,21 @@ ros2 launch roboone_perception opponent_detector.launch.py
 ros2 launch roboone_bringup roboone.launch.py camera:=true detector:=true
 ```
 
+テストラン（ブラウザのリアルタイムビューア。検出器 + 転倒判定。サーボには触れない）:
+
+```bash
+ros2 launch roboone_perception opponent_testrun.launch.py camera:=true
+ros2 run roboone_perception opponent_viewer --demo      # 実機なし。合成シーン
+
+# ★トルクが入る。ホーム姿勢へゆっくり（既定 6 s）立たせてから見る。機体を支えること
+ros2 launch roboone_perception opponent_testrun.launch.py camera:=true home:=true
+```
+
+`home:=true` は既定 false。false のときは motion ノードを上げず、`/estop` にも
+`/cmd_motion` にも publisher を作らない。止めるのは画面の「脱力」か Ctrl-C。
+
+何をどう判定しているかと、確かめる順は `docs/相手機の認識.md`。
+
 確認:
 
 ```bash
@@ -37,6 +52,8 @@ ros2 run roboone_perception detector_bench --duration 30 # 周期と段ごとの
 | `/camera/depth/image_rect_raw` | sensor_msgs/Image (16UC1) | 受ける | 30Hz |
 | `/camera/depth/camera_info` | sensor_msgs/CameraInfo | 受ける | 30Hz |
 | `/camera/imu` | sensor_msgs/Imu | 受ける | 200Hz |
+| `/detector/reset_attitude` | std_msgs/Empty | 受ける | 基準姿勢の取り直し（下） |
+| `/autonomy` | std_msgs/Bool (latched) | 受ける | true への立ち上がりで基準姿勢を取り直す |
 | `/opponent` | roboone_interfaces/Opponent | 出す | depth と同じ |
 | `/ring_edge` | std_msgs/Float32MultiArray | 出す | depth と同じ |
 | `/detector/debug` | sensor_msgs/Image (rgb8) | 出す | 購読者がいるときだけ |
@@ -129,6 +146,36 @@ e1 は機体前方軸（カメラ座標で `(0, -sinθ, cosθ)` の定ベクト�
   崖ではない（1.0 m の前端が 0.55 m の「崖」として出た）。影の手前には必ず面より上の
   塊があるので、代表セルが面より上のセルに隣接していたら NaN にする
 
+## 基準姿勢の取り直し（2026-09-20）
+
+鉛直 u の引き戻しには 12° の門があるので、**u が一度それより外れると正しい床の法線まで
+弾き続けて自力で戻れない。** 脱力した姿勢で起動して立ち上がる間や、転倒のあとに起きる
+（実機のテストランで発生）。ホーム姿勢で静止しているときに `/detector/reset_attitude`
+を送ると、直近 0.4 秒の加速度の平均から u を置き直す。静止していなければ置き直さず、
+最大 `reset_timeout` 秒待つ。試合では `/autonomy` が true になった瞬間にも自動で走る
+（`reset_on_autonomy`）。`docs/相手機の認識.md` の「基準姿勢の取り直し」。
+
+## 水平付けのカメラと、人の棄却（2026-09-20）
+
+カメラを胴体に**水平付け**で使うと決めたのに合わせて 4 つ足した。詳しくは
+`docs/相手機の認識.md` §3・§6。
+
+- **種の窓を自動で置く**（`tune.seed_auto`）。水平・高さ 0.40 m だと床は 0.72 m より先にしか
+  写らず、固定の 0.15〜0.70 m の窓は常に空になる。
+- **リングの内側 = 見えたリング面と自機の位置の凸包**（`tune.ring_hull`）。以前は「見えた
+  リング面の 1 セル隣まで」しか候補にしなかったので、床が写らない近距離の相手が丸ごと
+  落ちていた。リングは凸で自機はその上に立っているので、凸包は場外へはみ出さない。
+- **相手の影で分断された床をつなぐ**（`tune.shadow_bridge`）。近い相手は見える床を左右に
+  分け、種の窓も隠す。足すのは純粋な床の成分だけ（物の垂直な面が床の帯に落とす数セルを
+  足すと、凸包が場外の人まで伸びる）。
+- **外から差し込む塊を相手にしない**（`tune.intrude_*`）。レフリーの腕は高さと幅の
+  フィルタを通る。リングの縁の外の「確かに外」の物とつながる塊を捨てる。
+  「確かに外」は自機から見た視線で決める（`detect/polar.py`）。視野の端や間合いの中の
+  相手を外の物と取り違えないため。
+
+あわせて `match.obj_width_max` を規則の表 2 から 0.80 m にし、塊ごとの最大・最小を
+`ufunc.at` から `reduceat` に替えた（候補の点が増えて cluster 段が 11.6 → 3.1 ms）。
+
 ## 中身
 
 ```
@@ -139,10 +186,13 @@ detect/            ROS 非依存。walk_core と同じで、入力列から決�
   ring.py          高さヒストグラムで h_r、近距離の面あてはめ（§6, §5.4）
   grid.py          占有グリッド・モルフォロジ・連結成分（§7）
   edge.py          d_cliff(θ)（§7）
+  polar.py         自機から見た方位ごとの索引。影と「確かにリングの外」
   clusters.py      リング内の塊と選択（§8）
   tracker.py       α-β 追尾（§9.1）
   pipeline.py      段の並び。姿勢と知覚の閉ループはここ（§3）
+sim/scene.py       合成シーン（単体テストとビューアの --demo が使う）
 opponent_detector_node.py   トピックとパラメータの面倒だけ見る
+opponent_viewer.py          テストラン。検出器ノード + HTTP のビューア（viz/opponent_view.html）
 detector_bench.py           実機で周期・段ごとの時間・検出率を測る CLI
 ```
 
@@ -157,8 +207,8 @@ detector_bench.py           実機で周期・段ごとの時間・検出率を�
 - **`body.*` 機体から決まる** — `cam_height` と `cam_pitch_deg` は**実測して入れること**。
   `cam_height` は高さヒストグラムの窓の中心なので、ここがずれると窓が場外の床を掴む
   方向にずれる。実行時変更は拒否する（姿勢推定の前提そのものなので）
-- **`match.*` 競技から決まる** — **暫定値**。`obj_top_max` / `obj_width_max` は
-  ROBO-ONE Auto の規定を当たって置き直す（§8.3, §12）。bag のミニロボット
+- **`match.*` 競技から決まる** — 第 44 回規則に身長の上限は無く、`obj_top_max` は据え置き。
+  `obj_width_max` は表 2（3 kg 級の腕は軸から 30 cm）から 0.80 m（§8.3, §12）。bag のミニロボット
   （上端 26.8 cm・幅 23.2 cm）は「その値でミニロボも取れるか」の下限確認にだけ使う
 - **`tune.*` 実装から決まる** — 実測で追い込む。`ros2 param set` で実行時に変えられる
   （次フレームから反映。検出器を作り直すので追尾は 1 フレーム切れる）
@@ -189,7 +239,7 @@ CPU は 1 コアの約 82%（Pi 5 は 4 コア）で、これはデバッグ画�
 cd src/roboone_perception && python3 -m pytest test/ -q
 ```
 
-実機なしで走る。`test/scene.py` が会場を模した深度画像（リング面・34 cm 下の場外の床・
+実機なしで走る。`roboone_perception/sim/scene.py` が会場を模した深度画像（リング面・34 cm 下の場外の床・
 リング上の相手・場外の什器）を描き、そこへパイプラインを通す。**文書が実測から挙げた
 失敗の形に落ちないこと**を固定してある:
 
@@ -198,6 +248,8 @@ cd src/roboone_perception && python3 -m pytest test/ -q
 - 視野の縁をリングの端として報せない（§7）
 - 機体が傾いても相手の位置と方位が動かない（§5）
 - 「見えない」の 3 状態を区別する（§9.2）
+- 水平付けのカメラで、床が写らない近距離の相手を落とさない／凸包が場外へはみ出さない
+- 外から差し込む腕を相手にせず、縁に立つ相手は落とさない
 
 **実機での正しさを主張するものではない。** 正解ラベルが無い件は §12 のまま残っている。
 
@@ -209,8 +261,8 @@ cd src/roboone_perception && python3 -m pytest test/ -q
   color 画像のマーカー検出で疑似正解を作る案が文書にある
 - **実機の bag で回していない。** bag はこのリポジトリに無い。`detector_bench` は
   実機ストリーム向けなので、bag を `ros2 bag play` すればそのまま使える
-- **`match.*` が規定未確認の暫定値**（§8.3）
+- **水平付けの実機カメラで回していない。** `body.cam_height` と `cam_offset_*` は未実測
 - **会場の照明とフラッシュの影響を測っていない**
 - **相手が 2 台以上見えるときの選択規則**は最近接のまま
-- **転倒後の復帰**（`hcam` の窓 ±0.25 m を外れた姿勢からの立ち上げ直し）が未定。
-  現状は `STATUS_RING_LOST` を出し続けるだけで、加速度からの再初期化はしていない
+- **転倒後の復帰**は、基準姿勢の取り直しの口ができた（上）。ただし起き上がりのあとに
+  誰が送るかは未定（motion に転倒の状態が無い）。今は `/autonomy` の立ち上がりと手動だけ

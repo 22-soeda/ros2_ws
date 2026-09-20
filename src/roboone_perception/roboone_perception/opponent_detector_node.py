@@ -6,6 +6,8 @@ ros-architecture §2/§4 と、docs/opponent_detection.pdf §11 の約束事:
     受け取る: /camera/depth/image_rect_raw  (sensor_msgs/Image 16UC1, 30Hz)
               /camera/depth/camera_info     (sensor_msgs/CameraInfo)
               /camera/imu                   (sensor_msgs/Imu, 200Hz)
+              /detector/reset_attitude      (std_msgs/Empty) 基準姿勢の取り直し
+              /autonomy                     (std_msgs/Bool, latched) true への立ち上がりでも取り直す
     出す:     /opponent    (roboone_interfaces/Opponent)     depth と同じ周期
               /ring_edge   (std_msgs/Float32MultiArray)      同上
               /detector/debug (sensor_msgs/Image rgb8)       購読者がいるときだけ
@@ -40,6 +42,15 @@ ros-architecture から変えたところ (理由つき)
 転倒判定に上端高さが要るので PointStamped では足りない。あわせて velocity
 (§2.1 の追加提案) と status (§9.2 の縮退の区別) を載せている。
 
+**5. 基準姿勢を取り直す口を持つ (2026-09-20)。** 鉛直 u はジャイロで運び床の法線で
+引き戻すが、u が 12 度 (補正の門) より大きく外れると正しい法線まで弾き続けて戻れない。
+脱力した姿勢から立ち上がる間や転倒のあとは床が見えず、実機で実際に起きた。
+ホーム姿勢で静止しているときに /detector/reset_attitude (Empty) を送ると、直近
+0.4 秒の加速度の平均から u を置き直す。**静止していなければ置き直さず、最大
+reset_timeout 秒だけ静止を待つ** (動いている間の加速度は 28 度ずれる。§5.2)。
+試合では /autonomy が true になった瞬間 (「はじめ」。ホーム姿勢で立っている) にも
+自動で取り直す (reset_on_autonomy)。
+
 **4. 「見えない」を 1 つに潰さない。** リング面が取れない / 面あてはめの門を通らない /
 相手がいない、の 3 つは行動層での扱いが違う。status で区別して出す。
 """
@@ -53,15 +64,15 @@ import numpy as np
 from rcl_interfaces.msg import SetParametersResult
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.signals import SignalHandlerOptions
 from roboone_interfaces.msg import Opponent
 from sensor_msgs.msg import CameraInfo, Image, Imu
-from std_msgs.msg import Float32MultiArray, MultiArrayDimension
+from std_msgs.msg import Bool, Empty, Float32MultiArray, MultiArrayDimension
 
 from .detect import (ATTITUDE_STALE, BodyParams, DetectorParams, Intrinsics,
-                     MatchParams, NO_OPPONENT, OK, RING_LOST, RingDetector,
-                     TuneParams)
+                     MatchParams, mean_accel_if_still, NO_OPPONENT, OK, RING_LOST,
+                     RingDetector, TuneParams)
 from .detect import grid as g
 
 #: 深度画像の QoS。realsense2_camera は画像を RELIABLE で出す。ここを取り違えると
@@ -87,6 +98,8 @@ _C_IN = (60, 200, 80)
 _C_OUT = (200, 60, 60)
 _C_SEL = (255, 255, 80)
 _C_SELF = (80, 160, 255)
+_C_HULL = (40, 40, 40)          # リングの内側 (凸包) のうち床が見えていない所
+_C_INTRUDE = (230, 60, 200)     # 確かにリングの外にある、塊とつながりうる物
 
 
 def _stamp_sec(stamp):
@@ -114,6 +127,11 @@ class OpponentDetectorNode(Node):
         self.declare_parameter('watchdog_period', 0.2)
         self.declare_parameter('depth_timeout', 0.5)
         self.declare_parameter('debug_scale', 4)
+        # 基準姿勢の取り直し (冒頭の 5)。静止の判定と、静止を待つ上限
+        self.declare_parameter('reset_on_autonomy', True)
+        self.declare_parameter('reset_timeout', 5.0)
+        self.declare_parameter('reset_still_gyro', 0.15)      # [rad/s] 窓の中の最大
+        self.declare_parameter('reset_still_accel', 0.6)      # [m/s^2] |a| と g の差
 
         # --- 検出器の定数。§11 の 3 群をそのまま宣言する ----------------
         for prefix, cls in (('body.', BodyParams), ('match.', MatchParams),
@@ -141,6 +159,15 @@ class OpponentDetectorNode(Node):
         self.last_status = None
         self.dropped = 0
         self._pending_rebuild = False
+        self.imu_win = deque(maxlen=200)   # (時刻, 加速度[3], |ω|)。静止の判定用に約 1 秒
+        self._reset_at = None              # 取り直しを頼まれた時刻 (壁時計)。None = 無し
+        self._reset_why = ''
+        #: 直近の取り直しの結果。ビューアが表示する
+        self.reset_status = ''
+        self._autonomy = None
+        #: 1 フレームの結果を横から受け取る口。テストランのビューア
+        #: (opponent_viewer) がここへぶら下がる。ノード自身は使わない
+        self.result_hook = None
 
         # --- 出入り口 ---------------------------------------------------
         qos_name = str(self.get_parameter('depth_qos').value)
@@ -156,6 +183,12 @@ class OpponentDetectorNode(Node):
                                  self._on_depth, depth_qos)
         self.create_subscription(Imu, self.get_parameter('imu_topic').value,
                                  self._on_imu, _QOS['sensor_data'])
+        self.create_subscription(Empty, '/detector/reset_attitude',
+                                 lambda _m: self.request_reset('/detector/reset_attitude'),
+                                 10)
+        latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                             durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.create_subscription(Bool, '/autonomy', self._on_autonomy, latched)
         self.create_timer(float(self.get_parameter('watchdog_period').value),
                           self._on_watchdog)
 
@@ -210,6 +243,53 @@ class OpponentDetectorNode(Node):
         self.imu.append((t, (w.x, w.y, w.z)))
         a = msg.linear_acceleration
         self.accel = (a.x, a.y, a.z)
+        self.imu_win.append((t, (a.x, a.y, a.z), math.sqrt(w.x * w.x + w.y * w.y + w.z * w.z)))
+
+    # ------------------------------------------------------------ 基準姿勢
+    def _on_autonomy(self, msg):
+        rising = bool(msg.data) and self._autonomy is False
+        self._autonomy = bool(msg.data)
+        if rising and bool(self.get_parameter('reset_on_autonomy').value):
+            self.request_reset('/autonomy が true (はじめ)')
+
+    def request_reset(self, why='手動'):
+        """基準姿勢の取り直しを予約する。実際に置き直すのは次の depth フレーム。"""
+        self._reset_at = self.get_clock().now().nanoseconds * 1e-9
+        self._reset_why = why
+        self.reset_status = '静止を待っている'
+        self.get_logger().info('基準姿勢の取り直しを受けた (%s)' % why)
+
+    def _still_accel(self):
+        """直近 0.4 秒が静止なら加速度の平均を返す。違えば (None, 理由)。"""
+        return mean_accel_if_still(
+            self.imu_win,
+            gyro_max=float(self.get_parameter('reset_still_gyro').value),
+            accel_tol=float(self.get_parameter('reset_still_accel').value))
+
+    def _try_reset(self):
+        if self._reset_at is None:
+            return
+        now = self.get_clock().now().nanoseconds * 1e-9
+        acc, why_not = self._still_accel()
+        waited = now - self._reset_at
+        if acc is None and self.imu_win and waited < float(
+                self.get_parameter('reset_timeout').value):
+            self.reset_status = '静止を待っている: ' + why_not
+            return
+        self._reset_at = None
+        if acc is not None:
+            self.detector.reset_reference(accel=acc)
+            self.reset_status = '取り直した (加速度の平均から)'
+        elif not self.imu_win:
+            # IMU なしの構成。水平付けでホーム姿勢なら取り付けの鉛直が正しい値に近い
+            self.detector.reset_reference(accel=None)
+            self.reset_status = '取り直した (IMU が無いので取り付けの鉛直へ)'
+        else:
+            self.reset_status = '取り直せなかった: ' + why_not
+            self.get_logger().warn(
+                '基準姿勢を取り直せなかった (%.0f 秒待った): %s' % (waited, why_not))
+            return
+        self.get_logger().info('基準姿勢を%s [%s]' % (self.reset_status, self._reset_why))
 
     def _gyro_since(self, t_prev, t_now):
         """(t_prev, t_now] のジャイロを [(ω, dt), ...] にして取り出す。
@@ -245,6 +325,8 @@ class OpponentDetectorNode(Node):
             self._pending_rebuild = False
             self.get_logger().info('パラメータ変更を反映して検出器を作り直した')
 
+        self._try_reset()
+
         stamp = _stamp_sec(msg.header.stamp)
         lag = self.last_depth_wall - stamp
         if lag > self.max_lag and self.prev_stamp is not None:
@@ -266,13 +348,16 @@ class OpponentDetectorNode(Node):
         gyro = self._gyro_since(self.prev_stamp, stamp) if self.prev_stamp else ()
         self.prev_stamp = stamp
 
-        want_debug = self.pub_dbg.get_subscription_count() > 0
+        want_debug = (self.pub_dbg.get_subscription_count() > 0
+                      or self.result_hook is not None)
         res = self.detector.step(depth, self.intr, dt, gyro=gyro,
                                  accel=self.accel, depth_scale=scale,
                                  want_debug=want_debug)
         self._publish(res, msg.header.stamp)
-        if want_debug:
+        if self.pub_dbg.get_subscription_count() > 0:
             self.pub_dbg.publish(self._debug_image(res, msg.header.stamp))
+        if self.result_hook is not None:
+            self.result_hook(res, depth, scale, dt)
 
         if res.status != self.last_status:
             self.get_logger().info(
@@ -387,8 +472,9 @@ class OpponentDetectorNode(Node):
             if mask is not None and mask.any():
                 img[mask] = color
 
-        if res.above_mask is not None:
-            paint(res.above_mask, _C_OUT)              # 面より上・リング外は赤
+        paint(res.interior_mask, _C_HULL)
+        paint(res.above_mask, _C_OUT)                  # 面より上・リング外は赤
+        paint(res.outside_mask, _C_INTRUDE)
         if res.ring_mask is not None:
             paint(res.ring_mask, _C_RING)
             paint(g.boundary(res.ring_mask), _C_EDGE)

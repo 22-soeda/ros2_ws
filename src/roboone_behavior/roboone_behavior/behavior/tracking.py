@@ -155,6 +155,9 @@ class FallenDetector:
         self._cal_time = 0.0
         self._below = 0.0          # [s] しきい値を割っている継続時間
         self._above = 0.0
+        #: 直近の周期に立っていた証拠。テストランのビューアが表示する
+        self.evidence = {'low': False, 'flat': False, 'wide': False,
+                         'high': False, 'close': False}
 
     @property
     def calibrated(self):
@@ -162,10 +165,18 @@ class FallenDetector:
 
     def step(self, z_top, width, rng, dt):
         """1 周期進める。z_top が無い周期は None を渡す。"""
+        # 較正の要らない証拠 (params.flat_top_max の注記)。二足歩行機は立位で
+        # 上端 > 幅、横倒しで 幅 > 上端 に反転する
+        flat = (z_top is not None and width is not None
+                and z_top < self.t.flat_top_max
+                and width > self.t.flat_aspect * z_top)
+
         # --- 立位高さの較正。開始直後 T の中央値を H_o にする ----------------
+        # 平たい形は較正に入れない。再開時に倒れた相手の前へ置かれると、倒れた高さを
+        # 立位高さとして覚えてしまい、以後「低い」が一度も立たなくなる
         if not self.calibrated:
             self._cal_time += dt
-            if z_top is not None and not self.fallen:
+            if z_top is not None and not self.fallen and not flat:
                 self._cal.append(float(z_top))
             if self.calibrated and self._cal:
                 s = sorted(self._cal)
@@ -176,14 +187,20 @@ class FallenDetector:
 
         # --- 式 (4)。補助として水平の広がりが H_o を超えたら転倒側の証拠 ------
         low = z_top < self.t.fallen_ratio * self.h_stand
-        high = z_top > self.t.stand_ratio * self.h_stand
-        wide = width is not None and width > self.h_stand
+        # 平たい形は、高さの比がどう出ていても「立っている」とは言わない
+        high = z_top > self.t.stand_ratio * self.h_stand and not flat
+        # 「横に広い」は立位の高さに達していないときだけ証拠にする。腕を広げて立つ
+        # 相手 (T ポーズ) は幅が H_o を超えるが、上端は立位のままなので転倒ではない
+        # (2026-09-20。以前は幅だけで転倒側に数えていた)
+        wide = width is not None and width > self.h_stand and not high
 
         close = rng is not None and rng < self.r.strike_range + self.t.fallen_freeze_margin
+        self.evidence = {'low': bool(low), 'flat': bool(flat), 'wide': bool(wide),
+                         'high': bool(high), 'close': bool(close)}
         if close:
             return self._step_close(z_top, width, low, dt)
 
-        self._below = self._below + dt if (low or wide) else 0.0
+        self._below = self._below + dt if (low or wide or flat) else 0.0
         self._above = self._above + dt if high else 0.0
 
         if not self.fallen and self._below >= self.t.fallen_time:

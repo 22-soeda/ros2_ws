@@ -18,6 +18,9 @@
   <!-- depth と IMU の出どころ。既製パッケージ (ros-architecture §2) -->
   <exec_depend>realsense2_camera</exec_depend>
   <exec_depend>ros2launch</exec_depend>
+  <!-- opponent_viewer (テストラン) は転倒判定 FallenDetector を roboone_behavior から借りるが、
+       依存には書かない (behavior が perception に依存していて循環する)。無ければ表示だけ動く -->
+  <exec_depend>ament_index_python</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
