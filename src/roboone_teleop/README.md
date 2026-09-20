@@ -60,6 +60,7 @@ ros2 launch roboone_teleop teleop.launch.py
 |---|---|---|---|
 | **デッドマン** | **R1 を押している間** | これを押している間だけ歩行・技が通る | |
 | 並行移動 (前後左右・斜め) | 左スティック | `/cmd_walk` の `linear.x` / `linear.y` | |
+| 足踏み (その場で歩を踏む) | **R2 を押している間**（R1 は要らない） | `/cmd_walk` の `linear.z` = 1。離すと motion が停止シーケンスに入る（止まりきるまで約 3 秒）。`buttons.march` = `a5-` は**実機未照合** | |
 | 旋回 左/右 | 十字キー 左 / 右 | `/cmd_motion` → `turn_l` / `turn_r`（★2026-08-29 時点で `motions.yaml` に未定義。押しても何も起きない） | |
 | パンチ 右 | ○ | `/cmd_motion` → `punch_r` | |
 | パンチ 左 | □ | `/cmd_motion` → `punch_l` | |

@@ -1,6 +1,7 @@
 // motion ノード — ros-architecture §3 の「200Hz ループ」の実体。
 //
 //   受け取る: /cmd_walk (geometry_msgs/Twist)  歩行指令。teleop / behavior から 20Hz
+//             (linear.x / linear.y = 速度。**linear.z > 0.5 = その場で足踏み**)
 //             /cmd_motion (std_msgs/String)    技名。イベント時
 //             /estop (std_msgs/Bool)           脱力 / トルクオン。latched
 //             /camera/imu (sensor_msgs/Imu)    RealSense 内蔵 IMU の生値。200Hz
@@ -423,7 +424,10 @@ public:
       "/estop", latchedQos(), [this](std_msgs::msg::Bool::SharedPtr m) {onEstop(*m);});
     sub_walk_ = create_subscription<geometry_msgs::msg::Twist>(
       "/cmd_walk", 10, [this](geometry_msgs::msg::Twist::SharedPtr m) {
-        ctrl_.setWalkCmd(m->linear.x, m->linear.y, m->angular.z, nowSec());
+        // linear.z > 0.5 = 足踏み (teleop の R2)。速度と同じ指令に載せてあるので、
+        // 途絶えれば cmd_timeout で一緒に止まる
+        ctrl_.setWalkCmd(
+          m->linear.x, m->linear.y, m->angular.z, nowSec(), m->linear.z > 0.5);
       });
     sub_motion_ = create_subscription<std_msgs::msg::String>(
       "/cmd_motion", 10, [this](std_msgs::msg::String::SharedPtr m) {
@@ -532,7 +536,6 @@ private:
         std::lock_guard<std::mutex> lk(param_mtx_);
         ctrl_.setLoadFf(load_ff_);
       }
-      ctrl_.setMarch(march_.load());   // 足踏み (実行中に変えられる)
       const rm::MotionController::Tick t =
         ctrl_.step(now, dt, meas.ok ? &meas.pose : nullptr, meas.why, bank_.torqueReady());
       bank_.setWantTorque(t.want_torque);
@@ -621,11 +624,6 @@ private:
     en.description =
       "歩行計画の重心加速度 ω²(x_C − p) を IMU の比力から引いてから傾きを出すか";
     accel_ff_ = declare_parameter<bool>("imu.accel_ff", accel_ff_, en);
-    en.description =
-      "足踏み。true の間は /cmd_walk が 0 でもその場で歩を踏み続ける "
-      "(歩幅は v·t_step なので 0)。動歩行・静歩行のどちらでも効く。"
-      "**立位でトルクが入っていれば、true にした周期から実機が動く。** 既定 false";
-    march_ = declare_parameter<bool>("march", march_, en);
 
     rcl_interfaces::msg::ParameterDescriptor mount;
     mount.description =
@@ -716,19 +714,6 @@ private:
       }
       if (n == "imu.accel_ff") {
         accel_ff_ = p.as_bool();
-        touched = true;
-        continue;
-      }
-      if (n == "march") {
-        const bool on = p.as_bool();
-        if (on != march_.load()) {
-          RCLCPP_WARN(
-            get_logger(),
-            on ?
-            "足踏み ON — /cmd_walk が 0 でもその場で歩き続ける。トルクが入っていれば動く" :
-            "足踏み OFF — 次の歩の境界から停止シーケンスに入る");
-        }
-        march_ = on;
         touched = true;
         continue;
       }
@@ -1127,8 +1112,6 @@ private:
   rm::LoadFfParams load_ff_;
   rm::Stabilizer stab_;           //!< control スレッドだけが触る
   std::atomic<bool> accel_ff_{true};
-  //! 足踏み (walk_planner.hpp)。**既定 false。true の間は指令 0 でもその場で歩き続ける。**
-  std::atomic<bool> march_{false};
   double start_steady_ = 0.0;
   bool imu_seen_ = false, imu_warned_ = false;
   std_msgs::msg::MultiArrayLayout stab_layout_;

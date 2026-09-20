@@ -29,7 +29,7 @@ PARAMS = {
     'accel.x': 10.0, 'accel.y': 10.0,        # 同上。1 周期 (20ms) で 0.2 進む
     'buttons.deadman': 'b10', 'buttons.relax': 'b9',
     'buttons.home': 'b6', 'buttons.autonomy': 'b11',
-    'buttons.hold': 'b7',
+    'buttons.hold': 'b7', 'buttons.march': 'a5-',
     'home_hold': 0.3, 'home_motion': 'home', 'home_torque_delay': 0.1,
     'hold_hold': 0.3, 'hold_motion': 'hold',
     'autonomy_hold': 0.3, 'autonomy.stop_on_joy_loss': True,
@@ -41,6 +41,7 @@ PARAMS = {
 
 DEADMAN, RELAX, HOME, AUTO, HOLD = 10, 9, 6, 11, 7
 PUNCH_R, GETUP_F = 1, 3
+MARCH_AXIS = 5           # R2。引くと負へ振れる
 
 N_AXES = 6
 N_BUTTONS = 21          # DualSense をひととおり覆う数
@@ -168,6 +169,49 @@ def test_deadman_gates_walk(rig):
     _pump(harness, axes, buttons, seconds=0.4)
     assert max(m.linear.x for m in harness.walk) > 0.0
     assert not teleop._estop
+
+
+def _march_axes(pulled=True):
+    a = [0.0] * N_AXES
+    a[MARCH_AXIS] = -1.0 if pulled else 0.0
+    return a
+
+
+def test_march_only_while_held_and_needs_no_deadman(rig):
+    """足踏みは R2 を押している間だけ。方向が要らないのでデッドマンは見ない。"""
+    harness, teleop = rig
+    _pump(harness, None, None, seconds=0.3)                  # 何も押さない (再武装)
+    assert all(m.linear.z == 0.0 for m in harness.walk)
+
+    harness.walk.clear()
+    _pump(harness, _march_axes(), None, seconds=0.4)         # R2 だけ。R1 は押さない
+    assert harness.walk[-1].linear.z == 1.0
+    assert all(m.linear.x == 0.0 and m.linear.y == 0.0 for m in harness.walk)
+
+    harness.walk.clear()
+    _pump(harness, _march_axes(False), None, seconds=0.3)    # 離す
+    assert harness.walk[-1].linear.z == 0.0
+
+
+def test_march_is_blocked_while_relaxed(rig):
+    """脱力中は足踏みも通さない (歩行指令と同じ条件)。"""
+    harness, teleop = rig
+    _pump(harness, None, _btn(RELAX), seconds=0.2)
+    assert teleop._estop
+    harness.walk.clear()
+    _pump(harness, _march_axes(), None, seconds=0.4)
+    assert all(m.linear.z == 0.0 for m in harness.walk)
+
+
+def test_march_stops_on_joy_loss(rig):
+    """R2 を引いたまま電波が切れたら、足踏みも止める (脱力をラッチ)。"""
+    harness, teleop = rig
+    _pump(harness, None, None, seconds=0.3)
+    _pump(harness, _march_axes(), None, seconds=0.3)
+    assert harness.walk[-1].linear.z == 1.0
+    time.sleep(0.6)                                          # joy_timeout 0.3s を超える
+    assert teleop._estop
+    assert harness.walk[-1].linear.z == 0.0
 
 
 def test_deadman_held_at_startup_is_ignored(rig):

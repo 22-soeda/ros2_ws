@@ -111,7 +111,7 @@ uiノードが握る2つの出力デバイス。どちらもトピックの先�
 | /camera/…/points | sensor_msgs/PointCloud2 | realsense2_camera → opponent_detector | 15–30Hz |
 | /camera/imu | sensor_msgs/Imu | realsense2_camera → motion | 200Hz |
 | /opponent | roboone_interfaces/Opponent（位置・上端高さ・速度） | opponent_detector → behavior | 約15Hz※ |
-| /cmd_walk | geometry_msgs/Twist | behavior・teleop → motion | 20Hz |
+| /cmd_walk | geometry_msgs/Twist | behavior・teleop → motion | 20Hz。linear.x / linear.y = 速度。**linear.z > 0.5 = その場で足踏み**（teleop の R2。2026-09-20 追加） |
 | /cmd_motion | std_msgs/String（技名） | behavior・teleop → motion | イベント時 |
 | /estop | std_msgs/Bool | teleop → motion | イベント時 |
 | /motion/state | std_msgs/String | motion → behavior・ui | 状態変化時 |

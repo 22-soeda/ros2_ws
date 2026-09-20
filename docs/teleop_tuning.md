@@ -202,6 +202,7 @@ ros2 launch roboone_bringup roboone.launch.py teleop_overrides:=~/teleop_overrid
 | `buttons.home` | `"b6"` |  |  | home_hold 秒の長押しでホームポジション → トルクオン (Options) |
 | `buttons.autonomy` | `"b11"` |  |  | autonomy_hold 秒の長押しで自律動作へ (十字キー 上) |
 | `buttons.hold` | `"b7"` |  |  | hold_hold 秒の長押しで、今の姿勢のままトルクを入れる (L3)。転倒 → 脱力 → 起き上がりの経路用 |
+| `buttons.march` | `"a5-"` |  |  | 押している間だけ足踏み (R2)。/cmd_walk の linear.z に 1 を載せる。デッドマン (R1) は要らない |
 
 #### ホームポジション / その場保持
 

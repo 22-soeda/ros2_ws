@@ -93,19 +93,11 @@
     # (static_gait_yaml パラメータで差し替えられる)。
     walk_enable: true
 
-    # 足踏み。true の間は /cmd_walk が 0 でもその場で歩を踏み続ける（歩幅は v·t_step
-    # なので 0）。前進させずに歩の周期・足上げ・安定化・両足支持の効き目だけを実機で
-    # 見るためのもの。動歩行・静歩行のどちらでも効く。実行中に変えられる:
-    #
-    #   ros2 param set /motion march true
-    #
-    # ★**トルクが入っている機体では、true にした周期から動く。**
-    # 中身は walk_planner.hpp の WalkPlanner::setMarch。歩き出し・歩き続けのしきい値
-    # (v_start_eps / v_stop_eps) だけを無効にする実装で、歩行計画の幾何には触らない
-    # （入れ切りしても足先は跳ばない）。**歩幅を 0 にする改造で足踏みを作らないこと**
-    # （2026-09-18〜19 に walk_engine.hpp の lx = 0 がコミットに紛れ、C++ の歩行が
-    #  前に進まなくなっていた。docs/サーボ追従と両足支持_実装計画.md §5）。
-    march: false
+    # 足踏みはパラメータではなく /cmd_walk の linear.z (> 0.5) で受ける。teleop の R2 を
+    # 押している間だけ載る (roboone_teleop の buttons.march)。速度と同じ 1 本の指令なので、
+    # コントローラが切れれば cmd_timeout で足踏みも一緒に止まる。2026-09-20 に一度
+    # `march` パラメータで持ったが、入れっぱなしになるうえデッドマンと無関係に踏み出す
+    # のでやめた。
 
     # 歩行と HOLD の足の位置はホーム姿勢の足（roboone_walk_ref/config/home_pose.yaml の
     # foot）に揃う。gait.yaml の foot_spacing は計画上の足間隔で、実機の足より広く取ると

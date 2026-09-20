@@ -53,6 +53,9 @@ teleop_params、状態表示は別ノードの仕事)。
 
   * **デッドマン**: R1 を押している間しか /cmd_walk に値が乗らない。離せばゼロ。
     「押している間だけ動く」であって「押すと動き出す」ではない。
+  * **足踏み**: R2 を押している間だけ /cmd_walk の linear.z に 1 を載せる (motion が
+    その場で歩を踏む)。方向が要らないので R1 は見ない。これも「押している間だけ」で、
+    離せば motion が停止シーケンスに入る (止まりきるまで約 3 秒)。
   * **無通信ウォッチドッグ**: /joy が joy_timeout 秒途切れたら脱力をラッチする。
     Bluetooth が切れる・電池が切れる・コントローラを踏む、はどれも実際に起きる。
     joy 側の autorepeat_rate を 0 より大きくしておくこと (launch で設定済み)。
@@ -143,6 +146,7 @@ class TeleopNode(Node):
             f'teleop 起動。デッドマン={self._b_deadman.spec} 脱力={self._b_relax.spec} '
             f'ホーム={self._b_home.spec}({self._home_hold:.1f}s 長押し) '
             f'その場保持={self._b_hold.spec}({self._hold_hold:.1f}s 長押し) '
+            f'足踏み={self._b_march.spec}(押している間) '
             f'自律={self._b_auto.spec}({self._auto_hold:.1f}s 長押し) '
             f'joy_timeout={self._joy_timeout:.2f}s')
 
@@ -165,6 +169,7 @@ class TeleopNode(Node):
         self._b_home = Binding(cfg['buttons.home'])
         self._b_auto = Binding(cfg['buttons.autonomy'])
         self._b_hold = Binding(cfg['buttons.hold'])
+        self._b_march = Binding(cfg['buttons.march'])
         self._home_hold = cfg['home_hold']
         self._home_motion = cfg['home_motion']
         self._home_delay = cfg['home_torque_delay']
@@ -204,6 +209,7 @@ class TeleopNode(Node):
                 self._joy = None
 
         target = [0.0, 0.0]
+        march = False
         if self._joy is not None:
             axes, buttons = self._joy.axes, self._joy.buttons
 
@@ -230,6 +236,12 @@ class TeleopNode(Node):
                 for i, k in enumerate(('x', 'y')):
                     target[i] = self._axis(axes, k) * self._scale[k]
 
+            # 4') 足踏み。**押している間だけ**。方向が要らないのでデッドマン (R1) は
+            #     見ない — このボタン自体が「離せば止まる」デッドマンになっている。
+            #     脱力中・自律中・再武装前は通さない (歩行指令と同じ条件)。
+            march = (self._armed and not self._estop and not self._auto
+                     and self._b_march.pressed(axes, buttons))
+
             # 5) 技指令。押した瞬間だけ 1 回送る。
             self._handle_motion(axes, buttons, now, deadman)
 
@@ -246,6 +258,10 @@ class TeleopNode(Node):
                 self._cmd[i] = _slew(self._cmd[i], target[i], self._accel[k] * dt)
             msg = Twist()
             msg.linear.x, msg.linear.y = self._cmd
+            # 足踏みは linear.z に載せる (motion ノードが > 0.5 で足踏みとみなす)。
+            # /cmd_walk と同じ 1 本の指令なので、teleop が落ちたりコントローラが切れたり
+            # すれば motion 側の cmd_timeout で足踏みも一緒に止まる。
+            msg.linear.z = 1.0 if march else 0.0
             self._pub_walk.publish(msg)
 
     # ------------------------------------------------------------ 補助メソッド

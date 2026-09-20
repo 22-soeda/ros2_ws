@@ -1337,37 +1337,43 @@ python3 src/roboone_viz/roboone_viz/walk_reach.py \
     --ds-time 0,0.2,0.3,0.4 --foot-spacing 0.14,0.15 --swing-height 0.05,0.04,0.03
 ```
 
-## 足踏み（march）
+## 足踏み（R2 / `/cmd_walk` の linear.z）
 
-`/cmd_walk` が 0 でも**その場で歩を踏み続ける**。歩幅は `v·t_step` なので指令 0 で 0。
-前進させずに、歩の周期・足上げ・安定化・両足支持の効き目だけを実機で見るためのもの。
-動歩行・静歩行のどちらでも効く。**既定 false。**
+**コントローラの R2 を押している間だけ**、その場で歩を踏む（R1 は要らない）。歩幅は
+`v·t_step` なので速度 0 で 0。前進させずに、歩の周期・足上げ・安定化・両足支持の効き目だけを
+実機で見るためのもの。動歩行・静歩行のどちらでも効く。
 
-中身は `roboone_motion/include/roboone_motion/walk_planner.hpp` の `WalkPlanner::setMarch`。
-歩き出し・歩き続けのしきい値（`v_start_eps` / `v_stop_eps`）だけを無効にする実装で、
-**歩行計画の幾何には一切触らない**（入れ切りしても足先は跳ばない）。
+- teleop が `/cmd_walk` の `linear.z` に 1 を載せ、motion が > 0.5 で足踏みとみなす
+  （`roboone_teleop` の `buttons.march`、既定 `a5-` = R2。**実機未照合** — 効かなければ
+  `ros2 run roboone_teleop joy_probe` で R2 の軸と符号を確かめる）
+- 速度と同じ 1 本の指令なので、**コントローラが切れたり teleop が落ちたりすれば
+  `cmd_timeout` 0.5s で足踏みも止まる**。脱力中・自律中は載らない
+- 中身は `walk_planner.hpp` の `WalkPlanner::setMarch`。歩き出し・歩き続けのしきい値
+  （`v_start_eps` / `v_stop_eps`）だけを無効にする実装で、**歩行計画の幾何には触らない**
+- **離してから止まりきるまで約 3 秒かかる。**計画の停止シーケンス（準備歩 → 足を揃える
+  最後の歩 → 最後の両足支持）を踏むため。実測で IDLE まで 2.89s（`ds_time` 0 なら 2.15s）。
+  **すぐ止めたいときは L3 長押し（その場保持）。**トルクは入ったまま歩行だけ即座に打ち切る
+- R1 + スティックを同時に入れれば普通に歩く（足踏みは速度が小さいときにしか効かない）
+- `/motion/state` は `WALK march`（静歩行なら `WALK walk=static march`）
 
-★**歩幅を 0 にする改造で足踏みを作らないこと。** 2026-09-18〜19 は `walk_engine.hpp` の
-`lx = 0.0` でそれをやっていて、コミットに紛れて C++ の歩行そのものが前に進まなくなっていた
-（`compare_walk_engines.py` の前進・斜めのケースが検出する）。
+★経緯（2026-09-20）: 最初は `march` パラメータ（`ros2 param set /motion march true`）で
+持ったが、**入れっぱなしになり、HOLD に入った瞬間にデッドマンと無関係に踏み出した**のでやめた。
+それ以前（9/18〜19）は `walk_engine.hpp` の歩幅を 0 にする改造でやっていて、コミットに紛れて
+C++ の歩行そのものが前に進まなくなっていた。**足踏みを入れっぱなしにできる口は作らないこと。**
 
 ```bash
-# 実装の検算（実機なし。[5-9] が全部 ok になること）
+# 実装の検算（実機なし。[5-9] が全部 ok。指令が途絶えたら止まることも見ている）
 ros2 run roboone_motion motion_selftest
+python3 -m pytest src/roboone_teleop/test/test_teleop.py -k march
 
-# ★実機。トルクが入っていれば true にした周期から動く。必ず機体を支えてから
-ros2 param set /motion march true
-ros2 topic echo --once /motion/state      # "WALK march" が出る
-ros2 param set /motion march false        # 次の歩の境界から停止シーケンス -> HOLD
+# コントローラ無しで足踏みさせる（★トルクが入っていれば動く。支えてから）。
+# 20Hz で送り続けている間だけ踏む。Ctrl-C で止めれば 0.5s 後に停止シーケンスへ入る
+ros2 topic pub -r 20 /cmd_walk geometry_msgs/msg/Twist "{linear: {z: 1.0}}"
 
 # トルクを入れずに通しで見る（バスは開いて読むが、トルクも位置指令も送らない）
-ros2 launch roboone_motion motion.launch.py allow_torque:=false
-#   別端末で home -> 武装（allow_torque:=false なら「入ったことにして」HOLD まで進む）
-ros2 topic pub -t 3 /cmd_motion std_msgs/msg/String "{data: home}"
-ros2 topic pub -t 3 --qos-durability transient_local --qos-reliability reliable \
-  /estop std_msgs/msg/Bool "{data: false}"
-ros2 param set /motion march true
-ros2 topic echo /joint_states             # 計画・IK は回るので関節角は動く
+ros2 launch roboone_bringup roboone.launch.py allow_torque:=false
+#   Options 長押し -> HOLD -> R2 を押す -> /motion/state が "WALK march"
+ros2 topic echo /motion/state
 ```
 
 ## 立位は歩行の計画器ごとに持つ（home_pose.yaml の walk_mode:）

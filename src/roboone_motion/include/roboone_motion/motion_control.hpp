@@ -112,14 +112,15 @@ public:
   /// 直近の周期で実際に出している伸ばし量 [mm]（レート制限のあと）。
   const double * loadFfOffset() const {return load_ff_state_.offset();}
 
-  /// 足踏み（walk_planner.hpp の WalkPlanner::setMarch）。実行中に変えられるので、
-  /// step() を呼ぶ側が毎周期渡す。**既定 false。true にした周期からその場で歩き出す。**
-  void setMarch(bool on) {walk_.setMarch(on);}
+  /// いま足踏み中か（walk_planner.hpp の WalkPlanner::setMarch）。足踏みは歩行指令の
+  /// 一部として setWalkCmd() の march で受ける — **指令が途絶えれば一緒に止まる。**
   bool march() const {return walk_.march();}
 
   // --- 外からの指令（購読スレッドから呼ばれる。ロックを持つ）-------------
   void setEstop(bool v) {estop_.store(v);}
-  void setWalkCmd(double vx, double vy, double wz, double stamp);
+  /// march = その場で足踏み（/cmd_walk の linear.z > 0.5）。速度指令と同じ 1 本の指令
+  /// なので、cmd_timeout で速度がゼロへ落ちるときに足踏みも一緒に切れる。
+  void setWalkCmd(double vx, double vy, double wz, double stamp, bool march = false);
   void requestMotion(const std::string & name);
 
   // --- 1 周期 -----------------------------------------------------------
@@ -209,6 +210,7 @@ private:
   std::atomic<bool> estop_{false};
   std::mutex walk_mtx_, req_mtx_;
   double walk_cmd_[2]{0.0, 0.0};
+  bool walk_march_ = false;         //!< 足踏みの要求（walk_cmd_ と同じ鮮度で見る）
   double walk_stamp_ = 0.0;
   std::string motion_req_;
   bool got_motion_ = false, seen_motion_ = false, warned_yaw_ = false;

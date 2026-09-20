@@ -89,6 +89,9 @@ TUNABLES = (
     Tunable('buttons.hold', 'b7',
             'hold_hold 秒の長押しで、今の姿勢のままトルクを入れる (L3)。転倒 → 脱力 → 起き上がりの経路用',
             _G_BUTTON, '', kind='str'),
+    Tunable('buttons.march', 'a5-',
+            '押している間だけ足踏み (R2)。/cmd_walk の linear.z に 1 を載せる。デッドマン (R1) は要らない',
+            _G_BUTTON, '', kind='str'),
     # --- ホームポジション ---------------------------------------------------
     Tunable('home_hold', 1.0, '長押し時間。誤発動防止なので短くしない', _G_HOME, 's', low=0.0, high=10.0),
     Tunable('home_motion', 'home', '先に /cmd_motion へ送る技名', _G_HOME, '', kind='str'),

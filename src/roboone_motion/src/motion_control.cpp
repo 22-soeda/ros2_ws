@@ -75,11 +75,12 @@ std::string MotionController::stateText() const
   return s;
 }
 
-void MotionController::setWalkCmd(double vx, double vy, double wz, double stamp)
+void MotionController::setWalkCmd(double vx, double vy, double wz, double stamp, bool march)
 {
   std::lock_guard<std::mutex> lk(walk_mtx_);
   walk_cmd_[0] = vx;
   walk_cmd_[1] = vy;
+  walk_march_ = march;
   walk_stamp_ = stamp;
   if (std::abs(wz) > 1e-3 && !warned_yaw_) {
     warned_yaw_ = true;
@@ -244,16 +245,27 @@ void MotionController::resetWalk()
 void MotionController::tickWalk(double now, double dt)
 {
   double vx = 0.0, vy = 0.0;
+  bool march = false;
   {
     std::lock_guard<std::mutex> lk(walk_mtx_);
     // 指令が途絶えたらゼロを入れる。最後の指令を保持しない
-    // (無線が切れたまま歩き続けるのがいちばん困る)。
+    // (無線が切れたまま歩き続けるのがいちばん困る)。**足踏みも同じ扱い** —
+    // 入れっぱなしになる口 (パラメータなど) は持たない。2026-09-20 に一度
+    // パラメータで持ったら、HOLD に入った瞬間にデッドマンと無関係に踏み出した。
     if (walk_stamp_ > 0.0 && now - walk_stamp_ <= opt_.cmd_timeout) {
       vx = walk_cmd_[0];
       vy = walk_cmd_[1];
+      march = walk_march_;
     }
   }
-  if (!opt_.walk_enable) {vx = vy = 0.0;}
+  if (!opt_.walk_enable) {
+    vx = vy = 0.0;
+    march = false;
+  }
+  if (march != walk_.march()) {
+    ev_.info(march ? "足踏み 開始 (/cmd_walk の linear.z)" : "足踏み 終了 (停止シーケンスへ)");
+  }
+  walk_.setMarch(march);
 
   const rwc::WalkOutputs o = walk_.update(vx, vy, dt);
   walk_out_ = o;

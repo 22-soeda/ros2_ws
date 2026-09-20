@@ -798,7 +798,7 @@ int main(int argc, char ** argv)
       drop(c);
     }
 
-    // [5-9] 足踏み (march)。指令 0 のままその場で歩を踏み続ける。
+    // [5-9] 足踏み (march)。/cmd_walk の足踏みの要求で、速度 0 のままその場で歩を踏む。
     //   **前後に進まないこと**が要点。2026-09-18〜19 は walk_engine.hpp の歩幅を
     //   0 にする改造でこれをやっていて、C++ の歩行そのものが前に進まなくなっていた
     //   (docs/サーボ追従と両足支持_実装計画.md §5)。march は歩き出し・歩き続けの
@@ -821,10 +821,9 @@ int main(int argc, char ** argv)
         c->setWalkCmd(0.0, 0.0, 0.0, now);
         t = c->step(now, dt, &meas, why, true);
       }
-      check(t.state == rm::State::HOLD, "★march = false なら指令 0 で歩き出さない (既定)");
+      check(t.state == rm::State::HOLD, "★足踏みの要求が無ければ指令 0 で歩き出さない");
 
-      // march を入れる。指令は 0 のまま
-      c->setMarch(true);
+      // 足踏みを要求する。速度は 0 のまま
       const double t_one = gait.ds_time + gait.t_step;
       const int n_march = static_cast<int>(std::lround(4.0 * t_one / dt));
       double x_min = 1e9, x_max = -1e9, z_max[rm::kNumSide] = {-1e9, -1e9};
@@ -833,7 +832,7 @@ int main(int argc, char ** argv)
       bool up[rm::kNumSide] = {false, false};
       for (int i = 0; i < n_march; ++i) {
         now += dt;
-        c->setWalkCmd(0.0, 0.0, 0.0, now);
+        c->setWalkCmd(0.0, 0.0, 0.0, now, true);
         t = c->step(now, dt, &meas, why, true);
         saw_walk = saw_walk || t.state == rm::State::WALK;
         for (int sd = 0; sd < rm::kNumSide; ++sd) {
@@ -847,7 +846,7 @@ int main(int argc, char ** argv)
           z_max[sd] = std::max(z_max[sd], f.p.z - home.foot[sd].p.z);
         }
       }
-      check(saw_walk, "march = true なら指令 0 でも WALK に入る");
+      check(saw_walk, "足踏みの要求があれば速度 0 でも WALK に入る");
       check(
         lifts[rm::kRight] >= 1 && lifts[rm::kLeft] >= 1,
         fmt(
@@ -857,15 +856,31 @@ int main(int argc, char ** argv)
         x_max - x_min < 1.0,
         fmt("★前後に進まない (足先の前後の振れ幅 %.3f mm)", x_max - x_min));
 
-      // march を切ると止まって HOLD へ戻る
-      c->setMarch(false);
+      // 要求を下ろすと止まって HOLD へ戻る
       const int n_stop = static_cast<int>(std::lround(6.0 * t_one / dt));
       for (int i = 0; i < n_stop; ++i) {
         now += dt;
         c->setWalkCmd(0.0, 0.0, 0.0, now);
         t = c->step(now, dt, &meas, why, true);
       }
-      check(t.state == rm::State::HOLD, "march を切ったら HOLD に戻る");
+      check(t.state == rm::State::HOLD, "足踏みの要求を下ろしたら HOLD に戻る");
+
+      // ★指令そのものが途絶えても止まる (コントローラが切れた・teleop が落ちた)。
+      //   足踏みを入れっぱなしにできる口が無いことの確認。2026-09-20 にパラメータで
+      //   持ったときは、HOLD に入った瞬間にデッドマンと無関係に踏み出していた
+      for (int i = 0; i < n_march / 2; ++i) {
+        now += dt;
+        c->setWalkCmd(0.0, 0.0, 0.0, now, true);
+        t = c->step(now, dt, &meas, why, true);
+      }
+      check(t.state == rm::State::WALK, "もう一度足踏みに入る");
+      for (int i = 0; i < n_stop; ++i) {     // 以後は指令を送らない
+        now += dt;
+        t = c->step(now, dt, &meas, why, true);
+      }
+      check(
+        t.state == rm::State::HOLD && !c->march(),
+        "★/cmd_walk が途絶えたら足踏みも止まって HOLD に戻る (cmd_timeout)");
       drop(*c);
     }
 
