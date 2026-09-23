@@ -670,6 +670,22 @@ ros2 run roboone_motion motion_selftest --strict \
 既定では [6] の門はエラーを**表示するだけで落とさない**（config の調整途中なら当然
 エラーが出る。[1]-[5] のコードの赤に気付けなくなるので混ぜない）。`--strict` で落ちる。
 
+**`--gait` は src を触らずに値を A/B できる。** どの値が赤くしているかは、HEAD の
+yaml を出してきて 1 つずつ戻すのが早い（2026-09-24）:
+
+```bash
+git show HEAD:src/roboone_walk_ref/config/gait.yaml > /tmp/g_head.yaml
+sed -E 's/^t_step: [0-9.]+/t_step: 0.35/' /tmp/g_head.yaml > /tmp/g_t.yaml
+ros2 run roboone_motion motion_selftest --gait /tmp/g_t.yaml 2>&1 | grep -c '★NG'
+```
+
+★**[7] の「指令を止めたら HOLD に戻る」は 1 歩を短くすると落ちる。** 停止シーケンス
+（指令の減速 `a_max` ≒ 1.7s + 揃える歩 + `walk_idle_hold`）は秒で決まるのに、テストの
+待ちは「1 歩（`ds_time` + `t_step`）× 5」なので、1 歩 0.65s = 3.25s なら通り、
+0.40s = 2.0s では足りない。`t_step` 0.35 と `ds_time` 0.05 はそれぞれ単独でも落ちる。
+**値を確定させるときにテスト側の待ちを直すこと**（`foot_spacing` と `swing_height` は
+関係ない）。
+
 技名は `roboone_teleop/config/ps5_dualsense.yaml` の `motion_bindings` と一致させる
 （`punch_r` `punch_l` `turn_l` `turn_r` `getup_front` `getup_back`）。
 定義していない技名を押しても、motion ノードが「知らない技」と出すだけで何も起きない。
