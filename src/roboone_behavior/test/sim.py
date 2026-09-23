@@ -12,7 +12,9 @@ roboone_perception の test/scene.py と同じ役割で、ROS を使わずに観
 
 import math
 
-from roboone_behavior.behavior import Observation, STATUS_NO_OPPONENT, STATUS_OK
+from roboone_behavior.behavior import (KIND_HUMAN, KIND_ROBOT_FALLEN,
+                                       KIND_ROBOT_STANDING, Observation,
+                                       STATUS_NO_OPPONENT, STATUS_OK)
 
 #: D435if の水平視野の半角
 FOV = math.radians(43.5)
@@ -20,6 +22,10 @@ FOV = math.radians(43.5)
 BLIND = 0.25
 #: /motion/state のうち「歩ける」状態。behavior_node の motion_ready_states と揃える
 READY = frozenset(('HOLD', 'WALK', 'MOTION', 'IDLE', 'START', 'STEP', 'STOP'))
+#: [m] 検出器が種別を割る高さの境界。opponent_detector.yaml の match.* の写し。
+#: 行動層は高さのしきい値を持たないので、ここが「検出器の代わり」になる
+FALLEN_TOP_MAX = 0.25
+ROBOT_TOP_MAX = 0.60
 
 
 class Scene:
@@ -50,6 +56,18 @@ class Scene:
         bx, by = ca * dx - sa * dy, sa * dx + ca * dy
         return math.hypot(bx, by), math.atan2(by, bx), (bx, by)
 
+    def kind(self):
+        """検出器が z_top の絶対値で割る種別の写し (roboone_perception の classify)。
+
+        境界は opponent_detector.yaml の match.fallen_top_max / robot_top_max。
+        行動層はこの 1 バイトしか見ないので、ここで作って渡す。
+        """
+        if self.top < FALLEN_TOP_MAX:
+            return KIND_ROBOT_FALLEN
+        if self.top < ROBOT_TOP_MAX:
+            return KIND_ROBOT_STANDING
+        return KIND_HUMAN
+
     def observe(self, dt, autonomy=True, estop=False, drop=False):
         rng, bear, xy = self.polar()
         seen = (not drop) and abs(bear) < FOV and rng > BLIND
@@ -63,6 +81,7 @@ class Scene:
             obs.opponent_xy = xy
             obs.opponent_top = self.top
             obs.opponent_width = self.width
+            obs.opponent_kind = self.kind()
         return obs
 
     # ------------------------------------------------------------ 進める

@@ -9,6 +9,9 @@ src/realsense-ros/
 
 # --- 実行時の出力 ---
 captures/
+# realsense-viewer / ros2 bag の録画。練習会の bag_0712/ だけで 4.7GB ある
+*.bag
+bag_0712/
 
 # --- Python ---
 __pycache__/

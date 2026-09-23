@@ -29,6 +29,17 @@ bool valid
 # valid は立ったままなので、鮮度の目安としてこちらを見る。
 bool extrapolated
 
+# --- 種別 -----------------------------------------------------------------
+# クラスタ上端 z_top の**絶対値**から決める（2026-09-23）。境界は検出器側の
+# opponent_detector.yaml の match.obj_top_min / fallen_top_max / robot_top_max
+# の 3 つだけで、会場ではそこを書き換える。行動層はこの 1 バイトを見るだけで
+# 転倒を判断し、自分では高さのしきい値を持たない（定数の置き場を 1 か所にする）。
+uint8 KIND_UNKNOWN=0          # 相手がいない、または種別を決める前
+uint8 KIND_ROBOT_STANDING=1   # 立っている二足機。攻撃の対象
+uint8 KIND_ROBOT_FALLEN=2     # 転倒した二足機。規則 10.2(b)(i) で離れる対象
+uint8 KIND_HUMAN=3            # 人・人の腕・什器。相手にしない（/opponent には出ない）
+uint8 kind
+
 # --- 相手 -----------------------------------------------------------------
 geometry_msgs/Point position    # [m] 重心。z はリング面からの高さ
 geometry_msgs/Vector3 velocity  # [m/s] リング面内の速度。α-β 追尾の副産物（技術ノート(4) §2.1）

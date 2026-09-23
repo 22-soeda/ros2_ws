@@ -9,6 +9,7 @@
   --bg:#0f1216; --panel:#171c22; --line:#28303a; --text:#e6eaf0; --dim:#8b96a5;
   --ok:#46c46a; --bad:#ef5350; --warn:#f2a93b; --accent:#5aa9ff; --sel:#ffe45c;
   --ring:#4a525d; --hull:#252b33; --edge:#e68c28; --above:#c84a4a; --obj:#3fc86a; --intr:#e640c8;
+  --down:#12b5cf; --nota:#6f7884;
 }
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--text);
@@ -68,6 +69,20 @@ tr.intr td.l{color:var(--intr)}
 #motionbar b{color:#fff}
 button.danger{border-color:var(--bad);color:#fff;background:#7a2424;font-weight:600;padding:6px 18px}
 #offline{display:none;background:#3a1e1e;color:#ffb4b0;padding:6px 16px;font-size:12px}
+/* bag の再生 (opponent_bag_viewer のときだけ出る) */
+#bagbar{display:none;flex-direction:column;gap:6px;padding:8px 16px;background:#121a24;
+  border-bottom:1px solid var(--line);font-size:13px}
+#bagbar .row{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center}
+#bagbar select{background:#202731;color:var(--text);border:1px solid var(--line);border-radius:6px;
+  padding:4px 6px;font:inherit;max-width:100%}
+#bagbar input[type=range]{flex:1;min-width:160px;accent-color:var(--accent)}
+#bagbar label{color:var(--dim);display:inline-flex;gap:4px;align-items:center}
+#bagbar .mono{font-variant-numeric:tabular-nums;color:var(--text)}
+#bagbar .mount{color:var(--dim);font-size:12px}
+#bagbar .mount b{color:var(--text);font-weight:600}
+.sw{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:-1px;margin-right:4px}
+.hide{display:none!important}
+#colorimg{display:block;width:100%;border-radius:6px;margin-top:8px}
 </style>
 </head>
 <body>
@@ -80,8 +95,25 @@ button.danger{border-color:var(--bad);color:#fff;background:#7a2424;font-weight:
   <button id="btn-relax" class="danger">脱力</button>
 </div>
 <div id="offline">サーバから応答が無い。opponent_viewer が動いているか確認する。</div>
+<div id="bagbar">
+  <div class="row">
+    <select id="bag-file" title="bag を切り替える"></select>
+    <button id="bag-first" title="先頭へ (Home)">⏮</button>
+    <button id="bag-back" title="1 枚戻る (←)">◀ 1</button>
+    <button id="bag-play" title="再生 / 一時停止 (Space)">▶</button>
+    <button id="bag-fwd" title="1 枚進む (→)">1 ▶</button>
+    <label>速さ <select id="bag-speed">
+      <option value="0.1">0.1×</option><option value="0.25">0.25×</option><option value="0.5">0.5×</option>
+      <option value="1">1×</option><option value="2">2×</option><option value="0">最大</option></select></label>
+    <label><input type="checkbox" id="bag-loop">くり返す</label>
+    <label title="RING_LOST / ATTITUDE_STALE が続いたら取り付けを測り直す（実機には無い動き）"><input type="checkbox" id="bag-reacq">見失ったら測り直す</label>
+    <span class="mono" id="bag-pos">-</span>
+  </div>
+  <div class="row"><input type="range" id="bag-seek" min="0" max="0" value="0" step="1"></div>
+  <div class="row mount" id="bag-mount"></div>
+</div>
 <header>
-  <h1>相手機の認識 テストラン</h1>
+  <h1 id="title">相手機の認識 テストラン</h1>
   <span class="src" id="src">-</span>
   <span class="sp"></span>
   <span class="pill">周期 <b id="fps">-</b> Hz</span>
@@ -96,12 +128,18 @@ button.danger{border-color:var(--bad);color:#fff;background:#7a2424;font-weight:
       <div class="tools">
         <span style="color:var(--dim);font-size:12px">表示範囲</span>
         <button data-r="2">2 m</button><button data-r="3" class="on">3 m</button><button data-r="4">4 m</button>
+        <span class="hide" id="cmode" style="margin-left:12px">
+          <span style="color:var(--dim);font-size:12px">塊の色</span>
+          <button data-c="each">塊ごと</button><button data-c="kind">種別</button>
+        </span>
       </div>
       <div class="legend">
         <span><i style="background:var(--ring)"></i>見えたリング面</span>
         <span><i style="background:var(--hull)"></i>リングの内側（凸包）</span>
         <span><i style="background:var(--edge)"></i>リング面の境界</span>
-        <span><i style="background:var(--obj)"></i>内側の塊（相手の候補）</span>
+        <span><i style="background:var(--obj)"></i>立っている機体</span>
+        <span><i style="background:var(--down)"></i>倒れている機体</span>
+        <span><i style="background:var(--nota)"></i>人・什器（相手にしない）</span>
         <span><i style="background:var(--above)"></i>面より上・リングの外</span>
         <span><i style="background:var(--intr)"></i>確かに外の物（差し込みの判定に使う）</span>
         <span><i style="background:var(--sel)"></i>相手に選んだ塊</span>
@@ -112,7 +150,7 @@ button.danger{border-color:var(--bad);color:#fff;background:#7a2424;font-weight:
     <div class="card">
       <h2>塊ごとの判定（近い順）</h2>
       <div class="scroll"><table>
-        <thead><tr><th>距離</th><th>方位</th><th>上端</th><th>幅</th><th>点数</th><th>外</th><th class="l">判定</th></tr></thead>
+        <thead><tr><th class="l">#</th><th>距離</th><th>方位</th><th>上端</th><th>種別</th><th>幅</th><th>点数</th><th>外</th><th class="l">判定</th></tr></thead>
         <tbody id="clusters"></tbody>
       </table></div>
     </div>
@@ -123,8 +161,7 @@ button.danger{border-color:var(--bad);color:#fff;background:#7a2424;font-weight:
       <div id="verdict" class="v-dim">待機中</div>
       <div id="verdictSub"></div>
       <div class="chips">
-        <span class="chip" id="e-low">低い</span>
-        <span class="chip" id="e-flat">平たい</span>
+        <span class="chip" id="e-low">転倒の高さ</span>
         <span class="chip" id="e-wide">横に広い</span>
         <span class="chip good" id="e-high">立位の高さ</span>
         <span class="chip info" id="e-close">間合いの中</span>
@@ -133,10 +170,9 @@ button.danger{border-color:var(--bad);color:#fff;background:#7a2424;font-weight:
       <div class="bars">
         <span>転倒まで</span><div class="bar"><span id="b-below"></span></div><span id="t-below">-</span>
         <span>復帰まで</span><div class="bar up"><span id="b-above"></span></div><span id="t-above">-</span>
-        <span>H_o 較正</span><div class="bar up"><span id="b-cal"></span></div><span id="t-cal">-</span>
       </div>
-      <div class="tools"><button id="recal">立位高さを較正し直す</button>
-        <span style="color:var(--dim);font-size:12px">相手を立たせた状態で押す</span></div>
+      <div class="tools"><button id="recal">転倒判定をリセット</button>
+        <span style="color:var(--dim);font-size:12px">高さの境界は opponent_detector.yaml の match.*</span></div>
     </div>
     <div class="card">
       <h2>相手</h2>
@@ -146,14 +182,32 @@ button.danger{border-color:var(--bad);color:#fff;background:#7a2424;font-weight:
         <div><span>上端</span><b id="k-top">-</b> <small>m</small></div>
         <div><span>幅</span><b id="k-width">-</b> <small>m</small></div>
         <div><span>幅 / 上端</span><b id="k-aspect">-</b></div>
-        <div><span>立位高さ H_o</span><b id="k-ho">-</b> <small>m</small></div>
+        <div><span>種別</span><b id="k-kind">-</b></div>
+        <div><span>高さの境界</span><b id="k-bands">-</b> <small>m</small></div>
         <div><span>位置 x, y</span><b id="k-xy">-</b></div>
         <div><span>速度</span><b id="k-vel">-</b> <small>m/s</small></div>
       </div>
     </div>
     <div class="card">
-      <h2>深度（近い = 暖色）</h2>
+      <h2 id="depthTitle">深度（近い = 暖色）</h2>
       <canvas id="depth" width="424" height="240"></canvas>
+      <div class="legend hide" id="ovLegend">
+        <span><i style="background:var(--ring)"></i>リング面</span>
+        <span><i style="background:#5d6b4e"></i>面の高さだがリング外</span>
+        <span><i style="background:#1f4f8a"></i>面より下（場外の床）</span>
+        <span><i style="background:var(--above)"></i>面より上・塊でない</span>
+        <span><i style="background:var(--intr)"></i>確かに外の物</span>
+        <span>塊は俯瞰図と同じ色（番号は表の #）</span>
+      </div>
+      <img id="colorimg" class="hide" alt="color">
+    </div>
+    <div class="card hide" id="sideCard">
+      <h2 id="sideTitle">側面図（横 = 前方距離・縦 = リング面からの高さ）</h2>
+      <canvas id="side" width="900" height="320"></canvas>
+      <div class="tools">
+        <button data-s="fwd" class="on">前方距離</button><button data-s="left">左右</button>
+        <span style="color:var(--dim);font-size:12px">点線 = 高さの境界（低すぎ / 転倒 / 立位 / 人・什器）。灰色 = 面より上だが塊に入らない点</span>
+      </div>
     </div>
     <div class="card">
       <h2>リング面と姿勢</h2>
@@ -179,10 +233,36 @@ button.danger{border-color:var(--bad);color:#fff;background:#7a2424;font-weight:
 <script>
 const $ = id => document.getElementById(id);
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+// 分類の番号は opponent_viewer.py の _INTERIOR.._OUTSIDE と同じ並び
 const CLASS_COLORS = [null, css('--hull'), css('--ring'), css('--edge'),
-                      css('--above'), css('--obj'), css('--intr')];
+                      css('--above'), css('--nota'), css('--down'), css('--obj'),
+                      css('--intr')];
 let viewRange = 3;
 try { viewRange = Number(localStorage.getItem('opp.range')) || 3; } catch (e) {}
+// 塊ごとの色 (表の # と同じ番号で引く)
+const PALETTE = ['#4e9bff', '#ff8c3a', '#3fd07a', '#c77dff', '#ffd43b', '#ff5c8a',
+                 '#2ed3d3', '#a3e635', '#f97316', '#94a3ff', '#e879f9', '#fbbf24'];
+const palette = id => PALETTE[(id - 1) % PALETTE.length];
+let colorMode = 'each', sideAxis = 'fwd', lastState = null;
+try { colorMode = localStorage.getItem('opp.cmode') || 'each'; } catch (e) {}
+const KIND_COLOR = {ROBOT_STANDING: css('--obj'), ROBOT_FALLEN: css('--down')};
+function clusterColor(c) {                   // c = {id, kind, selected}
+  if (colorMode === 'each') return palette(c.id);
+  if (c.selected) return css('--sel');
+  return KIND_COLOR[c.kind] || css('--nota');
+}
+document.querySelectorAll('button[data-c]').forEach(b => {
+  b.classList.toggle('on', b.dataset.c === colorMode);
+  b.onclick = () => { colorMode = b.dataset.c;
+    try { localStorage.setItem('opp.cmode', colorMode); } catch (e) {}
+    document.querySelectorAll('button[data-c]').forEach(x => x.classList.toggle('on', x === b));
+    if (lastState) { drawTop(lastState); drawSide(lastState); drawText(lastState); } };
+});
+document.querySelectorAll('button[data-s]').forEach(b => {
+  b.onclick = () => { sideAxis = b.dataset.s;
+    document.querySelectorAll('button[data-s]').forEach(x => x.classList.toggle('on', x === b));
+    if (lastState) drawSide(lastState); };
+});
 
 function fmt(v, nd) { return (v === null || v === undefined) ? '-' : Number(v).toFixed(nd); }
 function b64(s) { const r = atob(s), a = new Uint8Array(r.length);
@@ -222,6 +302,20 @@ function drawTop(s) {
         g.fillRect(X(s.grid.v_min + (iv + 1) * c), Y(fwd), px, px);
       }
     }
+    if (s.grid.ids) {                        // 塊のセル (柱の一番上のボクセルの塊)
+      const ids = b64(s.grid.ids), byId = {};
+      for (const cl of (s.clusters || [])) byId[cl.id] = cl;
+      for (let iu = 0; iu < s.grid.nu; iu++) {
+        const fwd = s.grid.u_min + (iu + 1) * c;
+        if (fwd < -back || fwd - c > viewRange) continue;
+        for (let iv = 0; iv < s.grid.nv; iv++) {
+          const id = ids[iu * s.grid.nv + iv];
+          if (!id || !byId[id]) continue;
+          g.fillStyle = clusterColor(byId[id]);
+          g.fillRect(X(s.grid.v_min + (iv + 1) * c), Y(fwd), px, px);
+        }
+      }
+    }
   }
   // 距離の輪と視野
   g.lineWidth = 1; g.font = '11px system-ui'; g.fillStyle = '#6b7684';
@@ -257,6 +351,8 @@ function drawTop(s) {
     g.strokeStyle = c.selected ? css('--sel') : (c.outside_cells ? css('--intr') : '#9aa5b3');
     if (!c.selected) g.setLineDash([4, 3]);
     g.beginPath(); g.arc(x, y, r, 0, 7); g.stroke(); g.setLineDash([]);
+    if (c.id) { g.font = '600 12px system-ui'; g.fillStyle = '#e6eaf0';
+                g.fillText('#' + c.id, x + r + 3, y + 4); }
   }
   // 追尾後の相手
   if (s.opponent) {
@@ -283,16 +379,96 @@ function ramp(v) {                           // 0..1 → 近い = 暖色、遠�
   return [Math.min(255, r), Math.min(255, gg), Math.min(255, b)];
 }
 const RAMP = Array.from({length: 256}, (_, i) => i ? ramp((i - 1) / 254) : [12, 14, 18]);
+function hexRgb(h) { const n = parseInt(h.replace('#', '').slice(0, 6), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+// 画素の分類 (bag_viewer.py の OV_*)。16 以上は塊の番号 + 16
+const OV_COLORS = [null, null, hexRgb(css('--ring')), [93, 107, 78], [31, 79, 138],
+                   hexRgb(css('--above')), hexRgb(css('--intr'))];
 function drawDepth(d) {
   if (!d || !d.ready) return;
   const cv = $('depth');
   if (cv.width !== d.w || cv.height !== d.h) { cv.width = d.w; cv.height = d.h; }
   const g = cv.getContext('2d'), img = g.createImageData(d.w, d.h), src = b64(d.data);
+  const ov = d.ov ? b64(d.ov) : null;
+  $('ovLegend').classList.toggle('hide', !ov);
+  $('depthTitle').textContent = ov ? '深度と塊（画素ごと。点が属するボクセルの塊で塗る）' : '深度（近い = 暖色）';
+  const cc = {};
+  for (const k of (d.clusters || [])) cc[k.id] = hexRgb(clusterColor(k));
   for (let i = 0; i < src.length; i++) {
-    const c = RAMP[src[i]];
+    let c;
+    if (!ov) c = RAMP[src[i]];
+    else {
+      const gray = src[i] ? 30 + Math.round(150 * (1 - (src[i] - 1) / 254)) : 10;
+      const k = ov[i];
+      const col = k >= 16 ? (cc[k - 16] || [255, 255, 255]) : OV_COLORS[k];
+      c = col ? [0.75 * col[0] + 0.25 * gray, 0.75 * col[1] + 0.25 * gray, 0.75 * col[2] + 0.25 * gray]
+              : [gray, gray, gray];
+    }
     img.data[4 * i] = c[0]; img.data[4 * i + 1] = c[1]; img.data[4 * i + 2] = c[2]; img.data[4 * i + 3] = 255;
   }
   g.putImageData(img, 0, 0);
+  if (d.color) { $('colorimg').src = d.color; $('colorimg').classList.remove('hide'); }
+}
+
+// ---------------------------------------------------------------- 側面図
+function i16(s) { const a = b64(s); return new Int16Array(a.buffer, 0, a.length >> 1); }
+function drawSide(s) {
+  const card = $('sideCard');
+  if (!s.side) { card.classList.add('hide'); return; }
+  card.classList.remove('hide');
+  const cv = $('side'), g = cv.getContext('2d'), W = cv.width, H = cv.height;
+  const lat = sideAxis === 'left';
+  $('sideTitle').textContent = lat ? '正面図（横 = 左右・左が機体の左 / 縦 = リング面からの高さ）'
+                                   : '側面図（横 = 前方距離・縦 = リング面からの高さ）';
+  const hMax = 1.25, x0 = 34, y0 = H - 22;
+  const sx = lat ? (W - x0 - 10) / (2 * viewRange) : (W - x0 - 10) / viewRange;
+  const sy = (y0 - 10) / hMax;
+  const X = v => lat ? x0 + (viewRange - v) * sx : x0 + v * sx;
+  const Y = h => y0 - h * sy;
+  g.clearRect(0, 0, W, H);
+  g.font = '11px system-ui'; g.lineWidth = 1;
+  for (let h = 0; h <= hMax + 1e-6; h += 0.25) {
+    g.strokeStyle = '#1c232b'; g.beginPath(); g.moveTo(x0, Y(h)); g.lineTo(W, Y(h)); g.stroke();
+    g.fillStyle = '#6b7684'; g.fillText(h.toFixed(2), 2, Y(h) + 4);
+  }
+  for (let r = lat ? -viewRange : 0; r <= viewRange + 1e-6; r += 0.5) {
+    g.strokeStyle = '#1c232b'; g.beginPath(); g.moveTo(X(r), 10); g.lineTo(X(r), y0); g.stroke();
+    if (Math.abs(r - Math.round(r)) < 1e-6) { g.fillStyle = '#6b7684'; g.fillText(r + ' m', X(r) + 3, H - 6); }
+  }
+  g.strokeStyle = css('--ring'); g.lineWidth = 2;
+  g.beginPath(); g.moveTo(x0, Y(0)); g.lineTo(W, Y(0)); g.stroke();
+  if (s.limits) {
+    const L = [[s.limits.top_min, '低すぎ'], [s.limits.fallen_top_max, '転倒'],
+               [s.limits.top_max, '立位'], [hMax, '人・什器']];
+    g.setLineDash([5, 4]); g.lineWidth = 1;
+    for (let k = 0; k < 3; k++) {
+      g.strokeStyle = '#8b96a5'; g.beginPath(); g.moveTo(x0, Y(L[k][0])); g.lineTo(W, Y(L[k][0])); g.stroke();
+    }
+    g.setLineDash([]); g.fillStyle = '#8b96a5';
+    for (let k = 0; k < 4; k++) {
+      const lo = k ? L[k - 1][0] : 0, hi = L[k][0];
+      g.fillText(L[k][1], W - 52, Y((lo + hi) / 2) + 4);
+    }
+  }
+  const P = s.side, fw = i16(P.fwd), lf = i16(P.left), hh = i16(P.h), id = b64(P.id);
+  const byId = {};
+  for (const c of (s.clusters || [])) byId[c.id] = c;
+  for (let pass = 0; pass < 2; pass++) {          // 塊でない点を先に、塊の点を上に描く
+    for (let i = 0; i < P.n; i++) {
+      if ((id[i] > 0) !== (pass === 1)) continue;
+      const v = lat ? lf[i] / 1000 : fw[i] / 1000;
+      if (lat ? Math.abs(v) > viewRange : (v < 0 || v > viewRange)) continue;
+      g.fillStyle = id[i] && byId[id[i]] ? clusterColor(byId[id[i]]) : '#4b5563';
+      g.fillRect(X(v) - 1, Y(hh[i] / 1000) - 1, 2, 2);
+    }
+  }
+  for (const c of (s.clusters || [])) {           // 塊の番号を上端に
+    if (!c.id) continue;
+    const v = lat ? c.left : c.fwd;
+    if (lat ? Math.abs(v) > viewRange : (v < 0 || v > viewRange)) continue;
+    g.font = '600 12px system-ui'; g.fillStyle = '#e6eaf0';
+    g.fillText('#' + c.id, X(v) + 4, Y(Math.min(hMax, c.top || 0)) - 4);
+  }
 }
 
 // ---------------------------------------------------------------- 文字の面
@@ -312,7 +488,7 @@ function drawText(s) {
     if (f && f.fallen) { v.textContent = '相手が倒れている'; v.className = 'v-bad';
       sub.textContent = '行動層は離れて復帰を待つ（規則 10.2(b)）'; }
     else if (f) { v.textContent = '相手が立っている'; v.className = 'v-ok';
-      sub.textContent = f.calibrated ? '' : '立位高さ H_o を較正中…'; }
+      sub.textContent = ''; }
     else { v.textContent = '相手を捉えている'; v.className = 'v-ok';
       sub.textContent = 'roboone_behavior が無いので転倒判定は出ない'; }
   } else {
@@ -325,19 +501,20 @@ function drawText(s) {
     if (f && f.fallen) sub.textContent = '直前の判定は「倒れている」のまま保持';
   }
   const ev = (f && f.evidence) || {};
-  setChip('e-low', ev.low); setChip('e-flat', ev.flat); setChip('e-wide', ev.wide);
+  setChip('e-low', ev.low); setChip('e-wide', ev.wide);
   setChip('e-high', ev.high); setChip('e-close', ev.close); setChip('e-extra', o && o.extrapolated);
   if (f) { setBar('b-below', 't-below', f.below, f.fallen_time);
-           setBar('b-above', 't-above', f.above, f.stand_time);
-           $('b-cal').style.width = 100 * (f.cal_progress || 0) + '%';
-           $('t-cal').textContent = f.calibrated ? '済' : '測定中'; }
+           setBar('b-above', 't-above', f.above, f.stand_time); }
 
   $('k-range').textContent = o ? fmt(o.range, 2) : '-';
   $('k-bearing').textContent = o ? fmt(o.bearing_deg, 1) : '-';
   $('k-top').textContent = o ? fmt(o.top, 2) : '-';
   $('k-width').textContent = o ? fmt(o.width, 2) : '-';
   $('k-aspect').textContent = (o && o.top) ? fmt(o.width / o.top, 2) : '-';
-  $('k-ho').textContent = f ? fmt(f.h_stand, 2) : '-';
+  $('k-kind').textContent = (f && f.kind_ja) || '-';
+  $('k-bands').textContent = s.limits
+    ? [s.limits.top_min, s.limits.fallen_top_max, s.limits.top_max]
+        .map(x => fmt(x, 2)).join(' / ') : '-';
   $('k-xy').textContent = o ? fmt(o.x, 2) + ', ' + fmt(o.y, 2) : '-';
   $('k-vel').textContent = o ? fmt(Math.hypot(o.vx || 0, o.vy || 0), 2) : '-';
 
@@ -355,8 +532,14 @@ function drawText(s) {
   for (const c of (s.clusters || [])) {
     const tr = document.createElement('tr');
     tr.className = c.selected ? 'sel' : (c.reason ? 'rej' + (c.outside_cells ? ' intr' : '') : '');
+    const tdId = document.createElement('td'); tdId.className = 'l';
+    if (c.id) { const sw = document.createElement('i'); sw.className = 'sw';
+                sw.style.background = clusterColor(c); tdId.appendChild(sw);
+                tdId.appendChild(document.createTextNode(c.id)); }
+    tr.appendChild(tdId);
     const cells = [fmt(c.range, 2), fmt(Math.atan2(c.left, c.fwd) * 180 / Math.PI, 0) + '°',
-                   fmt(c.top, 2), fmt(c.width, 2), c.points, c.outside_cells || ''];
+                   fmt(c.top, 2), c.kind_ja || '', fmt(c.width, 2), c.points,
+                   c.outside_cells || ''];
     for (const t of cells) { const td = document.createElement('td'); td.textContent = t; tr.appendChild(td); }
     const td = document.createElement('td'); td.className = 'l';
     td.textContent = c.selected ? '相手' : (c.reason || '条件は通る（より近い塊が選ばれた）');
@@ -364,7 +547,7 @@ function drawText(s) {
   }
   if (!(s.clusters || []).length) {
     const tr = document.createElement('tr'), td = document.createElement('td');
-    td.colSpan = 7; td.className = 'l'; td.style.color = 'var(--dim)';
+    td.colSpan = 9; td.className = 'l'; td.style.color = 'var(--dim)';
     td.textContent = 'リングの内側に、面より上の塊は無い'; tr.appendChild(td); tb.appendChild(tr);
   }
 
@@ -379,6 +562,61 @@ function drawText(s) {
   if (s.truth) tr.textContent = '合成シーンの筋書き: ' + s.truth;
 }
 
+// ---------------------------------------------------------------- bag の再生
+let seeking = false, bagFiles = '';
+const bagCmd = (cmd, q) => fetch('/bag?cmd=' + cmd + (q ? '&' + q : ''), {method: 'POST'});
+$('bag-play').onclick = () => bagCmd('toggle');
+$('bag-first').onclick = () => bagCmd('seek', 'i=0');
+$('bag-back').onclick = () => bagCmd('step', 'n=-1');
+$('bag-fwd').onclick = () => bagCmd('step', 'n=1');
+$('bag-speed').onchange = e => bagCmd('speed', 'v=' + e.target.value);
+$('bag-loop').onchange = e => bagCmd('loop', 'v=' + (e.target.checked ? 1 : 0));
+$('bag-reacq').onchange = e => bagCmd('reacquire', 'v=' + (e.target.checked ? 1 : 0));
+$('bag-file').onchange = e => bagCmd('open', 'k=' + e.target.value);
+$('bag-seek').oninput = () => { seeking = true; };
+$('bag-seek').onchange = e => { seeking = false; bagCmd('seek', 'i=' + e.target.value); };
+document.addEventListener('keydown', e => {
+  if (!lastState || !lastState.bag || e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+  const b = lastState.bag;
+  if (e.code === 'Space') { bagCmd('toggle'); e.preventDefault(); }
+  else if (e.key === 'ArrowRight') { e.shiftKey ? bagCmd('seek', 'i=' + (b.frame + 30)) : bagCmd('step', 'n=1'); e.preventDefault(); }
+  else if (e.key === 'ArrowLeft') { e.shiftKey ? bagCmd('seek', 'i=' + Math.max(0, b.frame - 30)) : bagCmd('step', 'n=-1'); e.preventDefault(); }
+  else if (e.key === 'Home') { bagCmd('seek', 'i=0'); e.preventDefault(); }
+});
+function drawBag(s) {
+  const b = s.bag;
+  $('bagbar').style.display = b ? 'flex' : 'none';
+  $('cmode').classList.toggle('hide', !(s.grid && s.grid.ids));
+  if (!b) return;
+  $('title').textContent = '相手機の認識 bag 再生';
+  $('reset-att').textContent = '取り付けを測り直す';
+  const files = b.files.join('\n');
+  if (files !== bagFiles) {
+    bagFiles = files; const sel = $('bag-file'); sel.textContent = '';
+    b.files.forEach((f, k) => { const o = document.createElement('option'); o.value = k; o.textContent = f; sel.appendChild(o); });
+  }
+  if (document.activeElement !== $('bag-file')) $('bag-file').value = b.k;
+  $('bag-play').textContent = b.playing ? '⏸' : '▶';
+  if (document.activeElement !== $('bag-speed')) $('bag-speed').value = String(b.speed);
+  $('bag-loop').checked = b.loop; $('bag-reacq').checked = b.reacquire;
+  const sk = $('bag-seek'); sk.max = Math.max(0, b.n - 1);
+  if (!seeking) sk.value = Math.max(0, b.frame);
+  $('bag-pos').textContent = (b.frame + 1) + ' / ' + b.n + ' 枚　' + fmt(b.t, 2) + ' / ' + fmt(b.duration, 1) + ' s'
+    + '　depth ' + b.depth_wh.join('×') + (b.imu ? '　IMU あり' : '　IMU なし')
+    + (b.indexed ? '' : '　(索引なし)') + '　処理 ' + fmt(b.proc_ms, 1) + ' ms';
+  const m = b.mount, el = $('bag-mount'); el.textContent = '';
+  if (m) {
+    const add = (k, v) => { const sp = document.createElement('span'); sp.textContent = k + ' ';
+      const bb = document.createElement('b'); bb.textContent = v; sp.appendChild(bb); el.appendChild(sp); };
+    add('取り付け (' + m.why + ', ' + fmt(m.at, 1) + ' s):', m.source);
+    add('俯角', fmt(m.pitch_deg, 1) + '°'); add('ロール', fmt(m.roll_deg, 1) + '°');
+    add('カメラ高さ', fmt(m.cam_height_used, 3) + ' m');
+    if (m.imu_plane_deg !== null && m.imu_plane_deg !== undefined) add('IMU と床の法線の差', fmt(m.imu_plane_deg, 1) + '°');
+    if (m.peaks) add('高さの山', m.peaks.map(p => fmt(p[0], 3)).join(', ') + ' m');
+    add('測り直し', b.n_reacquire + ' 回');
+  }
+}
+
 // ---------------------------------------------------------------- 取得
 async function tick() {
   try {
@@ -387,13 +625,13 @@ async function tick() {
     $('motionbar').style.display = s.motion ? 'flex' : 'none';
     if (s.motion) { $('m-state').textContent = s.motion.state || '(まだ見えない)';
                     $('m-phase').textContent = s.motion.phase || ''; }
-    if (s.ready) { drawTop(s); drawText(s); } else { $('src').textContent = (s.source || '') + '（最初のフレームを待っている）'; }
+    if (s.ready) { lastState = s; drawBag(s); drawTop(s); drawSide(s); drawText(s); } else { $('src').textContent = (s.source || '') + '（最初のフレームを待っている）'; }
   } catch (e) { $('offline').style.display = 'block'; }
   setTimeout(tick, 100);
 }
 async function tickDepth() {
   try { drawDepth(await (await fetch('/depth')).json()); } catch (e) {}
-  setTimeout(tickDepth, 300);
+  setTimeout(tickDepth, (lastState && lastState.bag) ? 120 : 300);
 }
 tick(); tickDepth();
 </script>

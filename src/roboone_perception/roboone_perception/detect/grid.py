@@ -4,17 +4,23 @@
 docs/opponent_detection.pdf §7。エッジ抽出と物体クラスタリングが同じグリッドを
 共有するのがこの段の要点で、エッジのために別のアルゴリズムを足さない。
 
-numpy だけで書いてある。scipy.ndimage も cv2 も使わないのは、Pi 5 側に
-余計な依存を持ち込まないためと、ここが単体テストの主戦場だから。1 フレームの
-セル数は 5 cm セル・前方 4 m で 90x120 = 10800 程度で、この規模なら
-連結成分の union-find を Python で回しても 1〜2 ms に収まる。速度が問題に
-なったら label_components() を cv2.connectedComponentsWithStats に差し替える。
-差し替え先はこの 1 関数だけで済むように切ってある (§10 の 3 番目の手)。
+numpy で書いてある。**連結成分だけは cv2 があればそちらを使う** (2026-09-23。
+§10 の 3 番目の手をここで使った)。セルを 2.5 cm にするとグリッドは 180x240 =
+43200 になり、1 フレームに 2 回まわる 4 近傍のラベリングが段の中で一番重くなる
+(numpy 版で 2.4 ms + 5.3 ms)。cv2 は C の実装で、同じ大きさの最悪ケースでも
+0.46 ms。**cv2 が無ければ numpy 版に落ちるので、依存としては任意のまま。**
+それ以外 (モルフォロジ・凸包・ボクセルの 26 近傍) は numpy のままで、
+scipy.ndimage は使わない。
 """
 
 from dataclasses import dataclass
 
 import numpy as np
+
+try:                                    # 連結成分だけ C の実装に逃がす (下の注記)
+    import cv2 as _cv2
+except ImportError:                     # pragma: no cover
+    _cv2 = None
 
 
 @dataclass(frozen=True)
@@ -113,9 +119,24 @@ def close(mask, iters=1):
 def label_components(mask):
     """4 近傍の連結成分ラベリング。返り値は (labels, n)。背景は 0。
 
-    隣接ペアだけ numpy で作り、union-find は Python で回す。ペア数は占有セル数の
-    2 倍程度で、リング 1.8 m^2 なら 1500 前後にしかならない。
+    **cv2 があればそれを使う** (2026-09-23)。ここは段の中で一番重く、セルを細かく
+    すると占有セル数が 1/cell^2 で増えて頭打ちになる。cv2 は C で書かれていて、
+    180x240 の最悪ケース (乱数) でも 0.46 ms で終わる。
+
+    cv2 が無い環境では下の numpy 版に落ちる (依存は numpy だけ、という性質は
+    そのまま)。**番号の振り方は違ってよい。** 呼ぶ側はどれも大きさや種で選んで
+    いて、番号そのものには依らない。両者が同じ分け方をすることは単体テストで
+    見ている (test_label_components_matches_a_reference)。
     """
+    if _cv2 is not None:
+        n, labels = _cv2.connectedComponents(
+            np.ascontiguousarray(mask, dtype=np.uint8), connectivity=4)
+        return labels.astype(np.int32), int(n) - 1
+    return _label_components_numpy(mask)
+
+
+def _label_components_numpy(mask):
+    """cv2 が無いときの 4 近傍ラベリング。隣接ペアを numpy で作って union-find。"""
     labels = np.zeros(mask.shape, dtype=np.int32)
     idx = np.flatnonzero(mask.ravel())
     if idx.size == 0:
@@ -137,27 +158,109 @@ def label_components(mask):
         r, c = np.nonzero(b)
         pairs.append(np.stack([order[r * nv + c], order[r * nv + c + 1]], axis=1))
 
-    parent = list(range(idx.size))
-
-    def find(x):
-        root = x
-        while parent[root] != root:
-            root = parent[root]
-        while parent[x] != root:      # 経路圧縮
-            parent[x], x = root, parent[x]
-        return root
-
-    for arr in pairs:
-        for x, y in arr.tolist():
-            rx, ry = find(x), find(y)
-            if rx != ry:
-                parent[max(rx, ry)] = min(rx, ry)
-
-    roots = np.fromiter((find(i) for i in range(idx.size)), dtype=np.int32,
-                        count=idx.size)
-    uniq, inv = np.unique(roots, return_inverse=True)
+    inv, n = _union_find(idx.size, pairs)
     labels.ravel()[idx] = inv + 1
-    return labels, int(uniq.size)
+    return labels, n
+
+
+def _union_find(n_nodes, pairs):
+    """隣接ペアから連結成分のラベルを振る。返り値は (0 始まりのラベル, 成分数)。
+
+    **全部 numpy で回す** (2026-09-23)。以前は Python の union-find で、ペアを
+    1 組ずつ触っていた。セルを細かくすると占有セル数が 1/cell^2 で増えて
+    ここが頭打ちになる (0.05 で 1.8 ms が 0.025 で 7.7 ms)。
+
+    やっているのは「隣へ最小ラベルを配る」と「ポインタを根まで跳ね上げる」の
+    繰り返しで、どちらも配列 1 本の演算。ラベルは単調に減るだけなので必ず止まり、
+    跳ね上げがあるので回数は成分の直径の対数で収まる。
+    """
+    if n_nodes == 0:
+        return np.zeros(0, dtype=np.int32), 0
+    if not pairs:
+        return np.arange(n_nodes, dtype=np.int32), n_nodes
+
+    e = np.concatenate(pairs, axis=0)
+    # 両向きに並べて、送り先 a でまとめられるように一度だけ並べ替える
+    a = np.concatenate([e[:, 0], e[:, 1]])
+    b = np.concatenate([e[:, 1], e[:, 0]])
+    order = np.argsort(a, kind='stable')
+    a_s, b_s = a[order], b[order]
+    starts = np.flatnonzero(np.r_[True, a_s[1:] != a_s[:-1]])
+    heads = a_s[starts]
+
+    lab = np.arange(n_nodes, dtype=np.int64)
+    while True:
+        # 隣が持っている最小のラベルを受け取る
+        new = lab.copy()
+        new[heads] = np.minimum(lab[heads], np.minimum.reduceat(lab[b_s], starts))
+        # ポインタを根まで跳ね上げる (1 回だけだと反復が増えて、かえって遅い)
+        while True:
+            nxt = new[new]
+            if np.array_equal(nxt, new):
+                break
+            new = nxt
+        if np.array_equal(new, lab):
+            break
+        lab = new
+
+    uniq, inv = np.unique(lab, return_inverse=True)
+    return inv.astype(np.int32).reshape(-1), int(uniq.size)
+
+
+#: 3 次元の 26 近傍のうち、重複しない 13 方向 (残りは符号を反転したもの)
+_NB26 = tuple((du, dv, dw)
+              for du in (-1, 0, 1) for dv in (-1, 0, 1) for dw in (-1, 0, 1)
+              if (du, dv, dw) > (0, 0, 0))
+
+
+def label_voxels(vox, shape):
+    """占有ボクセルを 26 近傍でつないでラベルを振る (§8。2026-09-23)。
+
+    引数:
+        vox    (M, 3) の整数ボクセル添字 (行 = 前方 u, 列 = 左 v, 段 = 高さ z)。
+               重複の無いものを渡すこと
+        shape  (nu, nv, nw)
+
+    返り値は (labels, n) で、labels は vox と同じ並びの 1 始まりのラベル。
+
+    **高さを結合の条件に入れるためにこれを使う。** 真上から見た 2 次元の連結では、
+    相手の真上に浮いたノイズの 1 点が同じ塊に入り、その高さが上端になってしまう
+    (実機で「人・什器」に化ける)。ボクセルで切ると、離れて浮いたものは別の塊に
+    なり、点数とセル数の門で落ちる。
+
+    密な 3 次元配列は作らない。占有は物の表面ぶんしか無い (数百) ので、
+    ボクセルの通し番号を searchsorted で引くほうが速くて場所も食わない。
+    """
+    m = len(vox)
+    if m == 0:
+        return np.zeros(0, dtype=np.int32), 0
+    nu, nv, nw = shape
+    vox = np.asarray(vox, dtype=np.int64)
+    key = (vox[:, 0] * nv + vox[:, 1]) * nw + vox[:, 2]
+    order = np.argsort(key, kind='stable')
+    key_sorted = key[order]
+
+    pairs = []
+    src = np.arange(m, dtype=np.int32)
+    for off in _NB26:
+        nb = vox + off
+        ok = np.ones(m, dtype=bool)
+        for ax, hi in enumerate(shape):
+            ok &= (nb[:, ax] >= 0) & (nb[:, ax] < hi)
+        if not ok.any():
+            continue
+        nk = (nb[ok, 0] * nv + nb[ok, 1]) * nw + nb[ok, 2]
+        pos = np.searchsorted(key_sorted, nk)
+        hit = pos < m
+        pos = np.minimum(pos, m - 1)
+        hit &= key_sorted[pos] == nk
+        if not hit.any():
+            continue
+        pairs.append(np.stack([src[ok][hit], order[pos[hit]].astype(np.int32)],
+                              axis=1))
+
+    inv, n = _union_find(m, pairs)
+    return inv + 1, n
 
 
 def component_of_seed(labels, n_labels, seed_mask, fallback_to_largest=True):

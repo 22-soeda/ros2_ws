@@ -32,6 +32,13 @@ STATUS_NO_OPPONENT = 1
 STATUS_ATTITUDE_STALE = 2
 STATUS_RING_LOST = 3
 
+#: Opponent.msg の kind と同じ値。検出器がクラスタ上端 z_top の絶対値で割った種別で、
+#: 高さの境界は opponent_detector.yaml の match.* にある（行動層は持たない）
+KIND_UNKNOWN = 0
+KIND_ROBOT_STANDING = 1
+KIND_ROBOT_FALLEN = 2
+KIND_HUMAN = 3
+
 
 @dataclass
 class Observation:
@@ -75,6 +82,8 @@ class Observation:
     opponent_top: float = None
     #: [m] 水平方向の広がり。無ければ None
     opponent_width: float = None
+    #: Opponent.kind。検出器が z_top の絶対値で割った種別。無ければ None
+    opponent_kind: int = None
 
     # --- リングの縁 (/ring_edge) -------------------------------------------
     #: 方位ビンごとの d_cliff(θ)。見ていない方位は NaN。無ければ None

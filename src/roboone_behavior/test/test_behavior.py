@@ -25,9 +25,11 @@ import math
 import pytest
 from roboone_behavior.behavior import (APPROACH, BehaviorCore, BehaviorParams,
                                        distance_to_edge, EDGE, ENGAGE,
-                                       FallenDetector, Observation,
-                                       OpponentTracker, ray_to_edge, RETREAT,
-                                       RingPose, SEARCH, WAIT)
+                                       FallenDetector, KIND_HUMAN,
+                                       KIND_ROBOT_FALLEN, KIND_ROBOT_STANDING,
+                                       Observation, OpponentTracker,
+                                       ray_to_edge, RETREAT, RingPose, SEARCH,
+                                       WAIT)
 import sim as S
 
 DT = 0.05
@@ -133,21 +135,37 @@ def test_tracker_reports_a_loss_after_the_lost_time():
 
 
 # ============================================================ §2.3 転倒判定
+# 高さのしきい値は行動層に無い。検出器が z_top の絶対値で KIND_* に割った結果を
+# 受けるだけなので、ここでは sim と同じ写し (FALLEN_TOP_MAX / ROBOT_TOP_MAX) で
+# 高さを種別に直してから入れる。境界の出どころは opponent_detector.yaml の match.*
+def _kind(z):
+    if z is None:
+        return None
+    if z < S.FALLEN_TOP_MAX:
+        return KIND_ROBOT_FALLEN
+    if z < S.ROBOT_TOP_MAX:
+        return KIND_ROBOT_STANDING
+    return KIND_HUMAN
+
+
 def _feed(det, z, w, rng, seconds):
+    """高さ z [m]・幅 w [m] の相手を seconds 秒ぶん見せる。"""
     for _ in range(int(seconds / DT)):
-        det.step(z, w, rng, DT)
+        det.step(_kind(z), w, rng, DT)
     return det.fallen
 
 
-def test_fall_detection_far_away_uses_height_hysteresis():
+def test_fall_detection_far_away_uses_absolute_height_hysteresis():
+    """遠くでは高さの種別だけで決まる。較正は無い (2026-09-23)。"""
     p = BehaviorParams()
     det = FallenDetector(p.tune, p.robot)
-    _feed(det, 0.35, 0.20, 1.5, p.tune.height_cal_time + 0.2)   # H_o を測る
-    assert det.h_stand == pytest.approx(0.35, abs=1e-6)
-    assert not det.fallen
+    assert not _feed(det, 0.35, 0.20, 1.5, 1.0)
+    # fallen_top_max を割った高さが T_down 続けば転倒
     assert _feed(det, 0.12, 0.40, 1.5, p.tune.fallen_time + 0.1)
-    # 復帰は κ_u = 0.75 を超えてから T_up 続いたとき
+    # 復帰は立位の帯に戻ってから T_up 続いたとき
     assert not _feed(det, 0.30, 0.20, 1.5, p.tune.stand_time + 0.1)
+    # 時間の門は効いている。T_down に足りない間は転ばない
+    assert not _feed(det, 0.12, 0.40, 1.5, p.tune.fallen_time - 0.2)
 
 
 def test_fall_detection_needs_the_width_evidence_inside_the_strike_range():
@@ -158,7 +176,6 @@ def test_fall_detection_needs_the_width_evidence_inside_the_strike_range():
     p = BehaviorParams()
     close = p.robot.strike_range + p.tune.fallen_freeze_margin - 0.05
     det = FallenDetector(p.tune, p.robot)
-    _feed(det, 0.35, 0.20, 1.5, p.tune.height_cal_time + 0.2)
     # 上端だけ低い（＝視野で切れただけ）では転倒にしない
     assert not _feed(det, 0.12, 0.20, close, p.tune.fallen_time + 0.5)
     # 横にも広がったら転倒とみなす
@@ -168,35 +185,39 @@ def test_fall_detection_needs_the_width_evidence_inside_the_strike_range():
 def test_arms_spread_wide_is_not_a_fall():
     """腕を広げて立つ相手 (T ポーズ) を転倒にしないこと。
 
-    幅は H_o を超えるが上端は立位のまま。幅だけで転倒側に数えると、構えている
-    だけの相手から離れてしまう。
+    幅は倒れた相手より広いが、上端は立位の帯にある。高さの種別だけで決めるので、
+    遠くにいる限り幅は判定に入らない（間合いの中だけ幅を併せて見る）。
     """
     p = BehaviorParams()
     det = FallenDetector(p.tune, p.robot)
-    _feed(det, 0.45, 0.25, 1.5, p.tune.height_cal_time + 0.2)
     assert not _feed(det, 0.45, 0.75, 1.5, p.tune.fallen_time + 1.0)
-    assert not det.evidence['wide']
+    assert det.evidence['high'] and not det.evidence['low']
 
 
-def test_flat_shape_is_a_fall_without_calibration():
-    """較正が間違っていても、平たい形なら転倒と見ること (docs/相手機の認識.md §5)。
+def test_the_bag_mini_robot_stands_at_the_default_bands():
+    """既定の境界で、bag のミニロボット（立位 26.8 cm）が転倒に化けないこと。
 
-    再開時に倒れた相手の前へ置かれると、較正の窓は倒れた高さを立位高さとして覚え、
-    高さの比だけでは二度と転倒にならない。平たい形は較正に入れず、形だけで転倒と見る。
+    fallen_top_max を 0.268 より上げると、立っている小さい機体から離れ続ける。
+    この 1.8 cm が既定値の根拠なので、境界を動かすときはここが落ちる。
     """
     p = BehaviorParams()
     det = FallenDetector(p.tune, p.robot)
-    assert _feed(det, 0.14, 0.45, 1.5, p.tune.height_cal_time + 1.0)
-    assert det.evidence['flat']
-    assert det.h_stand == pytest.approx(p.tune.height_default), '倒れた高さを覚えない'
-    # 較正が小さく入ってしまっていても (H_o = 0.16)、平たい形は「立っている」にしない
+    assert not _feed(det, 0.268, 0.232, 1.5, p.tune.fallen_time + 1.0)
+    # 同じ機体が横倒しになれば（上端が下がれば）転倒として出る
+    assert _feed(det, 0.15, 0.30, 1.5, p.tune.fallen_time + 0.1)
+
+
+def test_a_tall_cluster_is_not_an_opponent_at_all():
+    """人の高さの塊は検出器が相手に選ばないので、行動層には届かない。
+
+    ここでは「届かなかった」= kind が None の周期として入る。転倒の状態は
+    動かず、時間の門も進まない。
+    """
+    p = BehaviorParams()
     det = FallenDetector(p.tune, p.robot)
-    det.h_stand, det._cal_time = 0.16, p.tune.height_cal_time
-    assert _feed(det, 0.14, 0.45, 1.5, p.tune.fallen_time + 0.2)
-    assert not det.evidence['low'] and not det.evidence['high']
-    # 小さい相手が普通に立っているのは平たいと言わない (上端 > 幅)
-    det = FallenDetector(p.tune, p.robot)
-    assert not _feed(det, 0.20, 0.15, 1.5, p.tune.height_cal_time + 1.0)
+    assert _kind(0.90) == KIND_HUMAN
+    assert not _feed(det, None, None, 1.5, 2.0)
+    assert det._below == 0.0
 
 
 def test_recovery_stays_frozen_inside_the_strike_range():
@@ -204,7 +225,6 @@ def test_recovery_stays_frozen_inside_the_strike_range():
     p = BehaviorParams()
     close = p.robot.strike_range + 0.05
     det = FallenDetector(p.tune, p.robot)
-    _feed(det, 0.35, 0.20, 1.5, p.tune.height_cal_time + 0.2)
     assert _feed(det, 0.12, 0.40, 1.5, p.tune.fallen_time + 0.1)
     assert _feed(det, 0.35, 0.20, close, 2.0)          # 近いので凍結。転倒のまま
     assert not _feed(det, 0.35, 0.20, 1.5, p.tune.stand_time + 0.1)

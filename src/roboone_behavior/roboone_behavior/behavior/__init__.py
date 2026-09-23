@@ -12,13 +12,15 @@ from .params import BehaviorParams, MatchParams, RobotParams, TuneParams
 from .ring import distance_to_edge, forward_cliff, ray_to_edge, RingPose
 from .tracking import FallenDetector, OpponentTracker
 from .types import (APPROACH, Command, debug_array, DEBUG_ORDER, EDGE,
-                    ENGAGE, Observation, RETREAT, SEARCH, SELF_DOWN, STATES,
-                    STATUS_ATTITUDE_STALE, STATUS_NO_OPPONENT, STATUS_OK,
-                    STATUS_RING_LOST, WAIT)
+                    ENGAGE, KIND_HUMAN, KIND_ROBOT_FALLEN, KIND_ROBOT_STANDING,
+                    KIND_UNKNOWN, Observation, RETREAT, SEARCH, SELF_DOWN,
+                    STATES, STATUS_ATTITUDE_STALE, STATUS_NO_OPPONENT,
+                    STATUS_OK, STATUS_RING_LOST, WAIT)
 
 __all__ = [
     'APPROACH', 'BehaviorCore', 'BehaviorParams', 'Command', 'DEBUG_ORDER',
-    'EDGE', 'ENGAGE', 'FallenDetector', 'KeepAlive', 'MatchParams',
+    'EDGE', 'ENGAGE', 'FallenDetector', 'KIND_HUMAN', 'KIND_ROBOT_FALLEN',
+    'KIND_ROBOT_STANDING', 'KIND_UNKNOWN', 'KeepAlive', 'MatchParams',
     'Observation', 'OpponentTracker', 'RETREAT', 'RingPose', 'RobotParams',
     'SEARCH', 'SELF_DOWN', 'STATES', 'STATUS_ATTITUDE_STALE',
     'STATUS_NO_OPPONENT', 'STATUS_OK', 'STATUS_RING_LOST', 'TuneParams',

@@ -63,6 +63,8 @@ from geometry_msgs.msg import Point, Vector3
 import numpy as np
 from rcl_interfaces.msg import SetParametersResult
 import rclpy
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.signals import SignalHandlerOptions
@@ -72,8 +74,15 @@ from std_msgs.msg import Bool, Empty, Float32MultiArray, MultiArrayDimension
 
 from .detect import (ATTITUDE_STALE, BodyParams, DetectorParams, Intrinsics,
                      MatchParams, mean_accel_if_still, NO_OPPONENT, OK, RING_LOST,
-                     RingDetector, TuneParams)
+                     RingDetector, ROBOT_FALLEN, ROBOT_STANDING, TuneParams)
 from .detect import grid as g
+
+#: 検出器の種別 → Opponent.msg の定数。HUMAN と NOISE は相手として選ばれないので
+#: ここには出てこない (選ばれなかった塊は /detector/debug の俯瞰図にだけ出る)
+_KIND_MSG = {
+    ROBOT_STANDING: Opponent.KIND_ROBOT_STANDING,
+    ROBOT_FALLEN: Opponent.KIND_ROBOT_FALLEN,
+}
 
 #: 深度画像の QoS。realsense2_camera は画像を RELIABLE で出す。ここを取り違えると
 #: 購読が成立せず「1 枚も来ない」で止まるので、名前で選べるようにしてある
@@ -181,8 +190,16 @@ class OpponentDetectorNode(Node):
                                  self._on_info, depth_qos)
         self.create_subscription(Image, self.get_parameter('depth_topic').value,
                                  self._on_depth, depth_qos)
+        # **IMU だけ別のコールバックグループに置く** (2026-09-23)。
+        # depth の処理が 1 フレームの予算を超えると、単一スレッドの実行器は
+        # depth のコールバックに占領されて IMU を 20〜30 Hz しか捌かなくなる。
+        # ジャイロの積分が歯抜けになって鉛直が漂い、基準姿勢の取り直しも
+        # 「0.4 秒に 40 サンプル」を満たせなくなる (実機の bag で確認)。
+        # spin_detector() の MultiThreadedExecutor と組で効く
+        self.imu_group = MutuallyExclusiveCallbackGroup()
         self.create_subscription(Imu, self.get_parameter('imu_topic').value,
-                                 self._on_imu, _QOS['sensor_data'])
+                                 self._on_imu, _QOS['sensor_data'],
+                                 callback_group=self.imu_group)
         self.create_subscription(Empty, '/detector/reset_attitude',
                                  lambda _m: self.request_reset('/detector/reset_attitude'),
                                  10)
@@ -262,7 +279,7 @@ class OpponentDetectorNode(Node):
     def _still_accel(self):
         """直近 0.4 秒が静止なら加速度の平均を返す。違えば (None, 理由)。"""
         return mean_accel_if_still(
-            self.imu_win,
+            list(self.imu_win),          # 別スレッドが append するので写し取る
             gyro_max=float(self.get_parameter('reset_still_gyro').value),
             accel_tol=float(self.get_parameter('reset_still_accel').value))
 
@@ -301,7 +318,9 @@ class OpponentDetectorNode(Node):
         last = t_prev
         while self.imu and self.imu[0][0] <= t_prev:
             self.imu.popleft()
-        for t, w in self.imu:
+        # IMU は別スレッドで append される。走査中に変わると
+        # 「deque mutated during iteration」で落ちるので、ここで写し取る
+        for t, w in list(self.imu):
             if t > t_now:
                 break
             dt = t - last
@@ -399,6 +418,7 @@ class OpponentDetectorNode(Node):
             m.bearing = float(math.atan2(y, x))
             m.top_height = float(res.top_height)
             m.width = float(res.width)
+            m.kind = _KIND_MSG.get(res.kind, Opponent.KIND_UNKNOWN)
         else:
             m.position = Point()
             m.velocity = Vector3()
@@ -406,6 +426,7 @@ class OpponentDetectorNode(Node):
             m.bearing = float('nan')
             m.top_height = float('nan')
             m.width = float('nan')
+            m.kind = Opponent.KIND_UNKNOWN
         self.pub_opp.publish(m)
 
         if res.cliff is not None:
@@ -447,6 +468,7 @@ class OpponentDetectorNode(Node):
         m.position = Point()
         m.velocity = Vector3()
         m.range = m.bearing = m.top_height = m.width = float('nan')
+        m.kind = Opponent.KIND_UNKNOWN
         self.pub_opp.publish(m)
 
     def _on_watchdog(self):
@@ -503,6 +525,24 @@ class OpponentDetectorNode(Node):
         return msg
 
 
+def spin_detector(node):
+    """IMU を depth に飢えさせない回し方。ノードと ビューアの両方がこれを使う。
+
+    depth の 1 フレームが予算を超えると、単一スレッドの実行器は depth と IMU を
+    ほぼ 1:1 でしか回さない。IMU は 200 Hz 来ているのに 20〜30 Hz しか届かず、
+    キューから溢れて捨てられる。**姿勢の推定はそれで壊れる。**
+
+    スレッドを 2 本にして IMU を別のグループへ逃がす。GIL はあるが、重いのは
+    numpy の中 (GIL を手放す) なので、IMU の小さなコールバックは割り込める。
+    """
+    ex = MultiThreadedExecutor(num_threads=2)
+    ex.add_node(node)
+    try:
+        ex.spin()
+    finally:
+        ex.remove_node(node)
+
+
 def main(args=None):
     # 既定のシグナルハンドラは context を先に畳むので、終了時に publish したいものが
     # あるノードでは切っておく (roboone_teleop と同じ理由)。ここでは最後に
@@ -510,7 +550,7 @@ def main(args=None):
     rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
     node = OpponentDetectorNode()
     try:
-        rclpy.spin(node)
+        spin_detector(node)
     except KeyboardInterrupt:
         pass
     finally:

@@ -17,6 +17,8 @@
 
 import math
 
+from .types import KIND_ROBOT_FALLEN, KIND_ROBOT_STANDING
+
 
 def _rotate(x, y, a):
     c, s = math.cos(a), math.sin(a)
@@ -137,10 +139,19 @@ class OpponentTracker:
 
 
 class FallenDetector:
-    """相手の転倒判定。式 (4) のヒステリシス付きしきい値。
+    """相手の転倒判定。高さの分類は検出器がやり、ここは時間の門だけ持つ。
 
-    立位高さ H_o は「はじめ」の直後に測る。相手の背丈は出場機ごとに違うので、
-    固定値を持つと κ_d・κ_u が機体ごとにずれる（§7 の未確定表）。
+    **しきい値はこちらに持たない** (2026-09-23)。以前は「はじめ」の直後に相手の
+    立位高さ H_o を測り、その比 (κ_d = 0.5 / κ_u = 0.75) で転倒と復帰を決めていた。
+    比は較正が当たっているかどうかで意味が変わるので、会場で yaml の数字を見ても
+    何が起きるか読めない。いまは検出器がクラスタ上端 z_top の**絶対値**で
+    KIND_ROBOT_FALLEN / KIND_ROBOT_STANDING に割り、ここはその 1 バイトを
+    受けるだけにしてある。高さの境界を動かすのは opponent_detector.yaml の
+    match.fallen_top_max / robot_top_max で、置き場は 1 か所。
+
+    ここに残るのは「何秒続いたら認めるか」(T_down / T_up) と、間合いの中での
+    扱い (_step_close) だけ。1 フレームの分類がばたついても状態が暴れないための門で、
+    高さとは別の話なので behavior.yaml に置いたままにする。
     """
 
     def __init__(self, tune, robot):
@@ -150,57 +161,37 @@ class FallenDetector:
 
     def reset(self):
         self.fallen = False
-        self.h_stand = self.t.height_default   # H_o
-        self._cal = []             # 較正窓に貯めた z_top
-        self._cal_time = 0.0
-        self._below = 0.0          # [s] しきい値を割っている継続時間
+        self._below = 0.0          # [s] 転倒の分類が続いている時間
         self._above = 0.0
-        #: 直近の周期に立っていた証拠。テストランのビューアが表示する
-        self.evidence = {'low': False, 'flat': False, 'wide': False,
-                         'high': False, 'close': False}
+        #: 直近の周期の証拠。テストランのビューアが表示する
+        self.evidence = {'low': False, 'wide': False, 'high': False,
+                         'close': False}
 
-    @property
-    def calibrated(self):
-        return self._cal_time >= self.t.height_cal_time
+    def step(self, kind, width, rng, dt):
+        """1 周期進める。
 
-    def step(self, z_top, width, rng, dt):
-        """1 周期進める。z_top が無い周期は None を渡す。"""
-        # 較正の要らない証拠 (params.flat_top_max の注記)。二足歩行機は立位で
-        # 上端 > 幅、横倒しで 幅 > 上端 に反転する
-        flat = (z_top is not None and width is not None
-                and z_top < self.t.flat_top_max
-                and width > self.t.flat_aspect * z_top)
-
-        # --- 立位高さの較正。開始直後 T の中央値を H_o にする ----------------
-        # 平たい形は較正に入れない。再開時に倒れた相手の前へ置かれると、倒れた高さを
-        # 立位高さとして覚えてしまい、以後「低い」が一度も立たなくなる
-        if not self.calibrated:
-            self._cal_time += dt
-            if z_top is not None and not self.fallen and not flat:
-                self._cal.append(float(z_top))
-            if self.calibrated and self._cal:
-                s = sorted(self._cal)
-                self.h_stand = s[len(s) // 2]
-
-        if z_top is None:
+        引数:
+            kind   Opponent.kind (KIND_ROBOT_FALLEN / KIND_ROBOT_STANDING)。
+                   相手が見えていない周期は None
+            width  [m] クラスタの横の広がり。間合いの中の判定にだけ使う
+            rng    [m] 相手までの水平距離
+            dt     [s]
+        """
+        if kind is None:
             return self.fallen
 
-        # --- 式 (4)。補助として水平の広がりが H_o を超えたら転倒側の証拠 ------
-        low = z_top < self.t.fallen_ratio * self.h_stand
-        # 平たい形は、高さの比がどう出ていても「立っている」とは言わない
-        high = z_top > self.t.stand_ratio * self.h_stand and not flat
-        # 「横に広い」は立位の高さに達していないときだけ証拠にする。腕を広げて立つ
-        # 相手 (T ポーズ) は幅が H_o を超えるが、上端は立位のままなので転倒ではない
-        # (2026-09-20。以前は幅だけで転倒側に数えていた)
-        wide = width is not None and width > self.h_stand and not high
-
+        low = kind == KIND_ROBOT_FALLEN
+        high = kind == KIND_ROBOT_STANDING
         close = rng is not None and rng < self.r.strike_range + self.t.fallen_freeze_margin
-        self.evidence = {'low': bool(low), 'flat': bool(flat), 'wide': bool(wide),
+        wide = width is not None and width > self.t.fallen_width_min
+        # 幅は間合いの中でしか判定に入らない。遠くで点けると「転倒の証拠が
+        # 立っている」ように見えるので、効いているときだけ証拠として出す
+        self.evidence = {'low': bool(low), 'wide': bool(wide and close),
                          'high': bool(high), 'close': bool(close)}
         if close:
-            return self._step_close(z_top, width, low, dt)
+            return self._step_close(low, wide, dt)
 
-        self._below = self._below + dt if (low or wide or flat) else 0.0
+        self._below = self._below + dt if low else 0.0
         self._above = self._above + dt if high else 0.0
 
         if not self.fallen and self._below >= self.t.fallen_time:
@@ -209,7 +200,7 @@ class FallenDetector:
             self.fallen = False
         return self.fallen
 
-    def _step_close(self, z_top, width, low, dt):
+    def _step_close(self, low, wide, dt):
         """間合いの中での転倒判定。文書 §2.3 から変えたところ。
 
         文書は ρ < ρ_s + 0.2 m で判定をまるごと凍結して直前の答えを保つ、と
@@ -224,7 +215,7 @@ class FallenDetector:
 
         そこで凍結を方向ごとに分けた。
 
-        * 復帰（転倒 → 立位）は凍結したまま。上端が視野で切れるので「高い」が
+        * 復帰（転倒 → 立位）は凍結したまま。上端が視野で切れるので「立っている」が
           言えない。RETREAT が ρ_r = 0.6 m まで離れれば凍結は外れ、そこで判定
           できる。離れる前に復帰を認める必要はない
         * 転倒（立位 → 転倒）は通す。ただし「上端が低い」だけでは視野の切れと
@@ -233,11 +224,15 @@ class FallenDetector:
 
         併せて要求するぶん見落としは増えるが、見落とせば攻撃を続けるだけで、
         誤検出すれば無意味に離れる。規則の重みからは前者を避ける側に倒す。
+
+        カメラを水平付けにしてから (2026-09-20)、視野で切れる高さは距離 ρ で
+        0.365 + 0.554 ρ [m] になり、ρ_s = 0.25 m でも 0.50 m まで見える。
+        match.robot_top_max = 0.60 の相手が切れるのはこの縁だけなので、
+        横幅の上乗せは以前ほど効かないが、保険として残してある。
         """
         if self.fallen:
             self._above = 0.0
             return True
-        wide = width is not None and width > self.t.close_width_ratio * self.h_stand
         self._below = self._below + dt if (low and wide) else 0.0
         self._above = 0.0
         if self._below >= self.t.fallen_time:

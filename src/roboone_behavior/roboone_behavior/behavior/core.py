@@ -74,6 +74,7 @@ class BehaviorCore:
         self.fall.reset()
         self.keepalive.reset()
         self.backoff = 0.0          # [m] 下がりたい残り距離（死角 / しゃがみ後）
+        self._z_top = None          # [m] 直近に観測したクラスタ上端。表示にだけ使う
         self.retreat_travel = 0.0   # [m] この RETREAT で下がった距離
         self.walk_time = 0.0        # [s] 並進指令を出していた累計。歩数の代わり
         self.technique = None       # この ENGAGE で出した技。出す前は None
@@ -114,8 +115,12 @@ class BehaviorCore:
         self._expire_track()
 
         rng = self.tracker.rng
-        self.fall.step(obs.opponent_top if fresh else None,
+        # 転倒しているかどうかの 1 フレームの判断は検出器が z_top の絶対値で
+        # 済ませてある (Opponent.kind)。ここは時間の門を回すだけ
+        self.fall.step(obs.opponent_kind if fresh else None,
                        obs.opponent_width if fresh else None, rng, dt)
+        if fresh and obs.opponent_top is not None:
+            self._z_top = obs.opponent_top
         fallen = self.fall.fallen and self.tracker.active
 
         self.pose.step(obs.odom, self.last_cmd, dt)
@@ -273,7 +278,8 @@ class BehaviorCore:
 
         # 4. RETREAT — 相手が転倒中。規則 10.2(b)(i)
         if fallen:
-            return RETREAT, '相手が転倒 (H_o=%.2f)' % self.fall.h_stand
+            return RETREAT, '相手が転倒 (z_top=%.2f)' % (
+                self._z_top if self._z_top is not None else float('nan'))
 
         # 5. ENGAGE — 技を出している途中は、相手を見失っても抜けない。
         # 技の再生中は相手が視野の死角に入るのが普通で、そこで抜けると
@@ -459,7 +465,6 @@ class BehaviorCore:
         dbg.setdefault('rho', tr.rng if tr.rng is not None else float('nan'))
         dbg.setdefault('beta', tr.bearing if tr.bearing is not None else float('nan'))
         dbg['z_top'] = dbg.get('z_top', float('nan'))
-        dbg['H_o'] = self.fall.h_stand
         dbg['fallen'] = 1.0 if self.fall.fallen else 0.0
         dbg['d_edge'] = pose.d_edge
         dbg['d_margin'] = pose.d_margin

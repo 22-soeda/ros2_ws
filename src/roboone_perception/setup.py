@@ -32,7 +32,10 @@ setup(
         'console_scripts': [
             'opponent_detector = roboone_perception.opponent_detector_node:main',
             'detector_bench = roboone_perception.detector_bench:main',
+            'height_probe = roboone_perception.height_probe:main',
+            'depth_throttle = roboone_perception.depth_throttle:main',
             'opponent_viewer = roboone_perception.opponent_viewer:main',
+            'opponent_bag_viewer = roboone_perception.bag_viewer:main',
         ],
     },
 )

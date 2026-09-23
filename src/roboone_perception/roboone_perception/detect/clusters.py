@@ -24,6 +24,18 @@ import numpy as np
 
 from . import grid as g
 
+# 塊の種別。クラスタ上端 z_top の**絶対値**だけで決める (params.MatchParams の注記)。
+# 比ではなく絶対値にしてあるのは、会場で yaml の数字を見たときに何が起きるかが
+# そのまま読めるようにするため (2026-09-23)
+NOISE = 'NOISE'                    # 低すぎる。床のゴミ・ケーブル
+ROBOT_FALLEN = 'ROBOT_FALLEN'      # 転倒した二足機
+ROBOT_STANDING = 'ROBOT_STANDING'  # 立っている二足機 = 攻撃の対象
+HUMAN = 'HUMAN'                    # 人・人の腕・什器
+
+#: 相手として追う種別。転倒した機体も「相手」として追い続ける。位置が要るのと、
+#: 規則 10.2(b)(i) (ダウン中の攻撃はイエローカード) で離れる判断に要るため
+OPPONENT_KINDS = (ROBOT_FALLEN, ROBOT_STANDING)
+
 
 @dataclass
 class Cluster:
@@ -41,6 +53,12 @@ class Cluster:
     outside_cells: int = 0
     #: 外から差し込んでいると判定したか (outside_cells >= tune.intrude_min_cells)
     intruding: bool = False
+    #: この塊の足もとのセルのうち、真上に別の塊が乗っているセル数
+    overhead_cells: int = 0
+    #: 上に物が乗っていると判定したか (overhead_cells >= tune.overhead_min_cells)
+    covered: bool = False
+    #: z_top から決まる種別。extract() の時点では未分類で、select() が入れる
+    kind: str = None
 
     @property
     def radius(self):
@@ -65,7 +83,7 @@ def min_points_at(r, n0, r0, floor):
 
 
 def extract(spec, h, fwd, left, h_r, ring_mask, tune, interior=None,
-            beyond=None, outside_out=None):
+            beyond=None, outside_out=None, point_labels_out=None):
     """リングの内側にある、面より上の塊を取り出す。
 
     interior は「リングの内側」のマスク (pipeline が凸包で作る)。None なら従来どおり
@@ -77,9 +95,15 @@ def extract(spec, h, fwd, left, h_r, ring_mask, tune, interior=None,
 
     返り値は (clusters, obj_mask, labels)。obj_mask と labels はデバッグ表示用。
     outside_out に list を渡すと、外の物のマスクを 1 つ入れて返す (同じくデバッグ用)。
+    point_labels_out に list を渡すと、入力の点ごとの塊の番号 (Cluster.label。
+    どの塊にも入らない点は 0) を 1 本入れて返す。bag のビューアが画素に塊を重ねるのに使う。
     """
     above = h - h_r
     sel = (above > tune.obj_h_lo) & (above < tune.obj_h_hi)
+    point_labels = None
+    if point_labels_out is not None:
+        point_labels = np.zeros(above.shape[0], dtype=np.int32)
+        point_labels_out.append(point_labels)
     if not np.any(sel):
         return [], np.zeros(spec.shape, dtype=bool), np.zeros(spec.shape, np.int32)
 
@@ -106,17 +130,45 @@ def extract(spec, h, fwd, left, h_r, ring_mask, tune, interior=None,
 
     hh, uu, vv = hh[keep], uu[keep], vv[keep]
     iu, iv = iu[keep], iv[keep]
+
+    # --- 高さも入れてボクセルで切る (2026-09-23) ---------------------------
+    # 真上から見た 2 次元の連結だと、相手の真上に浮いたノイズ 1 点が同じ塊に
+    # 入り、その高さが上端になる。ボクセルなら離れて浮いたものは別の塊になり、
+    # 点数とセル数の門で落ちる (grid.label_voxels の注記)
+    nu, nv = spec.shape
+    nw = max(1, int(math.ceil((tune.obj_h_hi - tune.obj_h_lo) / tune.cell_z)))
+    iw = np.clip(((hh - tune.obj_h_lo) / tune.cell_z).astype(np.int64), 0, nw - 1)
+    vcell_of_point = iu.astype(np.int64) * nv + iv
+    ukey, inv = np.unique(vcell_of_point * nw + iw, return_inverse=True)
+    vcell = ukey // nw                      # ボクセルの足もとのセル (平らな添字)
+    vu, vv_, vw = vcell // nv, vcell % nv, ukey % nw
     obj_mask = np.zeros(spec.shape, dtype=bool)
-    obj_mask[iu, iv] = True
-    labels, n = g.label_components(obj_mask)
+    obj_mask[vu, vv_] = True
+    vlab, n = g.label_voxels(np.stack([vu, vv_, vw], axis=1), (nu, nv, nw))
+    labels = np.zeros(spec.shape, dtype=np.int32)
     if n == 0:
         return [], obj_mask, labels
 
-    lab = labels[iu, iv]
+    # セルごとの最上段のボクセルと、その塊。表示用の 2 次元ラベルと、
+    # 「自分の上に別の塊が乗っているか」の判定に使う
+    o = np.lexsort((vw, vcell))
+    c_s, l_s = vcell[o], vlab[o]
+    is_top = np.r_[c_s[1:] != c_s[:-1], True]
+    top_lab = np.zeros(nu * nv, dtype=np.int32)
+    top_lab[c_s[is_top]] = l_s[is_top]
+    labels.ravel()[c_s[is_top]] = l_s[is_top]
+
+    lab = vlab[inv]                         # 点ごとのラベル
+    if point_labels is not None:
+        point_labels[np.flatnonzero(sel)[keep]] = lab
     nlab = n + 1
     n_points = np.bincount(lab, minlength=nlab)
-    cell_lab = labels[obj_mask]
-    n_cells = np.bincount(cell_lab, minlength=nlab)
+    # 塊ごとの足もとのセル数。(塊, セル) の組をひとつにまとめて数える
+    fkey = np.unique(vlab.astype(np.int64) * (nu * nv) + vcell)
+    f_lab, f_cell = fkey // (nu * nv), fkey % (nu * nv)
+    n_cells = np.bincount(f_lab, minlength=nlab)
+    # 足もとのセルの最上段が自分でない = そのセルでは上に別の塊が乗っている
+    over_cells = np.bincount(f_lab[top_lab[f_cell] != f_lab], minlength=nlab)
     sum_u = np.bincount(lab, weights=uu, minlength=nlab)
     sum_v = np.bincount(lab, weights=vv, minlength=nlab)
     top = np.full(nlab, -np.inf)
@@ -146,9 +198,9 @@ def extract(spec, h, fwd, left, h_r, ring_mask, tune, interior=None,
     if outside is not None and outside.any():
         ulabels, un = g.label_components(obj_mask | link)
         per_union = np.bincount(ulabels[outside], minlength=un + 1)
-        ul_of_cell = ulabels[obj_mask]
+        ul_of_cell = ulabels.ravel()[f_cell]
         for k in range(1, nlab):
-            mine = np.unique(ul_of_cell[cell_lab == k])
+            mine = np.unique(ul_of_cell[f_lab == k])
             out_cells[k] = int(per_union[mine].sum())
 
     out = []
@@ -169,8 +221,27 @@ def extract(spec, h, fwd, left, h_r, ring_mask, tune, interior=None,
             outside_cells=int(out_cells[k]),
             intruding=bool(tune.intrude_min_cells > 0
                            and out_cells[k] >= tune.intrude_min_cells),
+            overhead_cells=int(over_cells[k]),
+            covered=bool(tune.overhead_min_cells > 0
+                         and over_cells[k] >= tune.overhead_min_cells),
         ))
     return out, obj_mask, labels
+
+
+def classify(c, match):
+    """クラスタ上端 z_top の絶対値から種別を決める。
+
+    境界は 3 つだけ (match.obj_top_min / fallen_top_max / robot_top_max)。
+    当日はこの 3 つを yaml で動かす。
+    """
+    z = c.top_height
+    if not (z == z) or z < match.obj_top_min:
+        return NOISE
+    if z < match.fallen_top_max:
+        return ROBOT_FALLEN
+    if z < match.robot_top_max:
+        return ROBOT_STANDING
+    return HUMAN
 
 
 def reject_reason(c, match, tune):
@@ -186,10 +257,11 @@ def reject_reason(c, match, tune):
                          tune.min_points_floor)
     if c.n_points < need:
         return '点数 %d < %.0f' % (c.n_points, need)
-    if c.top_height < match.obj_top_min:
+    kind = c.kind or classify(c, match)
+    if kind == NOISE:
         return '低すぎる %.2f m' % c.top_height
-    if c.top_height > match.obj_top_max:
-        return '高すぎる %.2f m (人・什器)' % c.top_height
+    if kind == HUMAN:
+        return '人・什器 %.2f m (> %.2f)' % (c.top_height, match.robot_top_max)
     if c.width < match.obj_width_min:
         return '細すぎる %.2f m' % c.width
     if c.width > match.obj_width_max:
@@ -198,6 +270,8 @@ def reject_reason(c, match, tune):
         return '遠すぎる %.2f m' % r
     if c.intruding:
         return '外から差し込んでいる (外 %d セル)' % c.outside_cells
+    if c.covered:
+        return '上に物が乗っている (%d セル)' % c.overhead_cells
     return None
 
 
@@ -212,6 +286,8 @@ def select(clusters, match, tune):
     最大クラスタではなく最近接を採るのは、格闘競技では間合いの管理が先で、
     遠くの大きい塊よりも近くの小さい塊のほうが行動を決めるからである (§8.2)。
     """
+    for c in clusters:
+        c.kind = classify(c, match)
     ok = [c for c in clusters if passes(c, match, tune)]
     if not ok:
         return None, ok

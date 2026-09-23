@@ -8,7 +8,8 @@ docs/opponent_detection.pdf の tracker.py / detector.py にあたる層で、
 """
 
 from .attitude import AttitudeEstimator, mean_accel_if_still
-from .clusters import Cluster
+from .clusters import (classify, Cluster, HUMAN, NOISE, OPPONENT_KINDS,
+                       ROBOT_FALLEN, ROBOT_STANDING)
 from .geometry import (Deprojector, forward_ref, Intrinsics, ring_basis,
                        to_plane)
 from .grid import GridSpec
@@ -20,7 +21,8 @@ from .tracker import AlphaBetaTracker
 __all__ = [
     'ATTITUDE_STALE', 'AlphaBetaTracker', 'AttitudeEstimator', 'BodyParams',
     'Cluster', 'Deprojector', 'DetectionResult', 'DetectorParams', 'GridSpec',
-    'Intrinsics', 'MatchParams', 'NO_OPPONENT', 'OK', 'RING_LOST',
-    'RingDetector', 'TuneParams', 'forward_ref', 'mean_accel_if_still',
-    'ring_basis', 'to_plane',
+    'HUMAN', 'Intrinsics', 'MatchParams', 'NOISE', 'NO_OPPONENT', 'OK',
+    'OPPONENT_KINDS', 'RING_LOST', 'ROBOT_FALLEN', 'ROBOT_STANDING',
+    'RingDetector', 'TuneParams', 'classify', 'forward_ref',
+    'mean_accel_if_still', 'ring_basis', 'to_plane',
 ]

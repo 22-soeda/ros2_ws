@@ -113,6 +113,13 @@ def launch_setup(context, *args, **kwargs):
         "enable_rgbd": False,
     }
 
+    # depth のプロファイル。空なら yaml のまま（既定 848x480x30）。
+    # **検出だけなら 30 Hz は要らない。** 下げると USB 帯域と CPU が両方空く
+    # （2026-09-23: 30 Hz では検出器が 1 フレーム 44 ms かかって追いつかず、
+    #   rclpy の単一スレッドの実行器が IMU のコールバックを取りこぼした）
+    if arg("depth_profile"):
+        params["depth_module.depth_profile"] = arg("depth_profile")
+
     config = os.path.join(
         get_package_share_directory("realsense_bringup"), "config", "realsense.yaml")
 
@@ -161,6 +168,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "initial_reset", default_value="true",
             description="起動時にカメラをハードリセットする。既定 true"),
+        DeclareLaunchArgument(
+            "depth_profile", default_value="",
+            description="深度のプロファイル（例 848x480x15）。空なら config/realsense.yaml のまま"),
         DeclareLaunchArgument(
             "log_level", default_value="info",
             description="[DEBUG|INFO|WARN|ERROR|FATAL]"),

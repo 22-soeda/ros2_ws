@@ -219,6 +219,256 @@ def test_hull_stays_inside_the_ring():
     assert not res.clusters or all(c.fwd < 1.1 for c in res.clusters)
 
 
+# ------------------------------------- 格子の細かさ (2026-09-23)
+def _bfs_labels(mask):
+    """4 近傍の連結成分を素朴な BFS で数える参照実装。"""
+    lab = np.zeros(mask.shape, np.int32)
+    n = 0
+    for r in range(mask.shape[0]):
+        for c in range(mask.shape[1]):
+            if mask[r, c] and lab[r, c] == 0:
+                n += 1
+                stack = [(r, c)]
+                lab[r, c] = n
+                while stack:
+                    y, x = stack.pop()
+                    for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        q, w = y + dy, x + dx
+                        if (0 <= q < mask.shape[0] and 0 <= w < mask.shape[1]
+                                and mask[q, w] and lab[q, w] == 0):
+                            lab[q, w] = n
+                            stack.append((q, w))
+    return lab, n
+
+
+def _same_partition(a, b, mask):
+    """ラベルの番号は違ってよい。分け方が同じであることだけを見る。"""
+    seen = {}
+    for r in range(mask.shape[0]):
+        for c in range(mask.shape[1]):
+            if mask[r, c] and seen.setdefault(int(a[r, c]), int(b[r, c])) != b[r, c]:
+                return False
+    return True
+
+
+def test_label_components_matches_a_reference():
+    """ラベリングの中身を入れ替えたので、素朴な実装と突き合わせる。
+
+    セルを細かくすると占有セル数が 1/cell^2 で増え、ここが段の中で一番重くなる。
+    いまは cv2 があればそれを使い、無ければ numpy 版に落ちる。**どちらも**
+    素朴な BFS と同じ分け方をすること。
+    """
+    rng = np.random.default_rng(7)
+    for _ in range(20):
+        m = rng.random((int(rng.integers(4, 40)),
+                        int(rng.integers(4, 40)))) < rng.uniform(0.2, 0.7)
+        want, n_want = _bfs_labels(m)
+        for got, n_got in (g.label_components(m), g._label_components_numpy(m)):
+            assert n_got == n_want
+            assert _same_partition(got, want, m)
+
+
+def test_cell_size_does_not_move_the_physical_thresholds():
+    """セルの大きさを変えても、セル数で効く門の**物理的な意味**が動かないこと。
+
+    帯の幅や塊の最小の広さは長さ [m] / 広さ [m^2] で持っていて、params が
+    いまの cell で割る。ここが崩れると「格子を細かくしただけ」のつもりで
+    棄却の条件まで変わる。
+    """
+    a = DetectorParams.from_flat({'tune.cell': 0.05}).tune
+    b = DetectorParams.from_flat({'tune.cell': 0.025}).tune
+    assert a.intrude_band_cells * a.cell == pytest.approx(
+        b.intrude_band_cells * b.cell, abs=0.01)
+    assert a.ring_dilate_cells * a.cell == pytest.approx(
+        b.ring_dilate_cells * b.cell, abs=0.01)
+    for name in ('min_cells', 'intrude_min_cells', 'bridge_min_cells',
+                 'overhead_min_cells'):
+        assert getattr(a, name) * a.cell ** 2 == pytest.approx(
+            getattr(b, name) * b.cell ** 2, rel=0.05), name
+    # 0 は「無効」のまま。広さで割って 1 に化けない
+    off = DetectorParams.from_flat({'tune.cell': 0.025,
+                                    'tune.overhead_min_area': 0.0,
+                                    'tune.intrude_min_area': 0.0}).tune
+    assert off.overhead_min_cells == 0 and off.intrude_min_cells == 0
+
+
+def test_a_finer_grid_finds_the_same_opponent():
+    """格子を細かくしても、相手の位置・上端・種別が変わらないこと。"""
+    sc = S.Scene(boxes=[opponent(h=0.40)])
+    out = []
+    for cell in (0.05, 0.025):
+        _, res = run(sc, params=DetectorParams.from_flat({'tune.cell': cell}))
+        assert res.status == OK, cell
+        out.append(res)
+    assert out[1].position[0] == pytest.approx(out[0].position[0], abs=0.04)
+    assert out[1].position[1] == pytest.approx(out[0].position[1], abs=0.04)
+    assert out[1].top_height == pytest.approx(out[0].top_height, abs=0.03)
+    assert out[1].kind == out[0].kind
+    # 細かいほうがセル数は増える (同じ物を細かく見ている)
+    assert out[1].selected.n_cells > out[0].selected.n_cells
+
+
+# ------------------------------------- 3 次元のクラスタリング (2026-09-23)
+def _block(u0, u1, v0, v1, z0, z1, step=0.01):
+    """直方体の面を点で埋める。リング平面座標 (前方 u, 左 v, 高さ z) で返す。"""
+    uu, vv, zz = np.meshgrid(np.arange(u0, u1 + 1e-9, step),
+                             np.arange(v0, v1 + 1e-9, step),
+                             np.arange(z0, z1 + 1e-9, step), indexing='ij')
+    return zz.ravel(), uu.ravel(), vv.ravel()
+
+
+def _extract(pieces, tune=None):
+    """点の塊をいくつか渡して extract() を直接叩く。リング面は全面とする。"""
+    spec = g.GridSpec(cell=0.05, u_min=-0.5, u_max=4.0, v_min=-3.0, v_max=3.0)
+    t = tune or DetectorParams().tune
+    h = np.concatenate([p[0] for p in pieces])
+    fwd = np.concatenate([p[1] for p in pieces])
+    left = np.concatenate([p[2] for p in pieces])
+    ring = np.ones(spec.shape, dtype=bool)
+    found, _, _ = cl.extract(spec, h, fwd, left, 0.0, ring, t)
+    return found
+
+
+def test_noise_floating_above_the_opponent_does_not_raise_the_top():
+    """相手の真上に浮いたノイズを同じ塊に入れないこと。
+
+    真上から見た 2 次元の連結だと、0.90 m に 1 点あるだけで上端が 0.90 m になり、
+    立っている相手が「人・什器」に化ける。高さもボクセルで切れば別の塊になる。
+    """
+    robot = _block(0.95, 1.15, -0.10, 0.10, 0.05, 0.40)
+    noise = (np.array([0.90, 0.88]), np.array([1.05, 1.06]),
+             np.array([0.0, 0.01]))
+    found = _extract([robot, noise])
+    p = DetectorParams()
+    best, ok = cl.select(found, p.match, p.tune)
+    assert best is not None
+    assert best.top_height == pytest.approx(0.40, abs=0.03), '上端はノイズに触らない'
+    assert best.kind == cl.ROBOT_STANDING
+    # ノイズは別の塊として残るが、セル数と点数の門で落ちる
+    others = [c for c in found if c is not best]
+    assert others, 'ノイズは別の塊になっていること'
+    assert all(cl.reject_reason(c, p.match, p.tune) for c in others)
+
+
+def test_the_opponent_itself_is_not_split_by_the_voxels():
+    """ボクセルで切っても相手が割れないこと。
+
+    深度の点の間隔は距離 3 m・stride=2 でも 15 mm で、ボクセル 50 mm より細かい。
+    ここでは 10 mm 刻みで面を作って、縦にも横にも 1 つの塊になることを見る。
+    """
+    found = _extract([_block(0.95, 1.15, -0.10, 0.10, 0.05, 0.40)])
+    big = [c for c in found if c.n_cells >= 4]
+    assert len(big) == 1, '塊は 1 つ'
+    assert big[0].height_min < 0.10 and big[0].top_height > 0.38
+
+
+def test_something_above_the_opponent_is_not_a_target():
+    """相手の真上に物が乗っている間は相手にしないこと（意図した挙動）。
+
+    レフリーの腕が上を通っているときにそこへ踏み込まない。ノイズと違って
+    広さが立つので、overhead_min_area で切り分けられる。
+    """
+    robot = _block(0.95, 1.15, -0.10, 0.10, 0.05, 0.40)
+    arm = _block(0.95, 1.15, -0.10, 0.10, 0.70, 0.75)   # 30 cm 上に板
+    found = _extract([robot, arm])
+    p = DetectorParams()
+    low = [c for c in found if c.top_height < 0.60]
+    assert low, '相手そのものは塊として取れている'
+    assert low[0].covered and low[0].overhead_cells >= p.tune.overhead_min_cells
+    assert '上に物が乗っている' in cl.reject_reason(low[0], p.match, p.tune)
+    assert cl.select(found, p.match, p.tune)[0] is None
+    # 門は切れる。切れば同じ相手が通る
+    t = DetectorParams.from_flat({'tune.overhead_min_area': 0.0}).tune
+    found = _extract([robot, arm], tune=t)
+    low = [c for c in found if c.top_height < 0.60]
+    assert not low[0].covered
+
+
+def test_a_single_noise_voxel_does_not_count_as_something_above():
+    """上に乗っているかの判定は、ノイズ 1 点では立たないこと。"""
+    robot = _block(0.95, 1.15, -0.10, 0.10, 0.05, 0.40)
+    noise = (np.array([0.90]), np.array([1.05]), np.array([0.0]))
+    found = _extract([robot, noise])
+    p = DetectorParams()
+    best, _ = cl.select(found, p.match, p.tune)
+    assert best is not None and not best.covered
+    assert best.overhead_cells < p.tune.overhead_min_cells
+
+
+# --------------------------------------- 高さの絶対値で種別を割る (2026-09-23)
+def test_standing_opponent_is_classified_as_a_robot():
+    """立っている相手が ROBOT_STANDING で出ること。"""
+    _, res = run(S.Scene(boxes=[opponent(h=0.40)]))
+    assert res.status == OK
+    assert res.kind == cl.ROBOT_STANDING
+    assert res.selected.kind == cl.ROBOT_STANDING
+
+
+def test_fallen_opponent_is_classified_but_still_tracked():
+    """倒れた相手は ROBOT_FALLEN になり、**相手として追い続ける**こと。
+
+    転倒した機体を候補から落とすと位置が出ず、規則 10.2(b)(i) で離れる判断も
+    できなくなる。落とすのは人と床のゴミだけ。
+    """
+    _, res = run(S.Scene(boxes=[S.Box(1.06, 0.0, 0.40, 0.30, 0.0, 0.18)]))
+    assert res.status == OK, '転倒した相手も相手として出る'
+    assert res.kind == cl.ROBOT_FALLEN
+    assert res.top_height < DetectorParams().match.fallen_top_max
+
+
+def test_debris_below_the_floor_of_the_band_is_not_an_opponent():
+    """obj_top_min を割る低い塊は相手にしない (種別は NOISE)。"""
+    _, res = run(S.Scene(boxes=[S.Box(1.06, 0.0, 0.30, 0.25, 0.0, 0.07)]))
+    assert res.selected is None
+    p = DetectorParams()
+    low = [c for c in res.clusters if cl.classify(c, p.match) == cl.NOISE]
+    assert low and '低すぎる' in cl.reject_reason(low[0], p.match, p.tune)
+
+
+def test_person_standing_on_the_ring_is_rejected_as_human():
+    """リングの上に立つ人 (外の物につながっていない) を高さだけで落とすこと。
+
+    門 3 (外から差し込む塊) は「外の胴体につながっているか」で見るので、
+    縁の内側で完結して見える塊には効かない。そこを高さが受ける。
+    """
+    sc = S.Scene(boxes=[S.Box(1.2, 0.0, 0.35, 0.30, 0.0, 0.90)])
+    _, res = run_horizontal(sc)
+    assert res.selected is None
+    p = DetectorParams()
+    tall = [c for c in res.clusters if c.top_height > p.match.robot_top_max]
+    assert tall, '塊としては取れていること'
+    assert cl.classify(tall[0], p.match) == cl.HUMAN
+    assert '人・什器' in cl.reject_reason(tall[0], p.match, p.tune)
+
+
+def test_the_point_band_reaches_above_the_human_boundary():
+    """tune.obj_h_hi が match.robot_top_max より高いこと。
+
+    帯で点を切ると z_top がその高さで飽和する。帯 = 境界にすると「人」と
+    「背の高い機体」が同じ値になって区別が付かなくなるので、帯は上に取る。
+    """
+    p = DetectorParams()
+    assert p.tune.obj_h_hi > p.match.robot_top_max
+    sc = S.Scene(boxes=[S.Box(1.2, 0.0, 0.35, 0.30, 0.0, 0.90)])
+    _, res = run_horizontal(sc)
+    tall = max(res.clusters, key=lambda c: c.top_height)
+    assert tall.top_height == pytest.approx(0.90, abs=0.06), '0.90 で測れている'
+
+
+def test_the_bands_come_from_the_parameters():
+    """境界は yaml で動かせること。会場で追い込むのはこの 3 つだけ。"""
+    sc = S.Scene(boxes=[S.Box(1.2, 0.0, 0.35, 0.30, 0.0, 0.90)])
+    _, res = run_horizontal(sc, {'match.robot_top_max': 1.00})
+    assert res.status == OK, '境界を上げれば同じ塊が相手として通る'
+    assert res.kind == cl.ROBOT_STANDING
+    # 転倒の境界も同じ。立っているミニロボットを転倒に化けさせられる
+    sc = S.Scene(boxes=[opponent(h=0.268)])
+    _, res = run(sc)
+    assert res.kind == cl.ROBOT_STANDING, 'bag のミニロボットは既定では立位'
+    _, res = run(sc, params=DetectorParams.from_flat({'match.fallen_top_max': 0.30}))
+    assert res.kind == cl.ROBOT_FALLEN
+
+
 # ------------------------------------------------------ 外から差し込む塊
 def _referee_reaching_in():
     """左の縁 (y = +0.6) の外に立つ人が、リングの上へ腕を伸ばしている。"""
@@ -240,7 +490,7 @@ def test_intruding_arm_is_not_an_opponent():
 def test_intrusion_gate_can_be_switched_off():
     """門 3 を切ると、同じ腕が相手として通ってしまうこと (門が効いている証拠)。"""
     _, res = run(_referee_reaching_in(),
-                 params=DetectorParams.from_flat({'tune.intrude_min_cells': 0}))
+                 params=DetectorParams.from_flat({'tune.intrude_min_area': 0.0}))
     assert res.status == OK
     assert res.position[1] > 0.1
 
@@ -565,3 +815,20 @@ def test_same_input_gives_same_output():
         outs.append((res.ring_height, res.position, res.top_height,
                      np.nan_to_num(res.cliff, nan=-1.0).tolist()))
     assert outs[0] == outs[1]
+
+
+# ------------------------------------------------------ デバッグ出力
+def test_point_labels_match_clusters():
+    """want_debug の点ごとの塊の番号が、塊の点数とそろうこと (bag のビューアが使う)。"""
+    depth = S.render(S.Scene(boxes=[opponent()]), INTR, cam_height=CAM_H,
+                     noise=NOISE)
+    det = RingDetector()
+    for _ in range(3):
+        res = det.step(depth, INTR, DT, want_debug=True)
+    assert res.clusters
+    assert res.points.shape[0] == res.n_points == res.point_labels.shape[0]
+    for c in res.clusters:
+        assert int(np.count_nonzero(res.point_labels == c.label)) == c.n_points
+    # 渡さなければ持たない (本番の経路は今までどおり)
+    res = det.step(depth, INTR, DT)
+    assert res.points is None and res.point_labels is None

@@ -21,9 +21,22 @@ colcon build --packages-select roboone_kinematics
 colcon build --packages-select roboone_walk_core
 colcon build --packages-select feetech_servo roboone_kinematics
 colcon build --packages-select feetech_servo --cmake-args -DCMAKE_BUILD_TYPE=Release
+
+# msg / srv を変えたら interfaces から。これを使う側も一緒に建て直す
+colcon build --packages-select roboone_interfaces roboone_perception roboone_behavior
 ```
 
 ビルド後は `source install/setup.bash` を忘れない。
+
+`roboone_interfaces` のビルドが
+`failed to create symbolic link .../ament_cmake_python/roboone_interfaces/...`
+で落ちるときは、前回のビルド木が残っているだけ。消してから建て直す
+（`build/` は追跡していないので消してよい）:
+
+```bash
+rm -rf build/roboone_interfaces
+colcon build --packages-select roboone_interfaces
+```
 
 ### パッケージを改名したあとの後始末
 
@@ -981,8 +994,26 @@ ros2 launch roboone_perception opponent_testrun.launch.py camera:=true home:=tru
 ros2 launch roboone_perception opponent_testrun.launch.py camera:=true home:=true home_time:=10.0   # もっとゆっくり
 ros2 launch roboone_perception opponent_testrun.launch.py camera:=true home:=true home_delay:=5.0   # トルクまでの待ち
 ros2 launch roboone_perception opponent_testrun.launch.py camera:=true home:=true allow_torque:=false  # 流れだけ。動かない
+ros2 launch roboone_perception opponent_testrun.launch.py camera:=true home:=true walk_mode:=static     # 静歩行の立位で立たせる
 ```
 
+- **`home:=true` を付けないとサーボは一切動かない。** motion ノードを上げないので、
+  ホーム姿勢にもならない（既定 false。起動ログにもそう出る）。
+- **足首による姿勢の安定化（stab）もそのまま効く。** `motion_node.yaml` の `stab.*` を
+  そのまま使い、HOLD で立っている間も補正が入る（`layer_active` は HOLD と WALK）。
+  入力は `/camera/imu` なので `camera:=true` か、別で上げた RealSense が IMU を出して
+  いること。効いているかは `ros2 topic echo /motion/stab`（並びは motion_node.cpp の
+  `kStabFields`）。ゲインは実行中に変えられる:
+
+  ```bash
+  ros2 param get /motion stab.enable
+  ros2 param set /motion stab.kd_pitch 0.05
+  ros2 param set /motion stab.board false   # 足首だけ回す方式に戻す
+  ```
+
+- **立位は `walk_mode` ごとに違う**（`home_pose.yaml` の `walk_mode:`。動歩行 ±89.3 /
+  骨盤 280、静歩行 ±70 / 261）。この launch は `motion.launch.py` と同じく既定
+  `dynamic` を渡すので、普段 static で動かしているなら `walk_mode:=static` を足す。
 - 止めるのは**画面上部の「脱力」ボタン**か Ctrl-C。teleop は上がらないので
   コントローラの脱力（L1）は効かない。
 - **`roboone.launch.py` と同時に上げない**（motion が 2 つになりバスを取り合う）。
@@ -997,6 +1028,181 @@ ros2 launch roboone_perception opponent_testrun.launch.py camera:=true home:=tru
 ros2 topic pub --once /detector/reset_attitude std_msgs/msg/Empty "{}"
 ```
 
+### IMU を depth に飢えさせない（2026-09-23）
+
+実機の bag（`opp_20260923-232647`）で分かったこと。**検出器が 1 フレームの予算
+（30 Hz なら 33 ms）を超えると、姿勢の推定が壊れる。** 連鎖はこう:
+
+1. rclpy の単一スレッドの実行器は、ready なサブスクリプションから 1 回に 1 通ずつ取る。
+   depth の処理が 44 ms かかって depth が 33 ms ごとに来ると、実行器は depth を
+   終えた瞬間にまた depth が ready になり、**IMU は depth と同じ 20〜30 Hz しか
+   捌かれず、残りはキューから溢れて捨てられる**（IMU は 200 Hz 来ているのに）
+2. ジャイロの積分が歯抜けになって鉛直 u が漂う → `ATTITUDE_STALE`
+3. 基準姿勢の取り直しも「0.4 秒の窓に 40 サンプル」を満たせず
+   **「IMU のサンプルが足りない」で失敗する**
+4. u が 12 deg の門を越えて `RING_LOST`
+
+bag では起動 0.4 秒で `ATTITUDE_STALE` に入り、以後 80% が STALE、20% が RING_LOST、
+**一度も OK に戻らなかった**（IMU は 200 Hz・単調・欠落なしで、原因は取り回しの側）。
+
+対策は 2 つ入れてある。
+
+- **IMU を別のコールバックグループに置き、実行器をスレッド 2 本にした**
+  （`opponent_detector_node.spin_detector`）。重いのは numpy の中で GIL を手放すので、
+  IMU の小さなコールバックが割り込める。**予算を超えても姿勢は壊れない**
+- **`tune.cell` を 0.05 に戻した**（実機のシーンは合成シーンの約 2 倍重く、
+  0.025 では 44 ms かかって 22 Hz まで落ちた）
+
+深度は **30 Hz のまま**（`realsense.yaml` の `848x480x30`）。落とす必要があるときだけ:
+
+```bash
+ros2 launch roboone_perception opponent_testrun.launch.py camera:=true depth_profile:=848x480x15
+```
+
+細かい俯瞰図が要るときは、周期が落ちるのを承知で実行時に下げる。画面の「処理 ms」と
+「周期 Hz」を見ながら決める:
+
+```bash
+ros2 param set /opponent_detector tune.cell 0.025   # 実機で約 44 ms → 22 Hz
+ros2 param set /opponent_detector tune.cell 0.05    # 既定に戻す
+```
+
+### depth ごと bag に録る（後から実機なしで流し直す）
+
+**既定で録る**（2026-09-24 から `bag:=true` が既定）。画面で症状が出たときには
+既に録れている、という形にしてある。
+
+```bash
+ros2 launch roboone_perception opponent_testrun.launch.py camera:=true            # 録る
+ros2 launch roboone_perception opponent_testrun.launch.py camera:=true bag_hz:=5.0
+ros2 launch roboone_perception opponent_testrun.launch.py camera:=true bag:=false # 録らない
+ros2 launch roboone_perception opponent_testrun.launch.py camera:=true \
+    bag_dir:=~/roboone_logs/ring_lost_01
+```
+
+**カメラと検出器の周期には触れない。** 間引きは bag に入れる分だけで、depth は
+30 Hz のまま検出器へ行く。余計にかかるのは購読 1 つぶんのコピーと 8 MB/s の書き込み。
+
+出力先は既定で `~/roboone_logs/opp_<日時>`。Ctrl-C で閉じる。
+
+**depth はそのままでは録れない。** 848×480 の 16UC1 は 1 枚 814 KB で、30 Hz なら
+**24.4 MB/s**。この Pi の SD カードは実測 **22.5 MB/s** で追いつかない
+（`dd bs=1M count=300 conv=fdatasync` で計測）。カメラを 15 Hz に落とすと診断したい
+対象そのものが変わるので、**カメラも検出器も 30 Hz のまま**回して、bag に入れる分だけ
+`depth_throttle` が間引く（既定 10 Hz ≒ 8 MB/s。実測 111 枚 / 11.3 s で 88 MB）。
+
+録れるのは `/rec/depth/image_rect_raw` `/rec/depth/camera_info`（間引いた depth）、
+`/camera/imu`、`/opponent` `/ring_edge`（そのときの判断）、`/motion/state`
+`/joint_states` `/autonomy` `/estop`。**容量に注意**（10 Hz で毎分 470 MB。
+`df -h /home/auto` で残りを確認）。
+
+再生して、live と同じ道具をそのまま当てる:
+
+```bash
+ros2 bag play ~/roboone_logs/opp_XXXX --loop
+# 別の端末で
+ros2 run roboone_perception height_probe \
+    --depth-topic /rec/depth/image_rect_raw --info-topic /rec/depth/camera_info
+ros2 run roboone_perception detector_bench \
+    --depth-topic /rec/depth/image_rect_raw --info-topic /rec/depth/camera_info
+```
+
+名前を戻して再生してもよい（検出器やビューアをそのまま当てたいとき）:
+
+```bash
+ros2 bag play ~/roboone_logs/opp_XXXX --loop \
+    --remap /rec/depth/image_rect_raw:=/camera/depth/image_rect_raw \
+            /rec/depth/camera_info:=/camera/depth/camera_info
+ros2 launch roboone_perception opponent_testrun.launch.py      # camera:=false で
+```
+
+間引きだけ単体で使うこともできる:
+
+```bash
+ros2 run roboone_perception depth_throttle --hz 10    # 既定
+ros2 run roboone_perception depth_throttle --every 6  # 6 枚に 1 枚 (5 Hz)
+```
+
+### realsense-viewer の録画（.bag）を検出器に通して見る（2026-09-24）
+
+`bag_0712/` の練習会の録画（本番の大きさのフィールド）のような、**realsense-viewer で
+録った `.bag`**（ROS1 形式。`ros2 bag` では読めない）を、実機と同じ `RingDetector` に
+流してブラウザで見る。実機にもトピックにも触れない。起動時に出る URL（既定 **8106** 番。
+テストランの 8105 と並べて開ける）を開く。
+
+```bash
+ros2 run roboone_perception opponent_bag_viewer bag_0712/          # フォルダごと。画面で切り替え
+ros2 run roboone_perception opponent_bag_viewer bag_0712/0712_field_640_640_30deg_imu.bag \
+    --start 10 --paused                                             # 10 秒目で止めて開く
+ros2 run roboone_perception opponent_bag_viewer bag_0712/ --batch  # 画面なし。1 秒ごとの要約
+ros2 run roboone_perception opponent_bag_viewer bag_0712/ --set tune.cell_z=0.05   # パラメータを上書き
+ros2 run roboone_perception opponent_bag_viewer bag_0712/ --no-reacquire           # 見失っても測り直さない
+```
+
+- 画面はテストランと同じで、bag のときだけ **再生の操作**（Space / ← → / Shift+← → で 30 枚 /
+  Home）、**深度画像に塊を画素ごとに重ねた図**、**側面図**（高さの境界 3 本つき）、
+  塊の色の「塊ごと / 種別」切り替えが増える。表の `#` と図の番号が同じ塊。
+- **カメラの取り付けは bag ごとに測る。** 先頭（とシーク先）で IMU の加速度から鉛直を出し、
+  それを手がかりに床の平面を RANSAC で取って、**その法線を鉛直・距離をカメラ高さ**にする。
+  IMU の無い bag はファイル名の `30deg` / `holizontal` から俯角の見当をつける
+  （`--pitch 30` で指定も可。`--cam-height 0.35` で高さを固定）。以降の姿勢は検出器そのもの
+  （ジャイロ + 床の法線）。
+- RING_LOST / ATTITUDE_STALE が 15 枚続くと取り付けを測り直す（**実機には無い動き**。
+  「出来事」に出る）。高さは直前の値の ±12 cm の山しか採らない（場外の床と取り違えない）。
+- パラメータは入っている `opponent_detector.yaml`。src の yaml を直したら
+  `colcon build --packages-select roboone_perception` するか `--config` で src の方を渡す。
+- depth が **256×144** の bag（`0712_field_424_256_holizontal` と `_30deg`。画面上部に
+  `depth 256×144` と出る）は **fx=645 の中央の切り出し**（水平画角 22°・垂直 13°）で、
+  水平付けだと床が 3.3 m 先からしか写らない。面あてはめ（水平 1.5 m 以内）が通らないので、
+  検出器の検証には使えない。`424_256_30deg_imu` は 480×270（画角 90°）で問題ない。
+- 転送途中などで末尾が切れた bag（索引なし）も、読めたところまでは流せる。
+- `bag_0712/` を流して分かったことは `docs/相手機の認識_練習会bag_0712.md`。
+
+### 「depth が来ていない」が出るとき
+
+`NO_DEPTH` は **「最後に depth を受け取ってから `depth_timeout`（既定 0.5 s）経った」**
+で出る。原因は 2 つに割れるので、まず publisher 側を別の端末で測って切り分ける。
+
+```bash
+ros2 topic hz /camera/depth/image_rect_raw     # カメラが出している周期
+ros2 topic hz /opponent                        # 検出器が出せている周期
+```
+
+- **depth は 30 Hz 出ているのに `/opponent` が遅い** → ノードの中で 1 フレームに
+  0.5 秒以上かかっている。画面の「処理 ms」も同じ値を出しているはず。
+  `tune.cell` を粗くする、`tune.stride` を 3 にする、`process_every_n` で間引く
+- **depth 自体が止まっている** → カメラ側。RealSense の USB / RSUSB の掴み直しを疑う
+  （`realsense_bringup` の README。`initial_reset` と、Ctrl-C 以外で落とさないこと）
+
+段ごとの内訳が要るなら（bag の再生に当ててもよい）:
+
+```bash
+ros2 run roboone_perception detector_bench --duration 30
+```
+
+**それでも「リング面が取れない」が続くとき。** 画面の「カメラ高さ 実測」は `-h_r`
+なので、リング面が取れていないときは空欄になる。切り分けに要る値だけが出ない、という
+噛み合わせなので、検出器に頼らず床を探す道具を別に用意してある。**読むだけで、
+サーボにもパラメータにも触れない。実機を立たせたまま並行して走らせてよい。**
+
+```bash
+ros2 run roboone_perception height_probe                   # 3 秒ぶん集めて表示
+ros2 run roboone_perception height_probe --duration 10
+ros2 run roboone_perception height_probe --vertical mount  # 鉛直を取り付けから取る
+ros2 run roboone_perception height_probe --lo -3.0         # ヒストグラムの範囲を広げる
+```
+
+鉛直は **IMU の加速度**から取る（検出器がジャイロで運んでいる漂った u は使わない）。
+高さの窓で絞らずにヒストグラムをそのまま出すので、床がどこにあるかを目で見て決められる。
+読み方:
+
+- **最頻の山 = 床。**「カメラ高さ 実測」がその場で出る。`body.cam_height` と 2 cm 以上
+  違えば yaml を直す
+- **「検出器の窓 → 通らない」** が「リング面が取れない」の中身。設定値と実測が
+  合っているのに窓を外すなら、**検出器の鉛直が漂っている**（→ 基準姿勢を取り直す）
+- **「法線と鉛直の食い違い」**が 12 deg を超えていたら、機体が傾いているか、
+  見ているのが床ではない
+
 前提と注意:
 
 - `roboone.launch.py` が既定（`imu:=true`）で上がっていると RealSense は IMU 専用で
@@ -1005,11 +1211,59 @@ ros2 topic pub --once /detector/reset_attitude std_msgs/msg/Empty "{}"
 - ビューアは検出器ノードそのもの。`opponent_detector.launch.py` や
   `roboone.launch.py detector:=true` と**同時に上げない**（`/opponent` が二重になる）。
 - 画面の「カメラ高さ 実測」が `opponent_detector.yaml` の `body.cam_height` の答え合わせ。
+- 画面の「塊ごとの判定」の**種別**の列（立位 / 転倒 / 人・什器）が、高さの境界の
+  答え合わせ。相手機を立たせた状態と倒した状態で見る。
+
+**高さの境界を会場で追い込む。** 相手とみなす上端高さの境界は 3 つだけで、実行時に
+変えられる（次フレームから反映。検出器を作り直すので追尾は 1 フレーム切れる）。
+恒久的に変えるなら `src/roboone_perception/config/opponent_detector.yaml` の
+`match.*` を書き換えて建て直す。
+
+```bash
+ros2 param get /opponent_detector match.fallen_top_max     # 転倒とみなす上端の上限 [m]
+ros2 param get /opponent_detector match.robot_top_max      # 機体とみなす上端の上限 [m]
+
+ros2 param set /opponent_detector match.fallen_top_max 0.22   # 立位が転倒に化けるとき下げる
+ros2 param set /opponent_detector match.robot_top_max 0.70    # 背の高い相手が「人」に落ちるとき上げる
+
+# いま出ている種別 (1=立位 2=転倒) と上端
+ros2 topic echo /opponent --field kind
+ros2 topic echo /opponent --field top_height
+```
+
+`tune.obj_h_hi`（点を集める帯の上限。既定 1.20）は `match.robot_top_max` より**高く**
+保つこと。同じにすると上端がそこで飽和して「人」と「背の高い機体」が区別できなくなる。
+
+塊の切り方も実行時に変えられる（2026-09-23 から塊は高さも入れた 3 次元）。
+
+```bash
+ros2 param set /opponent_detector tune.cell_z 0.025            # ボクセルの高さ [m]（cell と揃えて立方体）
+ros2 param set /opponent_detector tune.overhead_min_area 0.010 # 0 で「上の物」の門を切る
+```
+
+- 相手が 2 つに割れて出るなら `cell_z` を大きく（0.05 くらいまで）。
+- 相手の上端がノイズで跳ねるなら `cell_z` を小さく。
+- 相手が「上に物が乗っている」で落ち続けるなら `overhead_min_area` を上げるか 0 にする。
+
+**俯瞰図の細かさ**＝判定の解像度。`tune.cell` [m] ひとつで決まる（既定 0.025。
+2026-09-23 に 0.05 から半分にした）。セル数で効く量は長さ・広さで持っていて
+`cell` から換算されるので、ここだけ変えてよい。
+
+```bash
+ros2 param set /opponent_detector tune.cell 0.025   # 細かく（実機で約 44 ms → 22 Hz）
+ros2 param set /opponent_detector tune.cell 0.05    # 既定（実機で 30 Hz を保てる）
+```
+
+**合成シーンの数字は実機の半分しかない。** Pi 5・合成シーンでは 0.05 → 13.9 ms /
+0.03 → 18.0 / 0.025 → 21.5 / 0.02 → 22.5 / 0.015 → 30.8 ms だが、実機のシーンは
+約 2 倍重く、0.025 で実測 **43.9 ms**（22.4 Hz）だった。足りなければ先に
+`tune.stride` を 3 にする。
+俯瞰図は 0.1 秒ごとに生で送るので、0.025 だと 1 回 58 KB（0.05 なら 15 KB）。
 
 ```bash
 # 検出と転倒判定の単体テスト（実機なし）
 cd src/roboone_perception && python3 -m pytest test/test_detect.py -q
-python3 -m pytest src/roboone_behavior/test/test_behavior.py -q -k "fall or flat or arms"
+cd src/roboone_behavior && python3 -m pytest test/test_behavior.py -q   # 転倒判定を含む
 ```
 
 ## 自律動作（behavior）

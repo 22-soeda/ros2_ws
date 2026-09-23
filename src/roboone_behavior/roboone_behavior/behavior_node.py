@@ -317,6 +317,7 @@ class BehaviorNode(Node):
                 obs.opponent_xy = (msg.position.x, msg.position.y)
                 obs.opponent_top = float(msg.top_height)
                 obs.opponent_width = float(msg.width)
+                obs.opponent_kind = int(msg.kind)
         elif self.opp_wall is None or now - self.opp_wall > self.opp_timeout:
             # 検出器そのものが黙った。相手がいないのではなく知覚が死んでいる
             obs.opponent_fresh = True

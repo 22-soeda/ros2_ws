@@ -68,6 +68,9 @@ class DetectionResult:
     height: float = float('nan')       # [m] 重心のリング面からの高さ
     top_height: float = float('nan')   # [m] 上端 z_top
     width: float = float('nan')        # [m] max(w, d)
+    #: z_top の絶対値から決めた種別 (clusters.ROBOT_STANDING / ROBOT_FALLEN)。
+    #: 追尾が外挿している間は最後に観測した種別を保つ
+    kind: str = None
     extrapolated: bool = False
 
     cliff: np.ndarray = None           # d_cliff(θ)。見えていない方位は NaN
@@ -80,8 +83,13 @@ class DetectionResult:
     outside_mask: np.ndarray = None    # 縁の外の帯にある「外の物」
     seed_window: tuple = None          # (near, far) [m] 実際に使った種の窓
     obj_mask: np.ndarray = None
+    obj_labels: np.ndarray = None      # セルごとの、一番上のボクセルが属する塊の番号
     above_mask: np.ndarray = None      # 面より上の全セル (リング外も含む)
     fov_cells: np.ndarray = None
+    #: want_debug のときだけ。逆投影した点 [N,3] (カメラ座標) と、点ごとの塊の番号
+    #: (Cluster.label、塊に入らない点は 0)。点の並びは Deprojector の画素の並び
+    points: np.ndarray = None
+    point_labels: np.ndarray = None
     spec: object = None
     timings: dict = field(default_factory=dict)
 
@@ -113,8 +121,9 @@ class RingDetector:
         self.seed_window = None
         #: 方位の基準にする機体前方 (カメラ座標)。光軸ではない (geometry の注記)
         self._fwd_ref = forward_ref(self.p.body.cam_pitch_deg)
-        #: 追尾が外挿している間は、最後に観測した寸法を保つ
+        #: 追尾が外挿している間は、最後に観測した寸法と種別を保つ
         self._last_shape = (float('nan'), float('nan'), float('nan'))
+        self._last_kind = None
         self.frames = 0
 
     def reset_reference(self, accel=None):
@@ -194,14 +203,23 @@ class RingDetector:
         root = int(np.bincount(root).argmax())
         impure = np.bincount(flat, weights=(above_mask | below).ravel(),
                              minlength=n + 1)
-        _, first = np.unique(flat, return_index=True)
-        out = ring_mask.copy()
-        for k, i0 in zip(np.unique(flat).tolist(), first.tolist()):
+        uniq, first = np.unique(flat, return_index=True)
+        # **成分ごとに labels == k を回さない** (2026-09-24)。1 回の比較が格子ぜんぶを
+        # 舐めるので、成分の数に比例して重くなる (90x120 の格子で 5 成分 0.05 ms、
+        # 200 成分 1.2 ms、2000 成分 11 ms。格子を細かくすればその 4 倍)。
+        # 足す成分を先に選んでから np.isin で 1 回にまとめる (2000 成分で 0.5 ms)。
+        # ※ 実機で成分が数千個になる場面は**まだ確認していない**。合成シーンでは
+        #   姿勢を 30 度外しても成分は 1 個のままで、ここは重くならなかった
+        take = []
+        for k, i0 in zip(uniq.tolist(), first.tolist()):
             if k in (0, pick) or size[k] < t.bridge_min_cells:
                 continue
             if joined.ravel()[i0] != root or impure[k] > 0.5 * size[k]:
                 continue
-            out |= labels == k
+            take.append(k)
+        out = ring_mask.copy()
+        if take:
+            out |= np.isin(labels, take)
         return out
 
     # ---------------------------------------------------------------- 本体
@@ -215,7 +233,8 @@ class RingDetector:
             dt           前フレームからの経過時間 [s]
             gyro         [(omega[3], dt), ...] 前フレームからのジャイロ。200Hz 全部
             accel        起動直後に u を置くための加速度。以降は使わない
-            want_debug   俯瞰表示のための中間結果も残すか (現状は計算量に差はない)
+            want_debug   表示のための中間結果も残すか。true なら点と点ごとの塊の番号
+                         (res.points / res.point_labels) も持たせる
         """
         t = self.p.tune
         res = DetectionResult()
@@ -226,6 +245,8 @@ class RingDetector:
         pts, border = self._deprojector(intr)(depth, depth_scale,
                                               t.depth_min, t.depth_max)
         res.n_points = int(pts.shape[0])
+        if want_debug:
+            res.points = pts
         clk['deproject'] = time.perf_counter() - t0
 
         # --- 姿勢: ジャイロで運ぶ (§5.4 予測) ---------------------------
@@ -287,7 +308,7 @@ class RingDetector:
         t3 = time.perf_counter()
         floor = np.abs(h - h_r) < t.floor_band
         occ = g.count_cells(self.spec, fwd[floor], left[floor]) > 0
-        occ = g.close(occ, 1)
+        occ = g.close(occ, t.morph_cells)
         # 面より上のセル。ここでは影を作るものとして、あとで縁と物体でも使う
         above = (h - h_r > t.obj_h_lo) & (h - h_r < t.obj_h_hi)
         above_mask = g.count_cells(self.spec, fwd[above], left[above]) > 0
@@ -316,7 +337,8 @@ class RingDetector:
         t4 = time.perf_counter()
         res.cliff = ed.cliff_distances(self.spec, ring_mask, fov,
                                        t.edge_bins, t.edge_half_fov_deg,
-                                       blocked_cells=g.dilate(res.above_mask, 1))
+                                       blocked_cells=g.dilate(res.above_mask,
+                                                              t.morph_cells))
         clk['edge'] = time.perf_counter() - t4
 
         # --- 物体 (§8) ---------------------------------------------------
@@ -329,14 +351,17 @@ class RingDetector:
             interior = g.convex_hull_mask(ring_mask, origin)
         res.interior_mask = interior
         outside = []
+        plabels = [] if want_debug else None
         beyond = self.polar.beyond_floor_end(res.above_mask, ring_mask)
-        found, obj_mask, _ = cl.extract(self.spec, h, fwd, left, h_r,
-                                        ring_mask, t, interior=interior,
-                                        beyond=beyond, outside_out=outside)
+        found, obj_mask, obj_labels = cl.extract(
+            self.spec, h, fwd, left, h_r, ring_mask, t, interior=interior,
+            beyond=beyond, outside_out=outside, point_labels_out=plabels)
         res.outside_mask = outside[0] if outside else None
+        res.point_labels = plabels[0] if plabels else None
         best, _ = cl.select(found, self.p.match, t)
         res.clusters = found
         res.obj_mask = obj_mask
+        res.obj_labels = obj_labels
         res.selected = best
         clk['cluster'] = time.perf_counter() - t5
 
@@ -351,11 +376,13 @@ class RingDetector:
         if best is not None:
             self._last_shape = (best.top_height, best.width,
                                 0.5 * (best.top_height + best.height_min))
+            self._last_kind = best.kind
         if pos is not None:
             res.position = pos
             res.velocity = self.tracker.vel
             res.extrapolated = self.tracker.extrapolated
             res.top_height, res.width, res.height = self._last_shape
+            res.kind = self._last_kind
         clk['track'] = time.perf_counter() - t6
 
         # 状態は「壊れている方」を優先する。行動層は NO_OPPONENT では通常の

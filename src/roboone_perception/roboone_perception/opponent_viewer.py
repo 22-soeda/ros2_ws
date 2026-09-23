@@ -23,8 +23,10 @@ r"""opponent_viewer — 相手機の認識のテストラン。検出器をそ�
 試すこともできる。**opponent_detector と同時には上げないこと** (/opponent が二重になる)。
 
 転倒の判定は行動層の FallenDetector (roboone_behavior) を既定のパラメータで回す。
-本番では行動層が「はじめ」の直後 2 秒で相手の立位高さ H_o を測るが、ここでは起動直後と
-画面の「較正し直す」で測る。
+「倒れているか」の 1 フレームの判断は検出器がクラスタ上端 z_top の絶対値で済ませて
+いるので (opponent_detector.yaml の match.fallen_top_max / robot_top_max)、ここで
+回しているのは時間の門 (T_down / T_up) だけ。画面の「判定をやり直す」はその門を
+リセットする。
 
 既定ではサーボへ何も書かない。motion ノードも要らない。
 
@@ -63,12 +65,28 @@ from .detect import grid as g
 from .detect.polar import fov_half_deg
 
 try:                                    # 行動層が無くても表示だけは動かす
-    from roboone_behavior.behavior import BehaviorParams, FallenDetector
+    from roboone_behavior.behavior import (BehaviorParams, FallenDetector,
+                                           KIND_ROBOT_FALLEN, KIND_ROBOT_STANDING)
 except ImportError:                     # pragma: no cover
     BehaviorParams = FallenDetector = None
+    KIND_ROBOT_FALLEN = KIND_ROBOT_STANDING = None
 
-#: 俯瞰図のセルの分類。値が大きいほど上に塗る (viz/opponent_view.html の CLASS_COLORS)
-_INTERIOR, _RING, _EDGE, _ABOVE, _OBJ, _OUTSIDE = 1, 2, 3, 4, 5, 6
+#: 検出器の種別 (文字列) → Opponent.kind の値。行動層へ渡すときに挟む
+_KIND_MSG = {cl.ROBOT_STANDING: KIND_ROBOT_STANDING,
+             cl.ROBOT_FALLEN: KIND_ROBOT_FALLEN}
+
+#: 画面に出す日本語
+_KIND_JA = {cl.ROBOT_STANDING: '立位', cl.ROBOT_FALLEN: '転倒',
+            cl.HUMAN: '人・什器', cl.NOISE: '低すぎ'}
+
+#: 俯瞰図のセルの分類。値が大きいほど上に塗る (viz/opponent_view.html の CLASS_COLORS)。
+#: 塊は**種別ごとに 3 色**に分ける (2026-09-23)。セルの種別は、その柱の一番上の
+#: ボクセルが属する塊のもの (DetectionResult.obj_labels)
+_INTERIOR, _RING, _EDGE, _ABOVE = 1, 2, 3, 4
+_OBJ_OTHER, _OBJ_FALLEN, _OBJ_STANDING, _OUTSIDE = 5, 6, 7, 8
+
+#: 塊の種別 → 俯瞰図の分類。ここに無い種別 (人・什器、低すぎ) は _OBJ_OTHER
+_KIND_CLASS = {cl.ROBOT_STANDING: _OBJ_STANDING, cl.ROBOT_FALLEN: _OBJ_FALLEN}
 
 _STATUS_JA = {
     'OK': '相手を捉えている',
@@ -89,6 +107,9 @@ def _num(v, nd=3):
 
 class ViewState:
     """検出結果を画面用の辞書にして持つ。検出のスレッドが書き、HTTP のスレッドが読む。"""
+
+    #: 深度画像を詰め直す最短の間隔 [s]。bag のビューアは短くする
+    depth_period = 0.25
 
     def __init__(self, params, source, view_hz=10.0, log_path=None):
         self.p = params
@@ -122,8 +143,8 @@ class ViewState:
             self._log_file = open(log_path, 'w', newline='')
             self.csv = csv.writer(self._log_file)
             self.csv.writerow(['t', 'status', 'x', 'y', 'range', 'bearing_deg',
-                               'top', 'width', 'extrapolated', 'fallen',
-                               'h_stand', 'n_clusters', 'n_intruding',
+                               'top', 'width', 'kind', 'extrapolated', 'fallen',
+                               'n_clusters', 'n_intruding',
                                'ring_area', 'cam_height_meas', 'proc_ms'])
 
     # ------------------------------------------------------------ 操作
@@ -131,10 +152,10 @@ class ViewState:
         with self.lock:
             if self.fall is not None:
                 self.fall.reset()
-            self._event('立位高さ H_o の較正をやり直す')
+            self._event('転倒判定の時間の門をリセットする')
 
     def reset_attitude(self, why='画面のボタン'):
-        """基準姿勢を取り直す。直前までの判定は当てにならないので H_o も測り直す。"""
+        """基準姿勢を取り直す。直前までの判定は当てにならないので転倒判定も戻す。"""
         if self.reset_cb is None:
             return False
         self.reset_cb(why)
@@ -142,7 +163,7 @@ class ViewState:
             if self.fall is not None:
                 self.fall.reset()
             self.prev_fallen = None
-            self._event('基準姿勢を取り直す (%s)。立位高さ H_o も測り直す' % why)
+            self._event('基準姿勢を取り直す (%s)。転倒判定もリセットする' % why)
         return True
 
     def _event(self, text):
@@ -171,10 +192,11 @@ class ViewState:
             fresh = res.status == 'OK' and opp is not None and not res.extrapolated
             fallen = None
             if self.fall is not None:
-                fallen = self.fall.step(res.top_height if fresh else None,
-                                        res.width if fresh else None,
-                                        opp['range'] if opp else None,
-                                        max(float(dt), 1e-3))
+                fallen = self.fall.step(
+                    _KIND_MSG.get(res.kind) if fresh else None,
+                    res.width if fresh else None,
+                    opp['range'] if opp else None,
+                    max(float(dt), 1e-3))
 
             if res.status != self.prev_status:
                 self._event('検出: %s → %s' % (self.prev_status or '-', res.status))
@@ -190,9 +212,9 @@ class ViewState:
                     *(['%.3f' % v for v in (opp['x'], opp['y'], opp['range'],
                                             math.degrees(opp['bearing']))]
                       if opp else ['', '', '', '']),
-                    _num(res.top_height), _num(res.width), int(res.extrapolated),
+                    _num(res.top_height), _num(res.width), res.kind or '',
+                    int(res.extrapolated),
                     '' if fallen is None else int(fallen),
-                    _num(self.fall.h_stand) if self.fall else '',
                     len(res.clusters), sum(1 for c in res.clusters if c.intruding),
                     _num(res.ring_area),
                     _num(-res.ring_height) if res.ring_height is not None else '',
@@ -201,7 +223,7 @@ class ViewState:
             if now - self.last_pack >= self.min_period:
                 self.last_pack = now
                 self.state = self._pack(res, opp, fallen, fresh, truth)
-            if depth is not None and now - self.last_depth_pack >= 0.25:
+            if depth is not None and now - self.last_depth_pack >= self.depth_period:
                 self.last_depth_pack = now
                 self.depth = self._pack_depth(depth, scale)
 
@@ -220,17 +242,36 @@ class ViewState:
             return 0.0
         return (len(ft) - 1) / (ft[-1] - ft[0])
 
+    @staticmethod
+    def _object_layers(res):
+        """塊のセルを種別ごとに分けて (マスク, 分類) で返す。
+
+        セルの種別は、その柱の一番上のボクセルが属する塊のものにする。腕の下に
+        相手がいるセルは「腕」の色になる。見えているとおりの塗り方で、門 4
+        (上に物が乗った塊は相手にしない) が効いている理由がそのまま読める。
+        """
+        if res.obj_labels is None or not res.clusters:
+            return [(res.obj_mask, _OBJ_OTHER)] if res.obj_mask is not None else []
+        out = []
+        for code in (_OBJ_OTHER, _OBJ_FALLEN, _OBJ_STANDING):
+            ids = [c.label for c in res.clusters
+                   if _KIND_CLASS.get(c.kind, _OBJ_OTHER) == code]
+            if ids:
+                out.append((np.isin(res.obj_labels, ids), code))
+        return out
+
     def _pack(self, res, opp, fallen, fresh, truth):
         t = self.p.tune
         grid = None
         if res.ring_mask is not None:
             cls = np.zeros(res.ring_mask.shape, dtype=np.uint8)
-            for mask, code in ((res.interior_mask, _INTERIOR),
-                               (res.ring_mask, _RING),
-                               (g.boundary(res.ring_mask), _EDGE),
-                               (res.above_mask, _ABOVE),
-                               (res.obj_mask, _OBJ),
-                               (res.outside_mask, _OUTSIDE)):
+            layers = [(res.interior_mask, _INTERIOR),
+                      (res.ring_mask, _RING),
+                      (g.boundary(res.ring_mask), _EDGE),
+                      (res.above_mask, _ABOVE)]
+            layers += self._object_layers(res)
+            layers.append((res.outside_mask, _OUTSIDE))
+            for mask, code in layers:
                 if mask is not None:
                     cls[mask] = code
             grid = {'nu': int(cls.shape[0]), 'nv': int(cls.shape[1]),
@@ -245,15 +286,14 @@ class ViewState:
                 'points': c.n_points, 'cells': c.n_cells,
                 'outside_cells': c.outside_cells,
                 'selected': c is res.selected,
+                'kind': c.kind, 'kind_ja': _KIND_JA.get(c.kind, ''),
                 'reason': cl.reject_reason(c, self.p.match, t)})
 
         fall = None
         if self.fall is not None:
             f = self.fall
-            fall = {'fallen': bool(fallen), 'h_stand': _num(f.h_stand),
-                    'calibrated': bool(f.calibrated),
-                    'cal_progress': _num(min(1.0, f._cal_time
-                                             / self.bparams.tune.height_cal_time), 2),
+            fall = {'fallen': bool(fallen),
+                    'kind': res.kind, 'kind_ja': _KIND_JA.get(res.kind, ''),
                     'evidence': dict(f.evidence) if fresh else None,
                     'below': _num(f._below, 2), 'above': _num(f._above, 2),
                     'fallen_time': self.bparams.tune.fallen_time,
@@ -291,7 +331,8 @@ class ViewState:
             'reset_status': self.reset_status_cb(),
             'tilt': tilt, 'n_points': res.n_points,
             'limits': {'top_min': self.p.match.obj_top_min,
-                       'top_max': self.p.match.obj_top_max,
+                       'fallen_top_max': self.p.match.fallen_top_max,
+                       'top_max': self.p.match.robot_top_max,
                        'width_min': self.p.match.obj_width_min,
                        'width_max': self.p.match.obj_width_max},
             'events': list(self.events), 'truth': truth,
@@ -674,7 +715,7 @@ def main(argv=None):
 
     import rclpy
     from rclpy.signals import SignalHandlerOptions
-    from .opponent_detector_node import OpponentDetectorNode
+    from .opponent_detector_node import OpponentDetectorNode, spin_detector
 
     rclpy.init(args=ros_args or None, signal_handler_options=SignalHandlerOptions.NO)
     node = OpponentDetectorNode()
@@ -703,7 +744,7 @@ def main(argv=None):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     _banner(args, bind, source)
     try:
-        rclpy.spin(node)
+        spin_detector(node)          # IMU を depth に飢えさせない (ノードと同じ回し方)
     except KeyboardInterrupt:
         print('\n停止')
     finally:
