@@ -390,7 +390,7 @@ ros2 run roboone_motion motion_node --ros-args -p dry_run:=true -p allow_torque:
 # 実行中に入れる・変える（★トルクが入っている機体では足先が動く。支えてから）
 ros2 param set /motion load_ff.sink 3.5      # [mm] 全荷重で脚が縮む量。実測して入れる
 ros2 param set /motion load_ff.clamp 10.0    # [mm] 1 脚あたりの伸ばし量の上限
-ros2 param set /motion load_ff.rate 10.0     # [mm/s] 変化の速さの上限（動歩行に要る）
+ros2 param set /motion load_ff.rate 50.0     # [mm/s] 変化の速さの上限（★下の「rate の下限」）
 ros2 param set /motion load_ff.sink 0.0      # 切る（跳ねずに rate で抜ける）
 
 # 配った割合を見る（/motion/stab の load_R / load_L。sink = 0 でも割合は出る）
@@ -409,6 +409,26 @@ print('load_R %.3f  load_L %.3f  walk_state %.0f' % (z['load_R'], z['load_L'], z
 
 ★起動時の到達域の門（`checkWalkEnvelope` / `checkStaticWalkEnvelope`）は**この伸ばしを
 含めずに**見る。伸ばした足先は motion の 10Hz の見張りが機構の到達域で見る。
+
+### rate の下限（2026-09-22）
+
+**`ds_time > 0` なら `rate >= sink / ds_time` にすること。** 今は `sink 8.0 / ds_time 0.2`
+なので下限 40 mm/s、`motion_node.yaml` は 50.0 にしてある。両足支持の間に荷重割合が
+0↔1 を**線形に連続で**動くので、追い切れないと前送りが薄まるのではなく**位相が遅れる**：
+
+| 遅れが出るところ | 起きること | 体が押される向き |
+|---|---|---|
+| 両足支持の間 | 荷重を受け取る新しい支持脚が伸び切らないまま荷重を受けて沈む | 新しい支持脚の側（外） |
+| 離地の瞬間 | 前の支持脚に伸ばし量が残り、遊脚が床を押す（蹴る） | 遊脚から逃げる＝支持脚の側（外） |
+
+`rate 10` だと 1 歩（`ds_time` 0.2 + `t_step` 0.45 = 0.65s）で 6.5mm しか動けず、定常で
+0↔6.5mm の三角波になり、離地の時点で 4.5mm 残る（足上げ 35mm の 13%）。**ここは計算で、
+bag は取っていない。** 実機では `sink 8.0 / rate 10` の動歩行で「蹴る力が大きく支持脚側へ
+倒れる」と出た。**外への倒れは次の一歩で受けられない。**
+
+★**`ds_time` を 0 に戻す実験をするときは `rate` を下げ直すこと。** ZMP が歩の境界で反対の足へ
+飛ぶので、そのまま出すと 1 周期で `2·sink` = 16mm の段差になる（`rate` が付いた元の理由）。
+静歩行は重心移動 4.4s の間に連続に動くので、`rate` はどちらでも効かない（`sink 8` でも 1.8mm/s）。
 
 ## 胴体の前傾（body_pitch）
 
@@ -963,10 +983,34 @@ ros2 run roboone_motion motion_node --ros-args \
 2026-08-29: 後傾 10 deg に対し `z_c=0.261` のままで入るのは **pitch -8 まで**
 （-10 は届かない）。走査結果の表は `home_pose.yaml` の `rpy` のコメントにある。
 
+立位はモード別（`walk_mode: dynamic: / static:`）なので、**両モードで走査する**。
+launch と同じ `motion_node.yaml` を当てないと `stab.board` が既定の `false` になり、
+「板の補正」の行が出ない（足裏ピッチは板の余裕を食うので、この行が要る）。
+
+```bash
+source install/setup.bash
+S=/tmp/gate   # ログの置き場。パイプに直接流すと timeout で切ったとき出力ごと消える
+mkdir -p $S
+for mode in dynamic static; do
+  timeout 15 ros2 run roboone_motion motion_node --ros-args \
+    --params-file install/roboone_motion/share/roboone_motion/config/motion_node.yaml \
+    -p dry_run:=true -p allow_torque:=false -p walk_mode:=$mode \
+    -p home_pose_yaml:=$PWD/src/roboone_walk_ref/config/home_pose.yaml > $S/$mode.log 2>&1
+done
+grep -hE "ホーム姿勢 \(|足先の箱|足先が|板の補正" $S/dynamic.log $S/static.log
+```
+
+2026-09-20: 動歩行（280 / ±89.3）に `pitch -4` を入れた（IMU 安定化の板が
+`board_clamp` に張り付いて出しっぱなしだった -4 deg を立位へ移したもの）。足先の箱は
+mech のまま変わらず、板 ±4 deg の届かない時刻が 0 -> 218/57200 点（0.381%）に増えた。
+静歩行（261 / ±70）に同じ -4 を入れると足先の ERROR が 11 -> 315/57222 点・板が
+2.6% -> 5.8% に増えるので、**-4 は `walk_mode: dynamic:` にだけ置いた**。
+
 ## 相手機の認識（テストラン・ビューア）
 
 検出器 `opponent_detector` をそのまま回して、俯瞰図・深度・「立っている / 倒れている」の
-判定をブラウザで見る。**サーボには触れない**（motion ノードを上げない）。
+判定をブラウザで見る。**既定ではサーボに触れない**（motion ノードを上げないので、
+ホーム姿勢にもならない）。立たせるのは下の `home:=true`。
 見方と確かめる順は [相手機の認識.md](相手機の認識.md) §9。
 
 ```bash
@@ -1645,6 +1689,13 @@ ros2 topic echo /motion/state
 | 計画の足幅 `foot_spacing` | 155mm（実機より狭い。「横の寄り」の節） | 140mm（実機と同じ） |
 
 - **`height` と `z_c`、`y` と `foot_spacing` をそれぞれ揃えること**（食い違いは起動時に言う）
+- ★**書いていないキーは共通の `foot:` のまま = 片方のモードの調整が他方へ漏れる。**
+  2026-09-22 に、動歩行用のつま先上げ `rpy: [0, -4, 0]` を共通側に書いたまま静歩行を走らせ、
+  静歩行が -4 を継承して遊脚の着地で倒れた。起動時の門は
+  `静歩行の足先が機構の到達域の外に出る 315 / 57222 点・最初が「前進 t=18.04s SWING」`
+  （rpy 0 なら 11 点で切り返しだけ）と言っていた。足裏 118mm なのでかかとが 4.1mm 下がり、
+  `td_speed_max` 0.05 では 83ms 早くかかとが当たる。**いまは `static:` に `rpy: [0,0,0]` を
+  明示して止めてある。** つま先上げの値を触るときは両モードの門を見ること（下の A/B のコマンド）
 - 動歩行の ±89.3 は骨盤 280 とひと組。足首パラレルリンクの横の到達は足を上げるほど
   狭くなり（足上げ 40mm で骨盤から 152.5mm まで）、骨盤 261 のままでは届かない。
   上げすぎると支持脚が伸び切る（290 で歩けない）。表は `home_pose.yaml` の注記
@@ -1666,6 +1717,16 @@ ROS_DOMAIN_ID=87 timeout -s INT 8 ros2 run roboone_motion motion_node --ros-args
 # 到達の走査（動歩行は home_pose.yaml の walk_mode: dynamic: の y を読む）
 python3 src/roboone_viz/roboone_viz/walk_reach.py          # 今の設定そのもの -> 届かない 0ms
 python3 src/roboone_viz/roboone_viz/static_reach.py        # 静歩行（足幅は static_gait.yaml）
+
+# 立位の rpy を変えると到達域の門がどう動くかを A/B する（home_pose.yaml を差し替えて起動）
+#   ★出力はファイルへ落とす。パイプに繋ぐと SIGINT で流れないことがある
+sed 's/^  rpy: \[0.0, -4.0, 0.0\]/  rpy: [0.0, 0.0, 0.0]/' \
+    install/roboone_walk_ref/share/roboone_walk_ref/config/home_pose.yaml > /tmp/hp_rpy0.yaml
+ROS_DOMAIN_ID=87 timeout -s INT 40 ros2 run roboone_motion motion_node --ros-args \
+    -r __node:=motion_check -p dry_run:=true -p allow_torque:=false -p walk_mode:=static \
+    -p home_pose_yaml:=/tmp/hp_rpy0.yaml > /tmp/dry.log 2>&1; grep -E "ホーム姿勢|到達域" /tmp/dry.log
+#   共通 foot.rpy が -4 → 315 / 57222 点。最初が「前進 t=18.04s SWING R脚」（普通の前進で外れる）
+#   0 に戻すと       → 11 / 57222 点。前後の切り返しと斜めだけ（2026-09-22 の実測）
 ```
 
 ## 横の寄り（動歩行で骨盤を支持足へどこまで寄せるか）
