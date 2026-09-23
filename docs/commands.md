@@ -610,6 +610,86 @@ SHIFT 中に荷重側（外側）へ倒れて、その傾きが次の SWING ま�
 `/motion/diagnostics` にバスごとの電圧・最高温度・応答軸数が入るので、
 低電圧で応答が欠けていた区間も後から分かる。
 
+## 立位の左右差を切り分ける（床 / 機体 / IMU / サーボ）
+
+「立たせると左へ傾く」の原因を 4 つに分けるための順番。**測るだけの段から始める。**
+2026-09-24 の実測では 静止 roll −1.78°、HOLD で L_ID5 が +3.27° 垂れ（平均負荷 16.7%。
+R_ID5 は −0.01° / 2.9%）。
+
+```bash
+# 胴体のロール・ピッチを平均して出す（motion ノードが動いていればトルクは不要）
+python3 scripts/imu_now.py --sec 20 --label "正面"
+python3 scripts/imu_now.py --watch                  # 1 秒ごとに出し続ける
+python3 scripts/imu_now.py --sec 20 --load          # 脚の荷重の左右差も出す（IMU に依らない）
+```
+
+**★測る前に必ず `home` を出すこと。** `hold` と技のあとの `HOLD` は「その場の姿勢」を
+保持するので、ホーム姿勢ではなくなる（2026-09-24 の bag は 129 秒のうち `getup_back` の
+前の 5 秒しか使えなかった）。同じ理由で、測定中は `home` 以外の技を出さない。
+
+**★安定化を切ってから測ること**（`ros2 param set /motion stab.enable false`）。
+入れたままだと `kp_roll` が板を回して片脚ずつ伸縮させるので、荷重の偏りも関節角の
+左右差も安定化が作った分が混ざる（2026-09-24: 安定化 ON で L_ID5 16.7% / R_ID5 2.9% と
+出ていた偏りが、OFF では 8.0% / 8.8% とほぼ揃った）。
+
+**① EEPROM を左右で突き合わせる（読むだけ。★motion ノードを止めてから）**
+
+```bash
+ros2 run feetech_servo feetech_gains  --ids 5,6,2   # P/D/I・最大トルク・トルク上限
+ros2 run feetech_servo feetech_limits --ids 5,6,2   # トルク上限・電流・保護のしきい値
+```
+
+左右で値が違えば、そこで話が終わる（揃える）。出荷時は全軸 `P=32 / D=32 / I=0`。
+
+**② 無荷重と接地で定常偏差を比べる（原点のずれか、荷重によるたわみか）**
+
+```bash
+# 機体を吊る/持ち上げた状態で home に移し、20 秒ほど静止させて記録する
+ros2 topic pub -t 3 /cmd_motion std_msgs/msg/String "{data: home}"
+ros2 topic pub -t 3 --qos-durability transient_local --qos-reliability reliable \
+  /estop std_msgs/msg/Bool "{data: false}"          # ★トルクが入る
+python3 scripts/bag_droop.py ~/roboone_logs/rosbag2_* --state HOLD
+```
+
+| 無荷重 | 接地 | 原因 |
+|---|---|---|
+| 偏差 ≈ 0 | 偏差あり | **荷重によるたわみ** → P を上げるか I を入れる |
+| 偏差あり | 偏差あり | **原点のずれ** → `servo_home.yaml` の該当軸 |
+
+**③ 床か機体かを 180 度回して分ける**
+
+同じ姿勢のまま機体の向きだけ 180 度変えて、両方でロールを測る。
+
+```bash
+python3 scripts/imu_now.py --sec 20 --label "正面"
+python3 scripts/imu_now.py --sec 20 --label "180度"
+```
+
+    床の傾き       = (正面 − 180度) / 2
+    機体 + IMU     = (正面 + 180度) / 2
+
+2026-09-24 の実測: roll は 正面 −3.07 / 180度 −2.92 → **床 −0.08°（水平）・機体+IMU −3.00°**。
+pitch は 正面 −14.44 / 180度 −11.01 → 床 −1.72° / 機体+IMU −12.73°。
+
+**機体+IMU に残ったぶんは、股の高さを定規で測れば IMU 無しで分けられる。**
+股の間隔は `HIP_Y` × 2 = 178.6mm なので、ロール 3.0° なら左右の股で **9.4mm** の差が出る。
+差が無ければ胴体は水平 = IMU の取り付け（→ 次の④）。
+
+**④ IMU の取り付けか機体かを水準器で分ける**
+
+胴体の平らな面に水準器（スマホの傾斜計で可）を当てて水平にし、静止させてから呼ぶ。
+**ホーム姿勢で立たせたまま呼ばないこと**（立位の傾きまで 0 と覚える）。
+
+```bash
+ros2 service call /motion/imu_zero std_srvs/srv/Trigger
+# ログの「mount_rpy_deg: [...]」を motion_node.yaml の imu: に書き写す（書かないと再起動で戻る）
+```
+
+**⑤ 軸を左右入れ替えて、不具合がサーボに付いてくるか見る**（①〜④で決まらないとき）
+
+L_ID5 と R_ID5 を物理的に入れ替えて②をやり直す。偏差が右へ移れば**サーボ個体**、
+左に残れば**リンク・フレーム**。★配線と原点の取り直しが要るので最後の手段。
+
 ## モーションを作る（ティーチ）
 
 技（攻撃・旋回・起き上がり）は `roboone_motion/config/motions.yaml` に
